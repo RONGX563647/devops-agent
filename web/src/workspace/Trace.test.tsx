@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchInputStages, fetchRun, fetchRunHealth, fetchRuns, fetchSpans } from '../api/client';
-import type { ChatMessage, InputStage, ParseStage, Run, RunHealth, Span } from '../types';
+import type { Attachment, ChatMessage, InputStage, ParseStage, Run, RunHealth, Span } from '../types';
 import { clearAllHistory, saveMessages } from './history';
 import { RunTrace } from './RunTrace';
 import { resetStore } from './store';
@@ -72,6 +72,17 @@ const health: RunHealth = {
   run_id: 7,
   score: 80,
   dimensions: { execution: 90, efficiency: 70, quality: 80, safety: 85 },
+};
+
+/** 一份已解析完成的附件：轨迹只关心名字与体积，正文留在服务端。 */
+const uploaded: Attachment = {
+  id: 'a1b2c3d4e5f60718',
+  name: 'run.log',
+  size: 900,
+  suffix: '.log',
+  chars: 40,
+  truncated: false,
+  status: 'ok',
 };
 
 function wrap(node: React.ReactNode) {
@@ -227,5 +238,29 @@ describe('TraceTab', () => {
     expect(await screen.findByText('Trace · run #7')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '返回列表' }));
     expect(screen.getByText('全部会话 · 点击运行查看轨迹与健康分')).toBeTruthy();
+  });
+
+  it('轮列表标注用户挂上的附件数', async () => {
+    saveMessages('s-attach', [
+      {
+        id: 'u1',
+        role: 'user',
+        text: '看下 run.log',
+        at: '2026-11-23T10:00:00.000Z',
+        steps: [],
+        attachments: [uploaded],
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '看完了。',
+        at: '2026-11-23T10:00:02.000Z',
+        steps: [],
+        endedAt: '2026-11-23T10:00:02.000Z',
+      },
+    ]);
+    wrap(<TraceTab session="s-attach" />);
+
+    expect(await screen.findByText(/1 附件/)).toBeTruthy();
   });
 });

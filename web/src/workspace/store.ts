@@ -10,7 +10,7 @@ import {
   streamRun,
   type StreamState,
 } from '../api/useRunStream';
-import type { ChatMessage, Run } from '../types';
+import type { Attachment, ChatMessage, Run } from '../types';
 import {
   loadMessages,
   saveMessages,
@@ -194,13 +194,21 @@ function finalize(entry: Entry, mode: FinalizeMode): void {
 }
 
 /** 发起一轮对话：追加 user + assistant 占位消息，并在后台消费 SSE。 */
-export function send(sessionId: string, text: string): void {
+export function send(sessionId: string, text: string, attachments: Attachment[] = []): void {
   if (!sessionId) return;
   const entry = ensureEntry(sessionId);
   if (entry.running) return;
 
   const now = new Date().toISOString();
-  const user: ChatMessage = { id: newId('msg'), role: 'user', text, at: now, steps: [] };
+  const files = attachments.filter((item) => item.status === 'ok');
+  const user: ChatMessage = {
+    id: newId('msg'),
+    role: 'user',
+    text,
+    at: now,
+    steps: [],
+    attachments: files.length > 0 ? files : undefined,
+  };
   const assistant: ChatMessage = {
     id: newId('msg'),
     role: 'assistant',
@@ -251,6 +259,7 @@ export function send(sessionId: string, text: string): void {
     },
     controller.signal,
     newId('req'),
+    files.map((item) => item.id),
   )
     .then(() => {
       if (generation !== entry.generation) return;

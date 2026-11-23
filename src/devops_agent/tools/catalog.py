@@ -20,7 +20,17 @@ import os
 from collections.abc import Sequence
 from pathlib import Path
 
-from agentscope.tool import Bash, FunctionTool, Glob, Grep, Read, ToolGroup, Toolkit
+from agentscope.tool import (
+    Bash,
+    FunctionTool,
+    Glob,
+    Grep,
+    Read,
+    ToolGroup,
+    Toolkit,
+    ToolMiddlewareBase,
+)
+from agentscope.tool._base import ToolBase
 
 
 def build_toolkit(tools: Sequence[FunctionTool] | None = None) -> Toolkit:
@@ -28,13 +38,24 @@ def build_toolkit(tools: Sequence[FunctionTool] | None = None) -> Toolkit:
     return Toolkit(list(tools) if tools else None)
 
 
-def build_readonly_toolkit(workdir: str | os.PathLike[str]) -> Toolkit:
+def build_readonly_toolkit(
+    workdir: str | os.PathLike[str],
+    middlewares: Sequence[ToolMiddlewareBase] | None = None,
+) -> Toolkit:
     """装配内置只读工具集：shell + 读文件 + 路径查找 + 文本检索。
 
     workdir 决定 shell 的默认工作目录，也决定 Read/Glob/Grep 的相对路径基准。
+    middlewares 逐工具挂载（框架把它挂在 ToolBase 上，而不是 Toolkit 上）：
+    密钥注入就靠这一层，所以每个工具都要带上，缺一个就有一条绕过注入的路。
     """
     cwd = str(Path(workdir).resolve())
-    return Toolkit(tools=[Bash(cwd=cwd), Read(), Glob(), Grep()])
+    tools: list[ToolBase] = [
+        Bash(cwd=cwd, middlewares=list(middlewares) if middlewares else None),
+        Read(middlewares=list(middlewares) if middlewares else None),
+        Glob(middlewares=list(middlewares) if middlewares else None),
+        Grep(middlewares=list(middlewares) if middlewares else None),
+    ]
+    return Toolkit(tools=tools)
 
 
 def shell_name() -> str:

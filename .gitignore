@@ -17,7 +17,8 @@ venv/
 !.env.example
 *.key
 *.pem
-secrets/
+# 只忽略项目根下的运行期密钥目录：源码包 src/devops_agent/secrets 必须入库
+/secrets/
 
 # tooling caches
 .pytest_cache/

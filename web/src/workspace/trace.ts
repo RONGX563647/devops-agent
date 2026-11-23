@@ -39,16 +39,21 @@ function stepToTrace(step: ProcessEntry): TraceStep | null {
   };
 }
 
-/** 把解析阶段折成轮级计数：引用条数、脱敏处数、降级处数。 */
+/** 把解析阶段折成轮级计数：附件数、引用条数、脱敏处数、降级处数。 */
 function accumulateParse(turn: TraceTurn, stages: ParseStage[]): void {
   if (stages.length === 0) return;
-  const refs = stages.find((stage) => stage.stage === 'detect')?.items ?? 0;
-  const redactions = stages.find((stage) => stage.stage === 'redact')?.items ?? 0;
+  const items = (name: string): number =>
+    stages.find((stage) => stage.stage === name)?.items ?? 0;
   const degraded = stages.reduce(
     (sum, stage) => sum + Math.max(stage.failed, stage.status === 'error' ? 1 : 0),
     0,
   );
-  turn.parse = { refs, redactions, degraded };
+  turn.parse = {
+    attachments: items('attach'),
+    refs: items('detect'),
+    redactions: items('redact'),
+    degraded,
+  };
 }
 
 /** 把一条助手消息并入当前轮：异常、过程步骤与正文。 */
@@ -124,6 +129,7 @@ export function turnsFromMessages(messages: ChatMessage[]): TraceTurn[] {
         tools: 0,
         failed: false,
         items: [],
+        attachments: message.attachments?.length,
       };
       turns.push(current);
       continue;

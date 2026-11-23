@@ -30,6 +30,7 @@ from pydantic import SecretStr
 from devops_agent.config import RuntimePolicy, load_policy
 from devops_agent.governance.policy import build_permission_context
 from devops_agent.runtime.events import event_to_dict
+from devops_agent.secrets.middleware import build_secret_middleware
 from devops_agent.tools.catalog import build_readonly_toolkit, shell_name
 
 DEFAULT_SYSTEM_PROMPT = "你是 DevOps 助手，帮助处理持续交付、项目排期与 Bug 定位。"
@@ -183,6 +184,8 @@ def build_agentscope_runtime(
     """装配真实运行时（env 提供模型凭据）。
 
     - 工具：内置只读工具集（shell/read/glob/grep），不装配写工具；
+    - 密钥：挂 SecretInjectionMiddleware —— 占位符在工具边界换成真值，
+      返回里的真值再抹回占位符，模型全程看不到明文；
     - 权限：注入 policy.yaml 的权限上下文。模式缺省为 `dont_ask` ——
       服务端没有人工确认通道，ASK 只会发出一个确认事件然后结束这一轮。
     """
@@ -191,7 +194,7 @@ def build_agentscope_runtime(
         name="devops",
         system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),
         model=build_chat_model(),
-        toolkit=build_readonly_toolkit(base),
+        toolkit=build_readonly_toolkit(base, middlewares=[build_secret_middleware()]),
         state=AgentState(
             permission_context=(
                 permission_context if permission_context is not None else build_permission_context()

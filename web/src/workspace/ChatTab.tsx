@@ -1,6 +1,8 @@
 /** 对话 tab：订阅会话 store 渲染消息与过程时间线，SSE 生命周期由 store 托管。 */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ChatMessage } from '../types';
+import { deleteAttachment, uploadAttachment } from '../api/client';
+import type { Attachment, ChatMessage, PendingAttachment } from '../types';
+import { newId } from './id';
 import { Markdown } from './Markdown';
 import { send, stop, useSession } from './store';
 import { StepList } from './StepRow';
@@ -29,6 +31,35 @@ export function shouldStickToBottom(
 }
 
 export { formatClock };
+
+/** 文件大小的人类可读形式：附件动辄几 MB，纯字节数看不出来体量。 */
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** 附件芯片右侧的计量文案：上传中 / 解析失败 / 体积与字数。 */
+export function attachMeta(item: Attachment): string {
+  if (item.status === 'uploading') return '上传中…';
+  if (item.status === 'error') return '无法解析';
+  const truncated = item.truncated ? '（已截断）' : '';
+  return `${formatSize(item.size)} · ${item.chars} 字${truncated}`;
+}
+
+function PaperclipIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M9.8 6.2 5.4 10.6a2 2 0 0 0 2.8 2.8l4.9-4.9a3.2 3.2 0 0 0-4.5-4.5L4 8.9"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 
 /** 空状态的示例问题：点一下直接发起会话。 */
 const SAMPLES = [
@@ -131,11 +162,13 @@ function AssistantMessage({
 export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
   const view = useSession(session);
   const [input, setInput] = useState('');
+  const [files, setFiles] = useState<PendingAttachment[]>([]);
   const [activeId, setActiveId] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true);
   const composingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const messages = view.messages;
   const turns = useMemo(() => turnsFromMessages(messages), [messages]);
@@ -187,18 +220,59 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
   }, [input]);
 
   /** 发起一轮：首次发送时把草稿会话 id 落到 URL，再交给 store 后台执行。 */
-  function run(text: string) {
+  function run(text: string, attachments: Attachment[] = []) {
     const value = text.trim();
-    if (!value || view.running) return;
+    // 只挂附件、不写字也是合法的一轮：这时候问题就是「看看这个文件」
+    if ((!value && attachments.length === 0) || view.running) return;
     onFirstSend?.();
-    send(session, value);
+    send(session, value, attachments);
   }
 
   function submit() {
-    if (!input.trim() || view.running) return;
+    const ready = files.filter((item) => item.status === 'ok');
+    if ((!input.trim() && ready.length === 0) || view.running) return;
     const text = input;
     setInput('');
-    run(text);
+    setFiles([]);
+    run(text, ready);
+  }
+
+  /** 单个文件上传：成功替换乐观条目，失败把原因留在芯片上。 */
+  async function uploadOne(file: File, key: string) {
+    try {
+      const saved = await uploadAttachment(file);
+      setFiles((prev) => prev.map((item) => (item.key === key ? { ...saved, key } : item)));
+    } catch (error) {
+      const problem = error instanceof Error ? error.message : '上传失败';
+      setFiles((prev) =>
+        prev.map((item) => (item.key === key ? { ...item, status: 'error', problem } : item)),
+      );
+    }
+  }
+
+  /** 选中文件后先占位再上传：上传期间用户能看到「正在处理哪几个文件」。 */
+  function addFiles(picked: FileList | null) {
+    if (!picked || picked.length === 0) return;
+    const chosen = Array.from(picked);
+    const placeholders: PendingAttachment[] = chosen.map((file) => ({
+      key: newId('att'),
+      id: '',
+      name: file.name,
+      size: file.size,
+      suffix: '',
+      chars: 0,
+      truncated: false,
+      status: 'uploading',
+    }));
+    setFiles((prev) => [...prev, ...placeholders]);
+    void Promise.all(chosen.map((file, index) => uploadOne(file, placeholders[index].key)));
+  }
+
+  function removeFile(key: string) {
+    const target = files.find((item) => item.key === key);
+    setFiles((prev) => prev.filter((item) => item.key !== key));
+    // 只删服务端已落盘的那份；上传中的条目没有 id，自然跳过
+    if (target?.id) void deleteAttachment(target.id);
   }
 
   /** 重试：用同一条用户输入再发一轮（保留历史，不重写已发生的内容）。 */
@@ -217,7 +291,8 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
   }
 
   const empty = messages.length === 0;
-  const canSend = Boolean(input.trim()) && !view.running;
+  const readyCount = files.filter((item) => item.status === 'ok').length;
+  const canSend = (Boolean(input.trim()) || readyCount > 0) && !view.running;
 
   return (
     <div className="chat-wrap">
@@ -232,7 +307,18 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
             if (m.role === 'user') {
               return (
                 <div className="chat-msg user" id={`msg-${m.id}`} key={m.id}>
-                  <div className="chat-bubble">{m.text}</div>
+                  <div className="chat-bubble">
+                    {m.text && <span className="chat-bubble-text">{m.text}</span>}
+                    {m.attachments && m.attachments.length > 0 && (
+                      <span className="chat-attachments">
+                        {m.attachments.map((item) => (
+                          <span className="attach-tag" key={item.id} title={item.name}>
+                            {item.name}
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                  </div>
                 </div>
               );
             }
@@ -278,6 +364,27 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
       />
       <div className="chat-composer">
         <div className="chat-compose">
+          {files.length > 0 && (
+            <div className="attach-row">
+              {files.map((item) => (
+                <span
+                  className={`attach-chip${item.status === 'error' ? ' is-error' : ''}`}
+                  key={item.key}
+                  title={item.problem || item.preview || item.name}
+                >
+                  <span className="attach-name">{item.name}</span>
+                  <span className="attach-meta mono">{attachMeta(item)}</span>
+                  <button
+                    className="attach-remove"
+                    aria-label={`移除 ${item.name}`}
+                    onClick={() => removeFile(item.key)}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             aria-label="用户输入"
@@ -300,6 +407,26 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
             rows={1}
           />
           <div className="composer-bar">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="attach-input"
+              aria-label="选择要上传的文件"
+              onChange={(e) => {
+                addFiles(e.target.files);
+                // 清空 value：同一个文件连选两次也要能再次触发 change
+                e.target.value = '';
+              }}
+            />
+            <button
+              className="attach-btn"
+              aria-label="添加文件"
+              title="添加文件（本地解析后随消息一起发送）"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <PaperclipIcon />
+            </button>
             <span className="composer-hint">
               {view.running ? '生成中，仍可继续输入，停止后可发送' : 'Enter 发送 · Shift+Enter 换行'}
             </span>

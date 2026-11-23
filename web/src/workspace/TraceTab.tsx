@@ -241,25 +241,31 @@ function SessionTrace({
                 placeholder="搜索问题或工具"
                 aria-label="搜索轨迹"
               />
-              {filtered.map((turn) => (
-                <button
-                  key={turn.id}
-                  type="button"
-                  className={`ws-turn${turn === activeTurn ? ' active' : ''}${turn.failed ? ' failed' : ''}`}
-                  onClick={() => selectTurn(turn)}
-                >
-                  <span className="ws-turn-index mono">#{turn.index}</span>
-                  <span className="ws-turn-main">
-                    <span className="ws-turn-question">{turn.question || '（空问题）'}</span>
-                    <span className="ws-turn-meta mono">
-                      {formatClock(turn.at)} · {turn.tools} 工具
-                      {turn.parse?.refs ? ` · ${turn.parse.refs} 引用` : ''}
-                      {turn.parse?.degraded ? ` · ${turn.parse.degraded} 降级` : ''} ·{' '}
-                      {formatDuration(turn.endedAt - turn.startedAt)}
+              {filtered.map((turn) => {
+                // 附件数取用户实际挂上的文件数；历史回放没有消息级附件时
+                // 回落到解析阶段真正读到的份数，两者可能因附件过期而不等。
+                const files = turn.attachments ?? turn.parse?.attachments ?? 0;
+                return (
+                  <button
+                    key={turn.id}
+                    type="button"
+                    className={`ws-turn${turn === activeTurn ? ' active' : ''}${turn.failed ? ' failed' : ''}`}
+                    onClick={() => selectTurn(turn)}
+                  >
+                    <span className="ws-turn-index mono">#{turn.index}</span>
+                    <span className="ws-turn-main">
+                      <span className="ws-turn-question">{turn.question || '（空问题）'}</span>
+                      <span className="ws-turn-meta mono">
+                        {formatClock(turn.at)} · {turn.tools} 工具
+                        {files ? ` · ${files} 附件` : ''}
+                        {turn.parse?.refs ? ` · ${turn.parse.refs} 引用` : ''}
+                        {turn.parse?.degraded ? ` · ${turn.parse.degraded} 降级` : ''} ·{' '}
+                        {formatDuration(turn.endedAt - turn.startedAt)}
+                      </span>
                     </span>
-                  </span>
-                </button>
-              ))}
+                  </button>
+                );
+              })}
               {filtered.length === 0 && (
                 <p className="session-empty">
                   {turns.length === 0

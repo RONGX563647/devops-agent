@@ -6,6 +6,7 @@ import { Dashboard } from '../pages/Dashboard';
 import { Quality } from '../pages/Quality';
 import { Cost } from '../pages/Cost';
 import { ChatTab } from './ChatTab';
+import { SecretsTab } from './SecretsTab';
 import { TraceTab } from './TraceTab';
 import { ensureHistory } from './store';
 import { newId } from './id';
@@ -16,6 +17,7 @@ const TABS = [
   { key: 'metrics', label: '指标' },
   { key: 'quality', label: '质量' },
   { key: 'cost', label: '成本' },
+  { key: 'secrets', label: '密钥' },
 ] as const;
 
 export type TabKey = (typeof TABS)[number]['key'];
@@ -112,6 +114,7 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
           {tab === 'metrics' && <Dashboard />}
           {tab === 'quality' && <Quality />}
           {tab === 'cost' && <Cost />}
+          {tab === 'secrets' && <SecretsTab />}
         </main>
       </div>
     </div>

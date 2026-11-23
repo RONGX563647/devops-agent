@@ -16,16 +16,24 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import time
 from collections import Counter
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-# 单次输入的总字符预算：超出后按「先去噪、再中段截断」处理
+from devops_agent.input.attachments import Attachment
+
+# 单次输入的总字符预算（正文 + 全部材料）：超出后按「先去噪、再取舍」处理
 MAX_TOTAL_CHARS: Final = 24_000
+# 预算里留给材料的份额：材料再多也不能把用户原话挤没
+MATERIAL_SHARE: Final = 0.65
+# 单份材料裁剪后的下限：留 200 字通常还能看出「这是什么文件」
+MIN_MATERIAL_CHARS: Final = 200
 # 单个本地文件最多读取的字节数（超出部分截断，并在阶段 detail 里写明）
 MAX_FILE_BYTES: Final = 256 * 1024
 # 单条输入里最多解析的引用条数，避免一条消息挂 50 个链接把预算吃光
@@ -40,12 +48,18 @@ STAGE_LABELS: Final[dict[str, str]] = {
     "normalize": "归一化",
     "detect": "引用探测",
     "expand": "引用展开",
+    "attach": "附件读取",
     "redact": "密钥脱敏",
     "budget": "预算裁剪",
     "compose": "组装",
 }
 
-KIND_LABELS: Final[dict[str, str]] = {"url": "URL", "path": "本地路径", "git": "git 引用"}
+KIND_LABELS: Final[dict[str, str]] = {
+    "url": "URL",
+    "path": "本地路径",
+    "git": "git 引用",
+    "file": "附件",
+}
 
 # 引用识别：git 必须先于 url 匹配，否则 xxx.git 会被当成普通网址
 _GIT_RE: Final = re.compile(
@@ -62,6 +76,13 @@ _PATH_RE: Final = re.compile(
     r"|[\w\-]+(?:\.[A-Za-z0-9]{1,8}){1,2})"
 )
 _BARE_NAME_RE: Final = re.compile(r"^[\w\-]+(?:\.[A-Za-z0-9]{1,8}){1,2}$")
+# 占位符语法：与 secrets/vault.py 的 PLACEHOLDER_PATTERN 必须逐字一致，
+# 两边由 tests/unit/test_secrets.py 里的一条对账用例钉住，改一处就会红。
+_PLACEHOLDER_RE: Final = re.compile(r"\{\{secret:([A-Za-z0-9_]+)\}\}")
+# 脱敏中途的临时槽位：用私用区字符，任何密钥正则都不会命中它
+_SLOT_START: Final = "\ue000"
+_SLOT_END: Final = "\ue001"
+_SLOT_RE: Final = re.compile(_SLOT_START + r"(\d+)" + _SLOT_END)
 _BASE64_RE: Final = re.compile(r"[A-Za-z0-9+/]{200,}={0,2}")
 
 # 密钥识别规则：命中后整段替换成 {{secret:name}}，指纹只留前 4 位与长度
@@ -80,6 +101,9 @@ _ASSIGNED_SECRET_RE: Final = re.compile(
     r"(?i)\b(api[_-]?key|access[_-]?key|secret|token|password|passwd)\b(\s*[:=]\s*[\"']?)"
     r"([A-Za-z0-9_\-.]{12,})"
 )
+
+# 凭据落库回调：网关传进来（接保险箱），管线本身不认识存储
+SecretSink = Callable[[str, str], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +127,7 @@ class Stage:
 class Reference:
     """从输入里识别出的一条引用。"""
 
-    kind: str  # url / path / git
+    kind: str  # url / path / git / file
     value: str
 
 
@@ -340,7 +364,7 @@ def _fetch_quietly(url: str) -> tuple[str, str]:
 
 
 def _expand_summary(total: int, ok: int, failed: int) -> tuple[str, str]:
-    """阶段状态：全失败才算 error，部分失败仍算 ok 但要记 failed。"""
+    """引用展开的阶段状态：全失败才算 error，部分失败仍算 ok 但要记 failed。"""
     if total == 0:
         return "skip", "无引用可展开"
     if failed == total:
@@ -348,6 +372,17 @@ def _expand_summary(total: int, ok: int, failed: int) -> tuple[str, str]:
     if failed:
         return "ok", f"{ok} 条成功 · {failed} 条降级"
     return "ok", f"{ok} 条引用已展开"
+
+
+def _attach_summary(total: int, ok: int, failed: int) -> tuple[str, str]:
+    """附件读取的阶段状态，口径与引用展开一致（全失败才 error）。"""
+    if total == 0:
+        return "skip", "未附加文件"
+    if failed == total:
+        return "error", f"{failed} 份附件全部未取到"
+    if failed:
+        return "ok", f"{ok} 份附件已读取 · {failed} 份降级"
+    return "ok", f"{ok} 份附件已读取"
 
 
 def _expand(
@@ -384,42 +419,156 @@ def _expand(
     )
 
 
+def _attach(attachments: Sequence[Attachment]) -> tuple[list[tuple[Reference, str]], Stage]:
+    """把上传的附件变成材料块——正文在入库时已抽好，这里不再碰磁盘。"""
+    start = time.perf_counter()
+    blocks: list[tuple[Reference, str]] = []
+    notes: list[str] = []
+    failures = 0
+
+    for attachment in attachments:
+        if not attachment.ok:
+            failures += 1
+            notes.append(f"{attachment.name} → {attachment.problem}")
+            continue
+        blocks.append((Reference(kind="file", value=attachment.name), attachment.text))
+        suffix = "（已截断）" if attachment.truncated else ""
+        notes.append(f"{attachment.name} → {attachment.chars} 字{suffix}")
+
+    status, summary = _attach_summary(len(attachments), len(blocks), failures)
+    added = sum(len(content) for _, content in blocks)
+    return blocks, _stage(
+        "attach",
+        status=status,
+        summary=summary,
+        before=0,
+        after=added,
+        items=len(attachments),
+        ms=_elapsed_ms(start),
+        detail="\n".join(notes),
+        changed=bool(blocks),
+        failed=failures,
+    )
+
+
+class _SecretNamer:
+    """给同一类凭据分配互不冲突的占位符名。
+
+    同一个名字下出现两个不同的值（比如两把 OpenAI key）时，第二个起编号，
+    否则两个不同的密钥会共用一个占位符，注入时必然张冠李戴。
+    """
+
+    def __init__(self) -> None:
+        self._named: dict[tuple[str, str], str] = {}
+        self._taken: set[str] = set()
+
+    def name_for(self, base: str, value: str) -> str:
+        """同一个值永远拿到同一个名字；不同值按出现顺序编号。"""
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+        existing = self._named.get((base, digest))
+        if existing is not None:
+            return existing
+        name = base
+        index = 2
+        while name in self._taken:
+            name = f"{base}_{index}"
+            index += 1
+        self._named[(base, digest)] = name
+        self._taken.add(name)
+        return name
+
+
 def _fingerprint(secret: str) -> str:
     """只暴露前 4 位与长度：足够认出是哪个凭据，又不构成泄漏。"""
     return f"{secret[:4]}…（{len(secret)} 位）"
 
 
-def _redact_text(text: str) -> tuple[str, list[str]]:
-    """把命中的密钥替换成 {{secret:name}}，返回替换记录。"""
-    notes: list[str] = []
-    out = text
-    for name, pattern in _SECRET_PATTERNS:
+def _protect_placeholders(text: str) -> tuple[str, list[str]]:
+    """把已有的占位符挪到临时槽位，避免后续正则把它当成「密钥赋值」再脱一次。
 
-        def _replace(match: re.Match[str], name: str = name) -> str:
-            notes.append(f"{name} · {_fingerprint(match.group(0))}")
+    为什么必须保护：`key=...` 那条规则会把 `{{secret:aws_access_key}}` 里的
+    `secret:aws_access_key` 当成一次赋值，产出一层套一层的
+    `{{secret:{{secret:secret}}}}`——占位符名字一长（≥12 字符）就会踩到。
+    """
+    slots: list[str] = []
+
+    def _take(match: re.Match[str]) -> str:
+        slots.append(match.group(0))
+        return f"{_SLOT_START}{len(slots) - 1}{_SLOT_END}"
+
+    return _PLACEHOLDER_RE.sub(_take, text), slots
+
+
+def _restore_placeholders(text: str, slots: list[str]) -> str:
+    """把临时槽位还原成占位符。"""
+    if not slots:
+        return text
+    return _SLOT_RE.sub(lambda match: slots[int(match.group(1))], text)
+
+
+def _apply_typed_patterns(
+    text: str, namer: _SecretNamer, sink: SecretSink | None, notes: list[str]
+) -> str:
+    """按已知凭据前缀替换（AWS / OpenAI / GitHub …）。"""
+    out = text
+    for pattern_name, pattern in _SECRET_PATTERNS:
+
+        def _replace(match: re.Match[str], pattern_name: str = pattern_name) -> str:
+            value = match.group(0)
+            name = namer.name_for(pattern_name, value)
+            if sink is not None:
+                sink(name, value)
+            notes.append(f"{name} · {_fingerprint(value)} → {{{{secret:{name}}}}}")
             return f"{{{{secret:{name}}}}}"
 
         out = pattern.sub(_replace, out)
+    return out
 
-    def _replace_assigned(match: re.Match[str]) -> str:
-        name = match.group(1).lower().replace("-", "_")
-        notes.append(f"{name} · {_fingerprint(match.group(3))}")
+
+def _apply_assigned_pattern(
+    text: str, namer: _SecretNamer, sink: SecretSink | None, notes: list[str]
+) -> str:
+    """替换 `api_key=...` 这类显式赋值（保留键名，只换值）。"""
+
+    def _replace(match: re.Match[str]) -> str:
+        base = match.group(1).lower().replace("-", "_")
+        value = match.group(3)
+        name = namer.name_for(base, value)
+        if sink is not None:
+            sink(name, value)
+        notes.append(f"{name} · {_fingerprint(value)} → {{{{secret:{name}}}}}")
         return f"{match.group(1)}{match.group(2)}{{{{secret:{name}}}}}"
 
-    out = _ASSIGNED_SECRET_RE.sub(_replace_assigned, out)
-    return out, notes
+    return _ASSIGNED_SECRET_RE.sub(_replace, text)
+
+
+def _redact_text(text: str, namer: _SecretNamer, sink: SecretSink | None) -> tuple[str, list[str]]:
+    """把命中的密钥替换成 {{secret:name}}，返回替换记录。
+
+    两段式替换：先按凭据前缀，再处理显式赋值。中间用临时槽位把已生成的
+    占位符保护起来——否则赋值规则会把 `{{secret:aws_access_key}}` 里的
+    `secret:aws_access_key` 当成一次赋值，套成 `{{secret:{{secret:secret}}}}`。
+    """
+    notes: list[str] = []
+    typed = _apply_typed_patterns(text, namer, sink, notes)
+    protected, slots = _protect_placeholders(typed)
+    out = _apply_assigned_pattern(protected, namer, sink, notes)
+    return _restore_placeholders(out, slots), notes
 
 
 def _redact(
-    text: str, blocks: list[tuple[Reference, str]]
+    text: str,
+    blocks: list[tuple[Reference, str]],
+    namer: _SecretNamer,
+    sink: SecretSink | None,
 ) -> tuple[str, list[tuple[Reference, str]], Stage]:
-    """对用户正文与引用材料同时脱敏——任何一条都不该把密钥送进模型。"""
+    """对用户正文与全部材料同时脱敏——任何一条都不该把密钥送进模型。"""
     start = time.perf_counter()
     before = len(text)
-    clean, notes = _redact_text(text)
+    clean, notes = _redact_text(text, namer, sink)
     clean_blocks: list[tuple[Reference, str]] = []
     for ref, content in blocks:
-        clean_content, block_notes = _redact_text(content)
+        clean_content, block_notes = _redact_text(content, namer, sink)
         notes.extend(f"{ref.value}: {note}" for note in block_notes)
         clean_blocks.append((ref, clean_content))
     changed = bool(notes)
@@ -429,7 +578,7 @@ def _redact(
         _stage(
             "redact",
             status="ok" if changed else "skip",
-            summary=f"{len(notes)} 处凭据已替换为占位符" if notes else "未发现凭据",
+            summary=f"{len(notes)} 处凭据已加密入库并替换为占位符" if notes else "未发现凭据",
             before=before,
             after=len(clean),
             items=len(notes),
@@ -461,21 +610,8 @@ def _dedupe_lines(text: str) -> tuple[str, int]:
     return "\n".join(out), removed
 
 
-def _budget(text: str, limit: int = MAX_TOTAL_CHARS) -> tuple[str, Stage]:
-    """超预算时先去噪（base64 / 重复行），仍超则中段截断。"""
-    start = time.perf_counter()
-    before = len(text)
-    if before <= limit:
-        return text, _stage(
-            "budget",
-            status="skip",
-            summary=f"{before} 字 · 未超预算（{limit}）",
-            before=before,
-            after=before,
-            ms=_elapsed_ms(start),
-            changed=False,
-        )
-
+def _denoise(text: str) -> tuple[str, list[str]]:
+    """去噪：移除 base64 块、折叠连续重复行。"""
     notes: list[str] = []
     work = text
     b64 = _BASE64_RE.findall(work)
@@ -485,29 +621,112 @@ def _budget(text: str, limit: int = MAX_TOTAL_CHARS) -> tuple[str, Stage]:
     work, removed = _dedupe_lines(work)
     if removed:
         notes.append(f"折叠重复行 ×{removed}")
-    if len(work) > limit:
-        truncated = len(work) - limit
-        marker = f"\n\n…（已截断 {truncated} 字）…\n\n"
-        budget = max(0, limit - len(marker))
-        head = int(budget * 0.6)
-        tail = budget - head
-        work = f"{work[:head]}{marker}{work[-tail:] if tail else ''}"
-        notes.append(f"中段截断 {truncated} 字")
+    return work, notes
 
-    return work, _stage(
-        "budget",
-        status="ok",
-        summary=" · ".join(notes),
-        before=before,
-        after=len(work),
-        ms=_elapsed_ms(start),
-        detail=f"{before} → {len(work)} 字",
-        changed=True,
+
+def _truncate(text: str, limit: int) -> str:
+    """中段截断：保留首尾，中间留一行说明，避免只剩开头看不出结论。"""
+    if len(text) <= limit:
+        return text
+    marker = f"\n\n…（已截断 {len(text) - limit} 字）…\n\n"
+    budget = max(0, limit - len(marker))
+    head = int(budget * 0.6)
+    tail = budget - head
+    return f"{text[:head]}{marker}{text[-tail:] if tail else ''}"
+
+
+def _trim_blocks(
+    blocks: list[tuple[Reference, str]], budget: int
+) -> tuple[list[tuple[Reference, str]], int]:
+    """按块均分材料预算；返回 (新块列表, 被裁剪的块数)。"""
+    if not blocks:
+        return [], 0
+    per = max(MIN_MATERIAL_CHARS, budget // len(blocks))
+    trimmed = 0
+    out: list[tuple[Reference, str]] = []
+    for ref, content in blocks:
+        if len(content) > per:
+            trimmed += 1
+            content = _truncate(content, per)
+        out.append((ref, content))
+    return out, trimmed
+
+
+def _denoise_blocks(
+    blocks: list[tuple[Reference, str]],
+) -> tuple[list[tuple[Reference, str]], list[str]]:
+    """对每份材料去噪，返回 (新块, 改动说明)；说明带来源名，便于在轨迹里定位。"""
+    notes: list[str] = []
+    out: list[tuple[Reference, str]] = []
+    for ref, content in blocks:
+        cleaned, block_notes = _denoise(content)
+        notes.extend(f"{ref.value} {note}" for note in block_notes)
+        out.append((ref, cleaned))
+    return out, notes
+
+
+def _shrink_materials(
+    blocks: list[tuple[Reference, str]], limit: int
+) -> tuple[list[tuple[Reference, str]], list[str]]:
+    """材料按预算份额裁剪：最多占 limit 的 MATERIAL_SHARE，剩下的留给正文。"""
+    available = sum(len(content) for _, content in blocks)
+    shrunk, trimmed = _trim_blocks(blocks, min(available, int(limit * MATERIAL_SHARE)))
+    return shrunk, ([f"材料裁剪 ×{trimmed}"] if trimmed else [])
+
+
+def _budget(
+    text: str, blocks: list[tuple[Reference, str]], limit: int | None = None
+) -> tuple[str, list[tuple[Reference, str]], Stage]:
+    """对「正文 + 材料」整体做预算：先去噪，再按份额裁剪，最后才截正文。
+
+    limit 缺省读模块常量（而不是写进默认参数）：测试要能改小预算验证裁剪。
+    """
+    limit = MAX_TOTAL_CHARS if limit is None else limit
+    start = time.perf_counter()
+    before = len(text) + sum(len(content) for _, content in blocks)
+    if before <= limit:
+        return (
+            text,
+            blocks,
+            _stage(
+                "budget",
+                status="skip",
+                summary=f"{before} 字 · 未超预算（{limit}）",
+                before=before,
+                after=before,
+                ms=_elapsed_ms(start),
+                changed=False,
+            ),
+        )
+
+    work, text_notes = _denoise(text)
+    work_blocks, block_notes = _denoise_blocks(blocks)
+    work_blocks, trim_notes = _shrink_materials(work_blocks, limit)
+    notes = [f"正文{note}" for note in text_notes] + block_notes + trim_notes
+    reserved = sum(len(content) for _, content in work_blocks)
+    work = _truncate(work, max(MIN_MATERIAL_CHARS, limit - reserved))
+    after = len(work) + reserved
+    if after < before:
+        notes.append(f"{before} → {after} 字")
+
+    return (
+        work,
+        work_blocks,
+        _stage(
+            "budget",
+            status="ok",
+            summary=" · ".join(notes),
+            before=before,
+            after=after,
+            ms=_elapsed_ms(start),
+            detail="\n".join(notes),
+            changed=True,
+        ),
     )
 
 
 def _compose(text: str, blocks: list[tuple[Reference, str]]) -> tuple[str, Stage]:
-    """拼出最终交给模型的文本：用户原话 + 引用材料附录。"""
+    """拼出最终交给模型的文本：用户原话 + 材料附录。"""
     start = time.perf_counter()
     before = len(text)
     if not blocks:
@@ -529,7 +748,7 @@ def _compose(text: str, blocks: list[tuple[Reference, str]]) -> tuple[str, Stage
     return merged, _stage(
         "compose",
         status="ok",
-        summary=f"追加 {len(blocks)} 份引用材料 · 最终 {len(merged)} 字 ≈ {tokens} token",
+        summary=f"追加 {len(blocks)} 份材料 · 最终 {len(merged)} 字 ≈ {tokens} token",
         before=before,
         after=len(merged),
         items=len(blocks),
@@ -551,20 +770,25 @@ def prepare(
     *,
     workspace_root: Path | None = None,
     remote_fetch: bool | None = None,
+    attachments: Sequence[Attachment] = (),
+    on_secret: SecretSink | None = None,
 ) -> PreparedInput:
-    """按 normalize → detect → expand → redact → budget → compose 顺序解析输入。
+    """按 normalize → detect → expand → attach → redact → budget → compose 解析输入。
 
     任何阶段都不抛异常：解析失败只影响该阶段的状态与材料完整性，
-    对话本身照常进行。
+    对话本身照常进行。`on_secret` 是凭据落库钩子——管线不认存储，
+    由网关接上保险箱；不传就只脱敏、不保存（占位符仍会出现在正文里）。
     """
     root = workspace_root if workspace_root is not None else default_workspace_root()
+    namer = _SecretNamer()
 
     text, normalize_stage = _normalize(user_input)
     refs, detect_stage = _detect(text, root)
     blocks, expand_stage = _expand(refs, root, _remote_fetch_enabled(remote_fetch))
-    text, blocks, redact_stage = _redact(text, blocks)
-    text, budget_stage = _budget(text)
-    text, compose_stage = _compose(text, blocks)
+    attached, attach_stage = _attach(attachments)
+    text, all_blocks, redact_stage = _redact(text, blocks + attached, namer, on_secret)
+    text, all_blocks, budget_stage = _budget(text, all_blocks)
+    text, compose_stage = _compose(text, all_blocks)
 
     return PreparedInput(
         original=user_input,
@@ -573,6 +797,7 @@ def prepare(
             normalize_stage,
             detect_stage,
             expand_stage,
+            attach_stage,
             redact_stage,
             budget_stage,
             compose_stage,

@@ -100,10 +100,12 @@ git fetch origin && git checkout main && git pull
 
 1. **框架隔离**：`import agentscope` 只允许出现在装配/工厂模块——当前边界为 `runtime/agent.py`、
    `runtime/supervisor.py`、`tools/catalog.py`、`executor/boundary.py`、`governance/policy.py`、
-   `memory/ledger.py`（以 `grep -rn 'agentscope' src/` 的实际结果为准）；这些模块构成对框架的隔离层，
-   网关（`main.py`）、编排协议（`runtime/runtime.py`）、可观测性（`observability/`）等一律通过协议或
-   工厂间接使用，不得散落 import。`runtime/events.py` 刻意靠 duck typing 不 import 框架，
-   以保持事件转译可用假事件测试。新增需要框架能力的装配点时，在此边界内集中并同步更新本清单。
+   `memory/ledger.py`、`secrets/middleware.py`（以 `grep -rn 'agentscope' src/` 的实际结果为准）；
+   这些模块构成对框架的隔离层，网关（`main.py`）、编排协议（`runtime/runtime.py`）、
+   可观测性（`observability/`）等一律通过协议或工厂间接使用，不得散落 import。`runtime/events.py`
+   刻意靠 duck typing 不 import 框架，以保持事件转译可用假事件测试。`secrets/middleware.py` 是
+   工具中间件的装配点（`ToolMiddlewareBase` 只能在框架内实现），密钥解密的调用方只看到
+   `Callable[[str], str | None]`。新增需要框架能力的装配点时，在此边界内集中并同步更新本清单。
 2. **编排与执行分离**：`runtime/` 只做编排，`executor/boundary.py` 管沙箱执行面。
 3. **过程态与源码分离**：运行态写 `workspace/`（已 gitignore），源码改动才进 git/PR。
 4. **能力用内置、不手搓**：权限、沙箱、记忆、Pipeline 一律用 AgentScope 2.x 内置类，

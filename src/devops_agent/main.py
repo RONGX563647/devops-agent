@@ -66,7 +66,11 @@ async def run_stream(
     - X-Request-ID 提供幂等键，重试不会写入重复 run。
     """
     runtime: AgentRuntime = request.app.state.runtime
-    recorder = RunRecorder(request_id=x_request_id or "")
+    # domain/model 由部署环境注入，观测数据才能反映真实运行上下文；
+    # 缺省保持 debug/空串，与 Echo 自检及既有测试兼容。
+    domain = os.environ.get("DEVOPS_AGENT_DOMAIN", "debug")
+    model = os.environ.get("DEVOPS_AGENT_MODEL", "")
+    recorder = RunRecorder(domain=domain, model=model, request_id=x_request_id or "")
 
     async def generate() -> AsyncIterator[str]:
         recorder.start(req.session_id, req.user_input)

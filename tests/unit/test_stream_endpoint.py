@@ -95,3 +95,25 @@ def test_legacy_run_still_works(echo_runtime: None) -> None:
     resp = client.post("/run", json={"session_id": "s1", "user_input": "hello"})
     assert resp.json() == {"result": "[s1] hello"}
     assert callable(main.select_runtime)
+
+
+def test_run_stream_injects_domain_model_from_env(
+    echo_runtime: None, monkeypatch: object, tmp_path: Path
+) -> None:
+    """domain/model 从环境注入，落库记录反映真实运行上下文。"""
+    db = tmp_path / "ctx.db"
+    monkeypatch.setenv("DEVOPS_AGENT_DB_PATH", str(db))  # type: ignore[attr-defined]
+    monkeypatch.setenv("DEVOPS_AGENT_DOMAIN", "delivery")  # type: ignore[attr-defined]
+    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen3.8-flash")  # type: ignore[attr-defined]
+
+    with client.stream(
+        "POST", "/run/stream", json={"session_id": "s1", "user_input": "hi"}
+    ) as resp:
+        body = "".join(resp.iter_text())
+    run_id = int(_frames(body)[-1]["run_id"])
+
+    with repo.connect(db) as conn:
+        run = repo.get_run(conn, run_id)
+        assert run is not None
+        assert run.domain == "delivery"
+        assert run.model == "qwen3.8-flash"

@@ -1,4 +1,4 @@
-/** 会话工作台：左侧会话栏 + 顶部会话标题 + tab 行，指标等作为对话内的 tab。 */
+/** 会话工作台：左侧会话栏 + 单行顶栏（会话标题、运行统计、视图 tab）。 */
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { SessionSidebar, aggregateSessions, useSessionRuns } from './SessionSidebar';
@@ -71,20 +71,20 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
           <span className="workspace-chip">
             {totalRuns} 次运行{failedRuns ? ` · ${failedRuns} 次失败` : ''}
           </span>
+          <nav className="workspace-tabs" role="tablist" aria-label="会话视图">
+            {TABS.map((t) => (
+              <button
+                key={t.key}
+                role="tab"
+                aria-selected={tab === t.key}
+                className={`workspace-tab ${tab === t.key ? 'active' : ''}`}
+                onClick={() => switchTab(t.key)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </nav>
         </header>
-        <nav className="workspace-tabs" role="tablist" aria-label="会话视图">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              role="tab"
-              aria-selected={tab === t.key}
-              className={`workspace-tab ${tab === t.key ? 'active' : ''}`}
-              onClick={() => switchTab(t.key)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
         <main className={`workspace-body${tab === 'chat' ? ' is-chat' : ''}`} role="tabpanel">
           {tab === 'chat' && (
             <ChatTab key={`${session ?? 'new'}-${newNonce}`} session={session} />

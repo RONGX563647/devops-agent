@@ -1,8 +1,9 @@
-/** 对话 tab：SSE 流式运行 + 消息列表（复用 useRunStream）。 */
+/** 对话 tab：SSE 流式运行 + 消息行（用户软底块 / 助手 Markdown / 过程时间线）。 */
 import { useEffect, useRef, useState } from 'react';
 import { useRunStream } from '../api/useRunStream';
 import type { ProcessEntry } from '../types';
-import { ProcessBlock } from './ProcessBlock';
+import { Markdown } from './Markdown';
+import { StepList } from './StepRow';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -47,7 +48,40 @@ const SAMPLES = [
   '这个仓库的 CI 流程是怎么跑的？',
   '解释一下 deployment 阶段的失败原因',
   '帮我给流水线加一个 lint 关卡',
+  '最近失败最多的阶段是哪个？',
 ];
+
+function SendIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M8 13V3.6M8 3.6 3.6 8M8 3.6 12.4 8"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function SparkIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <path
+        d="M10 3.2l1.5 4.1 4.1 1.5-4.1 1.5L10 14.4 8.5 10.3 4.4 8.8l4.1-1.5L10 3.2Z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M15.2 13.2l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7.7-1.9Z"
+        fill="currentColor"
+        opacity=".55"
+      />
+    </svg>
+  );
+}
 
 export function ChatTab({ session }: Props) {
   const stream = useRunStream();
@@ -147,48 +181,69 @@ export function ChatTab({ session }: Props) {
     }
   }
 
+  const empty = messages.length === 0;
+  const canSend = Boolean(input.trim()) && !stream.running;
+
   return (
     <div className="chat-wrap">
-      <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
+      <div
+        className={`chat-scroll${empty ? ' is-empty' : ''}`}
+        ref={scrollRef}
+        onScroll={handleScroll}
+      >
         <div className="chat-thread">
-          {messages.map((m, i) => (
-            <div className={`chat-msg ${m.role}`} key={i}>
-              {m.role === 'assistant' && m.steps && m.steps.length > 0 && (
-                <ProcessBlock
-                  steps={m.steps}
-                  running={stream.running && i === messages.length - 1}
-                  modelName={m.modelName ?? ''}
-                  inputTokens={m.inputTokens ?? 0}
-                  outputTokens={m.outputTokens ?? 0}
-                  startedAt={m.startedAt ?? null}
-                  endedAt={m.endedAt ?? null}
-                />
-              )}
-              {(m.text || m.error) && (
-                <div className={`chat-bubble ${m.error ? 'has-error' : ''}`}>{m.text}</div>
-              )}
-              {m.error && <div className="error">错误：{m.error}</div>}
-              {m.role === 'assistant' && m.text && (
-                <div className="chat-actions">
-                  <button onClick={() => void copy(m.text)}>复制</button>
-                  <button onClick={() => retry(i)} disabled={stream.running}>
-                    重试
-                  </button>
-                  <span className="chat-time">{formatClock(m.endedAt)}</span>
+          {messages.map((m, i) => {
+            if (m.role === 'user') {
+              return (
+                <div className="chat-msg user" key={i}>
+                  <div className="chat-bubble">{m.text}</div>
                 </div>
-              )}
-            </div>
-          ))}
-          {messages.length === 0 && (
+              );
+            }
+            const hasAnswer = Boolean(m.text) || Boolean(m.error);
+            return (
+              <div className={`chat-msg assistant${m.error ? ' has-error' : ''}`} key={i}>
+                {m.steps && <StepList steps={m.steps} />}
+                {m.text && (
+                  <div className="chat-bubble assistant-body">
+                    <Markdown content={m.text} />
+                  </div>
+                )}
+                {m.error && (
+                  <div className="chat-error-line">
+                    <span className="chat-error-tag">中断</span>
+                    <span>{m.error}</span>
+                  </div>
+                )}
+                {hasAnswer && (
+                  <div className="chat-actions">
+                    <button onClick={() => void copy(m.text)}>复制</button>
+                    <button onClick={() => retry(i)} disabled={stream.running}>
+                      重试
+                    </button>
+                    <span className="chat-time">{formatClock(m.endedAt)}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {empty && (
             <div className="chat-empty">
-              <p className="chat-empty-title">开始一次会话</p>
+              <span className="chat-empty-icon">
+                <SparkIcon />
+              </span>
+              <h2 className="chat-empty-title">开始一次会话</h2>
               <p className="chat-empty-hint">
-                描述你的问题，Agent 会边思考边执行，过程收在上方胶囊里，点开可看每一步。
+                描述现象，Agent 会读代码、跑流水线、翻日志。每一步都以一行记录留在回答上方，
+                点开就能看它到底调用了什么、拿回了什么。
               </p>
               <div className="chat-samples">
                 {SAMPLES.map((q) => (
                   <button key={q} className="chat-sample" onClick={() => runFrom(messages, q)}>
-                    {q}
+                    <span>{q}</span>
+                    <span className="chat-sample-arrow" aria-hidden="true">
+                      →
+                    </span>
                   </button>
                 ))}
               </div>
@@ -210,21 +265,32 @@ export function ChatTab({ session }: Props) {
               }
             }}
             disabled={stream.running}
-            placeholder="给 DevOps Agent 发消息…（Enter 发送，Shift+Enter 换行）"
+            placeholder="给 DevOps Agent 发消息…"
             rows={1}
           />
-          <button onClick={submit} disabled={stream.running || !input.trim()}>
-            {stream.running ? '运行中…' : '发送'}
-          </button>
-          {stream.running && (
-            <button className="ghost" onClick={stream.stop}>
-              停止
+          <div className="composer-bar">
+            <span className="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+            {stream.running && (
+              <button className="send-btn stop" onClick={stream.stop}>
+                停止
+              </button>
+            )}
+            <button
+              className={`send-btn${canSend ? ' ready' : ''}`}
+              onClick={submit}
+              disabled={!canSend}
+              aria-label="发送"
+            >
+              <SendIcon />
             </button>
-          )}
+          </div>
         </div>
         <div className="chat-meta">
-          事件 {stream.events.length} 帧 · 输入 token {stream.inputTokens} / 输出 token {stream.outputTokens}
-          {stream.runId !== null && ` · run #${stream.runId}`}
+          <span>{stream.events.length} 帧事件</span>
+          <span>
+            {stream.inputTokens} in / {stream.outputTokens} out
+          </span>
+          {stream.runId !== null && <span>run #{stream.runId}</span>}
         </div>
       </div>
     </div>

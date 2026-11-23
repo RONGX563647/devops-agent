@@ -20,3 +20,20 @@ jobs:
         run: mypy src
       - name: quality gates (config/gates.yaml)
         run: python scripts/check_gates.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: install
+        run: npm ci
+      - name: typecheck & build
+        run: npm run build

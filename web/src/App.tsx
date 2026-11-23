@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
+import { Cost } from './pages/Cost';
 import { Dashboard } from './pages/Dashboard';
+import { Quality } from './pages/Quality';
 import { RunDetail } from './pages/RunDetail';
 import { Runs } from './pages/Runs';
-import { Placeholder } from './pages/Placeholder';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -28,8 +29,8 @@ export default function App() {
               <Route path="/" element={<Dashboard />} />
               <Route path="/runs" element={<Runs />} />
               <Route path="/runs/:id" element={<RunDetail />} />
-              <Route path="/quality" element={<Placeholder title="质量评估" />} />
-              <Route path="/cost" element={<Placeholder title="成本性能" />} />
+              <Route path="/quality" element={<Quality />} />
+              <Route path="/cost" element={<Cost />} />
             </Routes>
           </main>
         </div>

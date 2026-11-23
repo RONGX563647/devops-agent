@@ -70,11 +70,22 @@ def _text(row: dict[str, object], key: str) -> str:
 
 
 def _summary_int(summary: dict[str, object], key: str) -> int:
-    return int(summary.get(key, 0) or 0)
+    return _to_int(summary.get(key))
 
 
 def _summary_float(summary: dict[str, object], key: str) -> float:
-    return float(summary.get(key, 0.0) or 0.0)
+    """把 summary 里的 object 安全转成 float；脏数据回退 0.0。"""
+    value = summary.get(key)
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0
 
 
 def _hard_failures(summary: dict[str, object]) -> dict[str, int]:

@@ -317,9 +317,7 @@ def build_agentscope_runtime(
     base = resolve_workdir(workdir)
     agent = build_agent(
         name="devops",
-        system_prompt=system_prompt
-        if system_prompt is not None
-        else build_system_prompt(base),
+        system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),
         model=build_chat_model(enable_search=web_search),
         toolkit=build_toolkit_for(resolved.tools, base, middlewares=[build_secret_middleware()]),
         middlewares=[ProfileNoteMiddleware(resolved)],

@@ -3,8 +3,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchRun, fetchRunHealth, fetchRuns, fetchSpans } from '../api/client';
-import type { Run, RunHealth, Span } from '../types';
+import type { ChatMessage, Run, RunHealth, Span } from '../types';
+import { clearAllHistory, saveMessages } from './history';
 import { RunTrace } from './RunTrace';
+import { resetStore } from './store';
 import { TraceTab } from './TraceTab';
 
 vi.mock('../api/client', () => ({
@@ -59,6 +61,8 @@ function wrap(node: React.ReactNode) {
 }
 
 beforeEach(() => {
+  resetStore();
+  clearAllHistory();
   vi.mocked(fetchRun).mockResolvedValue(makeRun(7, 's-one'));
   vi.mocked(fetchSpans).mockResolvedValue([span]);
   vi.mocked(fetchRunHealth).mockResolvedValue(health);
@@ -88,12 +92,59 @@ describe('RunTrace', () => {
 });
 
 describe('TraceTab', () => {
-  it('按会话过滤运行列表', async () => {
+  it('会话轨迹由消息派生：轮列表 + 工具入参/返回详情', async () => {
+    const messages: ChatMessage[] = [
+      {
+        id: 'u1',
+        role: 'user',
+        text: '为什么部署失败？',
+        at: '2026-11-23T10:00:00.000Z',
+        steps: [],
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '看日志发现镜像拉取超时。',
+        at: '2026-11-23T10:00:01.000Z',
+        steps: [
+          {
+            id: 'tool:t1',
+            kind: 'tool',
+            label: '调用工具 · bash',
+            detail: '',
+            state: 'success',
+            toolCallId: 't1',
+            at: '2026-11-23T10:00:01.000Z',
+            args: 'kubectl describe pod',
+            result: 'ImagePullBackOff',
+          },
+        ],
+        endedAt: '2026-11-23T10:00:04.000Z',
+        runId: 7,
+      },
+    ];
+    saveMessages('s-two', messages);
+    wrap(<TraceTab session="s-two" />);
+
+    expect(await screen.findByRole('heading', { name: '会话轨迹' })).toBeTruthy();
+    expect(screen.getAllByText('为什么部署失败？').length).toBeGreaterThan(0);
+    const tool = screen.getByRole('button', { name: /调用工具 · bash/ });
+    fireEvent.click(tool);
+    expect(await screen.findByText('入参')).toBeTruthy();
+    expect(screen.getByText('kubectl describe pod')).toBeTruthy();
+    expect(screen.getByText('返回')).toBeTruthy();
+    expect(screen.getByText('ImagePullBackOff')).toBeTruthy();
+  });
+
+  it('按会话过滤运行记录列表', async () => {
     const { container } = wrap(<TraceTab session="s-two" />);
+    fireEvent.click(await screen.findByRole('button', { name: /运行记录/ }));
     await waitFor(() => {
-      expect(container.querySelector('tbody')?.textContent).toContain('s-two');
+      expect(container.querySelectorAll('tbody tr')).toHaveLength(1);
     });
-    expect(container.querySelector('tbody')?.textContent).not.toContain('s-one');
+    // 只有 s-two 的 run #8；s-one 的 run #7 不应出现
+    expect(container.querySelector('tbody')?.textContent).toContain('#8');
+    expect(container.querySelector('tbody')?.textContent).not.toContain('#7');
   });
 
   it('点击运行进入轨迹详情并可返回', async () => {

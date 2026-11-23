@@ -148,7 +148,7 @@ jobs:
 
       # 审查后把「已审 SHA + 轮次」写回状态 issue，作为下次增量 base 与防循环依据
       - name: Save review state
-        if: steps.state.outputs.skip != 'true'
+        if: steps.state.outputs.skip != 'true' && steps.ctx.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE: ${{ steps.state.outputs.issue }}

@@ -172,6 +172,41 @@ def parse_external_answers(payload: list[dict[str, Any]]) -> list[ExternalAnswer
     return parsed
 
 
+def _index_answers(answers: tuple[dict[str, Any], ...]) -> dict[str, dict[str, Any]]:
+    """按问题原文索引答案；缺 question 或重复回答都直接拒绝。"""
+    by_question: dict[str, dict[str, Any]] = {}
+    for answer_item in answers:
+        text_key = str(answer_item.get("question", "")).strip()
+        if not text_key:
+            raise ValueError("答案缺少 question")
+        if text_key in by_question:
+            raise ValueError(f"问题重复回答: {text_key}")
+        by_question[text_key] = answer_item
+    return by_question
+
+
+def _selected_labels(question: dict[str, Any], picked: dict[str, Any]) -> list[str]:
+    """只接受服务端给出的选项 label；单选最多一个。"""
+    options = question.get("options") or []
+    allowed = {str(option.get("label", "")) for option in options}
+    raw_selected = picked.get("selected")
+    selected = [str(value) for value in raw_selected] if isinstance(raw_selected, list) else []
+    unknown = [value for value in selected if value not in allowed]
+    if unknown:
+        raise ValueError(f"不存在的选项: {', '.join(unknown)}")
+    if not question.get("multi_select", False) and len(selected) > 1:
+        raise ValueError("单选题只能选一个选项")
+    return selected
+
+
+def _other_text(picked: dict[str, Any]) -> str:
+    """Other 自由输入：只接收字符串，去首尾空格。"""
+    other = picked.get("other")
+    if other is not None and not isinstance(other, str):
+        raise ValueError("other 必须是字符串")
+    return other.strip() if isinstance(other, str) else ""
+
+
 def validate_answers(
     questions: list[dict[str, Any]],
     answers: tuple[dict[str, Any], ...],
@@ -181,15 +216,7 @@ def validate_answers(
     服务端保留问题与选项的权威副本：客户端只能从给定 label 里选，
     不能改写问题文本或塞入不存在的选项。
     """
-    by_question: dict[str, dict[str, Any]] = {}
-    for answer_item in answers:
-        text_key = str(answer_item.get("question", "")).strip()
-        if not text_key:
-            raise ValueError("答案缺少 question")
-        if text_key in by_question:
-            raise ValueError(f"问题重复回答: {text_key}")
-        by_question[text_key] = answer_item
-
+    by_question = _index_answers(answers)
     normalized: list[dict[str, Any]] = []
     for question in questions:
         text = str(question.get("question", ""))
@@ -197,24 +224,10 @@ def validate_answers(
         picked = by_question.get(text)
         if picked is None:
             raise ValueError(f"缺少问题的答案: {label or text}")
-
-        options = question.get("options") or []
-        allowed = {str(option.get("label", "")) for option in options}
-        raw_selected = picked.get("selected")
-        selected = [str(value) for value in raw_selected] if isinstance(raw_selected, list) else []
-        unknown = [value for value in selected if value not in allowed]
-        if unknown:
-            raise ValueError(f"不存在的选项: {', '.join(unknown)}")
-        if not question.get("multi_select", False) and len(selected) > 1:
-            raise ValueError("单选题只能选一个选项")
-
-        other = picked.get("other")
-        if other is not None and not isinstance(other, str):
-            raise ValueError("other 必须是字符串")
-        other_text = other.strip() if isinstance(other, str) else ""
+        selected = _selected_labels(question, picked)
+        other_text = _other_text(picked)
         if not selected and not other_text:
             raise ValueError(f"问题未作答: {label or text}")
-
         normalized.append(
             {
                 "question": text,

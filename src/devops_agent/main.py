@@ -269,6 +269,16 @@ def _park(
     )
 
 
+def _question_frame(runtime: AgentRuntime, recorder: RunRecorder) -> str | None:
+    """有 AskUser 待回答时生成 parked 帧；没有则返回 None。"""
+    if pending_kind_of(runtime) != "question":
+        return None
+    questions = pending_questions_of(runtime)
+    if not questions:
+        return None
+    return _park(runtime, recorder, kind="question", questions=questions)
+
+
 async def _stream_entry(
     entry: SessionEntry,
     recorder: RunRecorder,
@@ -283,11 +293,10 @@ async def _stream_entry(
 
     runtime = entry.runtime
     # AskUser 走 external execution：先处理提问，再处理权限确认。
-    if pending_kind_of(runtime) == "question":
-        questions = pending_questions_of(runtime)
-        if questions:
-            yield _park(runtime, recorder, kind="question", questions=questions)
-            return
+    question = _question_frame(runtime, recorder)
+    if question:
+        yield question
+        return
 
     pending = pending_of(runtime)
     if pending and _bump_asks(recorder.run_id) > ASK_LIMIT:
@@ -296,11 +305,10 @@ async def _stream_entry(
         if callable(resume):
             async for frame in _frames(resume(_rejections(pending)), recorder):
                 yield frame
-            if pending_kind_of(runtime) == "question":
-                questions = pending_questions_of(runtime)
-                if questions:
-                    yield _park(runtime, recorder, kind="question", questions=questions)
-                    return
+            question = _question_frame(runtime, recorder)
+            if question:
+                yield question
+                return
             pending = pending_of(runtime)
     if pending:
         yield _park(runtime, recorder, kind="confirm", tool_calls=pending)

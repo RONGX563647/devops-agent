@@ -335,6 +335,25 @@ class AgentScopeRuntime:
         async for event in self._agent.reply_stream(self.confirm_event(decisions)):
             yield event_to_dict(event)
 
+    @staticmethod
+    def _answer_result(block: ToolCallBlock, answer: ExternalAnswer) -> ToolResultBlock:
+        """把一条用户回答转成框架的 ToolResultBlock（问题原文以服务端为准）。"""
+        params = AskUserParams.model_validate_json(block.input)
+        questions = [q.model_dump(mode="json") for q in params.questions]
+        normalized = validate_answers(questions, answer.answers)
+        meta = AskUserMetadata(answers=[AskUserAnswer(**item) for item in normalized])
+        summary = "\n".join(
+            f"Q: {item['question']}\nA: {', '.join(item['selected']) or (item['other'] or '')}"
+            for item in normalized
+        )
+        return ToolResultBlock(
+            id=block.id,
+            name=block.name,
+            output=summary,
+            state=ToolResultState.SUCCESS,
+            metadata=meta.model_dump(mode="json"),
+        )
+
     def external_event(self, answers: Sequence[ExternalAnswer]) -> ExternalExecutionResultEvent:
         """把前端答案组装成框架的 external execution 结果。
 
@@ -346,23 +365,7 @@ class AgentScopeRuntime:
             block = blocks.get(answer.tool_call_id)
             if block is None:
                 raise ValueError(f"未知的工具调用: {answer.tool_call_id}")
-            params = AskUserParams.model_validate_json(block.input)
-            questions = [q.model_dump(mode="json") for q in params.questions]
-            normalized = validate_answers(questions, answer.answers)
-            meta = AskUserMetadata(answers=[AskUserAnswer(**item) for item in normalized])
-            summary = "\n".join(
-                f"Q: {item['question']}\nA: {', '.join(item['selected']) or (item['other'] or '')}"
-                for item in normalized
-            )
-            results.append(
-                ToolResultBlock(
-                    id=block.id,
-                    name=block.name,
-                    output=summary,
-                    state=ToolResultState.SUCCESS,
-                    metadata=meta.model_dump(mode="json"),
-                )
-            )
+            results.append(self._answer_result(block, answer))
         if not results:
             raise ValueError("没有匹配的待回答调用")
         reply = self._agent.state.get_reply_message(self._agent.name)

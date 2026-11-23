@@ -109,9 +109,26 @@ beforeEach(() => {
   vi.mocked(fetchInputStages).mockResolvedValue(persisted);
   vi.mocked(fetchToolSchemas).mockResolvedValue([]);
   vi.mocked(fetchContext).mockResolvedValue({
+    profile: 'workspace',
+    profile_label: '工作区可写',
     system_prompt: '你是 DevOps 助手。',
     system_prompt_chars: 12,
-    tools: [{ name: 'Bash', description: '执行命令' }],
+    system_prompt_tokens: 7,
+    tools: [
+      {
+        name: 'Bash',
+        description: '执行命令',
+        schema_chars: 120,
+        tokens: 30,
+        parameters: { type: 'object', properties: { cmd: { type: 'string' } } },
+      },
+    ],
+    tools_chars: 120,
+    tools_tokens: 30,
+    prefix_tokens: 37,
+    prefix_fingerprint: 'a1b2c3d4',
+    policy_note: '本会话可在工作区内建/删/改文件。',
+    policy_note_tokens: 12,
     workdir: '/workspace',
   });
   vi.mocked(fetchRuns).mockResolvedValue({

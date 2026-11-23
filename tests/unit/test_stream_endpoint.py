@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from devops_agent import main
 from devops_agent.main import app
 from devops_agent.observability import repository as repo
 from devops_agent.runtime.runtime import EchoRuntime
@@ -115,13 +114,6 @@ def test_run_stream_sends_anti_buffering_headers(
 
     # 首帧注释心跳：让代理与浏览器在模型推理空窗期就确认流已建立
     assert body.startswith(": ping")
-
-
-def test_legacy_run_still_works(echo_runtime: None) -> None:
-    """非流式 /run 契约保持不变。"""
-    resp = client.post("/run", json={"session_id": "s1", "user_input": "hello"})
-    assert resp.json() == {"result": "[s1] hello"}
-    assert callable(main.select_runtime)
 
 
 def test_run_stream_injects_domain_model_from_env(

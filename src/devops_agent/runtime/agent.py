@@ -158,11 +158,6 @@ def build_chat_model() -> OpenAIChatModel:
     return OpenAIChatModel(credential=credential, model=model_name, stream=True)
 
 
-def text_from_msg(msg: Msg) -> str:
-    """从 Agent 回复消息中提取纯文本（忽略 thinking/tool 块）。"""
-    return "".join(block.text for block in msg.get_content_blocks("text"))
-
-
 def _state_for(profile: PermissionProfile, state: AgentState | None) -> AgentState:
     """准备跨轮状态：没有就新建；有但档位变了就重建权限上下文。
 
@@ -177,7 +172,7 @@ def _state_for(profile: PermissionProfile, state: AgentState | None) -> AgentSta
 
 
 class AgentScopeRuntime:
-    """真实 Agent 运行时：把异步 Agent.reply 适配到 AgentRuntime 协议。"""
+    """真实 Agent 运行时：把 Agent.reply_stream 适配到 AgentRuntime 协议。"""
 
     def __init__(self, agent: Agent, *, profile: PermissionProfile | None = None) -> None:
         self._agent = agent
@@ -194,10 +189,6 @@ class AgentScopeRuntime:
             content=[TextBlock(type="text", text=user_input, id="input", created_at="")],
             role="user",
         )
-
-    async def run(self, session_id: str, user_input: str) -> str:
-        reply = await self._agent.reply(self._make_msg(session_id, user_input))
-        return text_from_msg(reply)
 
     async def stream(self, session_id: str, user_input: str) -> AsyncIterator[dict[str, Any]]:
         """消费 AgentScope reply_stream，逐个转成框架无关的 dict 往外吐。

@@ -15,10 +15,6 @@ from typing import Any, Protocol
 class AgentRuntime(Protocol):
     """Agent 运行时协议（异步）。"""
 
-    async def run(self, session_id: str, user_input: str) -> str:
-        """执行一次 Agent 调用，返回结果文本。"""
-        ...
-
     def stream(self, session_id: str, user_input: str) -> AsyncIterator[dict[str, Any]]:
         """流式执行，逐个吐出可观测事件 dict（普通数据，框架无关）。"""
         ...
@@ -29,9 +25,6 @@ class EchoRuntime:
 
     真实 Agent 运行时由 supervisor 装配后注入；此类不 import agentscope。
     """
-
-    async def run(self, session_id: str, user_input: str) -> str:
-        return f"[{session_id}] {user_input}"
 
     async def stream(self, session_id: str, user_input: str) -> AsyncIterator[dict[str, Any]]:
         """占位流式实现：吐出最小事件序列，供网关与前端自检。"""

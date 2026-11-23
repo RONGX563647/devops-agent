@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from devops_agent import main
 from devops_agent.main import app
-from devops_agent.runtime.runtime import AgentRuntime, EchoRuntime
+from devops_agent.runtime.runtime import EchoRuntime
 
 client = TestClient(app)
 
@@ -16,42 +16,10 @@ def test_health() -> None:
     assert resp.json() == {"status": "ok"}
 
 
-def test_run_echo() -> None:
-    """Echo 回显契约：显式注入 EchoRuntime。
-
-    不依赖"环境里没有 API key"——开发者本地 .env 有凭据时，
-    select_runtime 会选真实模型，这条测试就会因环境差异而失败。
-    """
-    original = app.state.runtime
-    app.state.runtime = EchoRuntime()
-    try:
-        resp = client.post("/run", json={"session_id": "s1", "user_input": "hello"})
-        assert resp.status_code == 200
-        assert resp.json() == {"result": "[s1] hello"}
-    finally:
-        app.state.runtime = original
-
-
-def test_run_requires_fields() -> None:
-    resp = client.post("/run", json={"session_id": "s1"})
-    assert resp.status_code == 422
-
-
-def test_run_uses_injected_runtime() -> None:
-    """替换 app.state.runtime 即可改变 /run 行为，无需改 env 或重启。"""
-
-    class StubRuntime:
-        async def run(self, session_id: str, user_input: str) -> str:
-            return f"stub:{session_id}:{user_input}"
-
-    stub: AgentRuntime = StubRuntime()
-    original = app.state.runtime
-    app.state.runtime = stub
-    try:
-        resp = client.post("/run", json={"session_id": "s9", "user_input": "hi"})
-        assert resp.json() == {"result": "stub:s9:hi"}
-    finally:
-        app.state.runtime = original
+def test_run_endpoint_is_removed() -> None:
+    """非流式 /run 已下线：输入必须经流式端点走解析与事件落库。"""
+    resp = client.post("/run", json={"session_id": "s1", "user_input": "hello"})
+    assert resp.status_code == 404
 
 
 def test_select_runtime_is_exposed() -> None:

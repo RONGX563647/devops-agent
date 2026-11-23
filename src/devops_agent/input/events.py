@@ -46,7 +46,10 @@ def stage_event(stage: Stage, created_at: str | None = None) -> dict[str, object
 
 def end_event(prepared: PreparedInput, created_at: str | None = None) -> dict[str, object]:
     effective = prepared.effective
+    attachments = next((stage.items for stage in prepared.stages if stage.stage == "attach"), 0)
     counts: list[str] = []
+    if attachments:
+        counts.append(f"{attachments} 附件")
     if prepared.references:
         counts.append(f"{len(prepared.references)} 引用")
     if prepared.redactions:

@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import type { StreamEvent } from '../types';
-import { applyEvent, consumeStream, parseFrame } from './useRunStream';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ParseStage, StreamEvent } from '../types';
+import { applyEvent, consumeStream, parseFrame, parseSummary, streamRun } from './useRunStream';
 import { INITIAL_STATE } from './useRunStream';
 import type { StreamState } from './useRunStream';
 
@@ -8,6 +8,10 @@ const INITIAL: StreamState = {
   ...INITIAL_STATE,
   running: true,
 };
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('输入解析事件', () => {
   it('折叠为一条 parse 步骤：START 建行、STAGE 追加、END 收尾', () => {
@@ -260,6 +264,94 @@ describe('applyEvent', () => {
     const next = applyEvent(INITIAL, { type: 'CUSTOM' });
     expect(next.steps).toHaveLength(0);
     expect(next.eventCount).toBe(1);
+  });
+});
+
+describe('parseSummary', () => {
+  const stage = (over: Partial<ParseStage>): ParseStage => ({
+    stage: 'normalize',
+    label: '',
+    status: 'ok',
+    summary: '',
+    before: 0,
+    after: 0,
+    items: 0,
+    ms: 0,
+    detail: '',
+    changed: false,
+    failed: 0,
+    ...over,
+  });
+
+  it('只列有内容的计数，附件与引用并列', () => {
+    const text = parseSummary([
+      stage({ stage: 'attach', items: 2, changed: true }),
+      stage({ stage: 'detect', items: 1, changed: true }),
+      stage({ stage: 'redact', items: 3, changed: true }),
+      stage({ stage: 'budget', failed: 1 }),
+    ]);
+    expect(text).toBe('4/4 阶段生效 · 2 附件 · 1 引用 · 3 脱敏 · 1 处降级');
+  });
+
+  it('全阶段无需处理时只留阶段计数', () => {
+    expect(parseSummary([stage({ stage: 'normalize' }), stage({ stage: 'budget' })])).toBe(
+      '0/2 阶段生效',
+    );
+  });
+});
+
+describe('streamRun', () => {
+  function okStream(): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder();
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"RUN_DONE","text":"ok"}\n\n'));
+        controller.close();
+      },
+    });
+  }
+
+  it('请求体带上附件 id，正文留在服务端', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(okStream(), { status: 200 }));
+    const events: StreamEvent[] = [];
+
+    await streamRun(
+      's-1',
+      '看下这个文件',
+      (event) => events.push(event),
+      new AbortController().signal,
+      'req-1',
+      ['a1b2c3d4e5f60718'],
+    );
+
+    const [url, init] = spy.mock.calls[0];
+    expect(url).toBe('/run/stream');
+    expect(JSON.parse(String(init?.body))).toEqual({
+      session_id: 's-1',
+      user_input: '看下这个文件',
+      attachments: ['a1b2c3d4e5f60718'],
+    });
+    expect(events.map((event) => event.type)).toEqual(['RUN_DONE']);
+  });
+
+  it('不传附件时字段为空数组，后端按无附件处理', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(okStream(), { status: 200 }));
+
+    await streamRun('s-1', 'hi', () => {}, new AbortController().signal, 'req-2');
+
+    const body = JSON.parse(String(spy.mock.calls[0][1]?.body));
+    expect(body.attachments).toEqual([]);
+  });
+
+  it('非 2xx 抛错，交给 store 记成中断', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 500 }));
+    await expect(
+      streamRun('s-1', 'hi', () => {}, new AbortController().signal, 'req-3'),
+    ).rejects.toThrow('流式请求失败 500');
   });
 });
 

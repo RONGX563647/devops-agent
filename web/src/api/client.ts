@@ -1,11 +1,13 @@
 /** 观测 API 客户端：只做 fetch + JSON 解析，缓存/轮询交给 TanStack Query。 */
 
 import type {
+  Attachment,
   EvalTrends,
   InputStage,
   Run,
   RunHealth,
   RunList,
+  SecretMeta,
   Span,
   Summary,
   TimePoint,
@@ -34,6 +36,32 @@ export function fetchRuns(q: RunQuery = {}): Promise<RunList> {
   if (q.offset) params.set('offset', String(q.offset));
   const suffix = params.toString();
   return getJson<RunList>(`/api/runs${suffix ? `?${suffix}` : ''}`);
+}
+
+/** 上传一份文件：服务端抽好正文后只回元信息，正文不回传浏览器。 */
+export async function uploadAttachment(file: File): Promise<Attachment> {
+  const form = new FormData();
+  form.append('file', file);
+  const resp = await fetch('/api/attachments', { method: 'POST', body: form });
+  if (!resp.ok) {
+    // 413 是体积超限：把服务端的原因透出来，比「请求失败」有用得多
+    const detail = resp.status === 413 ? '文件超过上传上限' : `上传失败 ${resp.status}`;
+    throw new Error(detail);
+  }
+  return (await resp.json()) as Attachment;
+}
+
+export async function deleteAttachment(id: string): Promise<void> {
+  await fetch(`/api/attachments/${id}`, { method: 'DELETE' });
+}
+
+export function fetchSecrets(): Promise<SecretMeta[]> {
+  return getJson<SecretMeta[]>('/api/secrets');
+}
+
+export async function deleteSecret(name: string): Promise<void> {
+  const resp = await fetch(`/api/secrets/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  if (!resp.ok) throw new Error(`删除失败 ${resp.status}`);
 }
 
 export function fetchRun(id: number): Promise<Run> {

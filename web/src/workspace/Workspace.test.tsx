@@ -125,10 +125,11 @@ describe('aggregateSessions', () => {
 });
 
 describe('Workspace', () => {
-  it('渲染五个 tab 且默认选中 chat', () => {
+  it('渲染六个 tab 且默认选中 chat', () => {
     renderWorkspace();
-    expect(screen.getAllByRole('tab')).toHaveLength(5);
+    expect(screen.getAllByRole('tab')).toHaveLength(6);
     expect(screen.getByRole('tab', { name: '对话' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: '密钥' })).toBeTruthy();
     expect(screen.getByText('开始一次会话')).toBeTruthy();
   });
 

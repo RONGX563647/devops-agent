@@ -177,3 +177,100 @@ def test_estimate_tokens_is_positive_for_empty() -> None:
 def test_package_reexports() -> None:
     assert input_pkg.prepare is pipe.prepare
     assert callable(input_pkg.stage_event)
+
+
+def _attachment(name: str, text: str, problem: str = "") -> input_pkg.Attachment:
+    return input_pkg.Attachment(
+        id="a" * 16, name=name, size=len(text), suffix=".md", text=text, problem=problem
+    )
+
+
+def test_attach_skips_when_no_files() -> None:
+    prepared = pipe.prepare("纯文本", workspace_root=None)
+    stage = _stage(prepared, "attach")
+    assert stage.status == "skip"
+    assert stage.changed is False
+    assert "未附加文件" == stage.summary
+
+
+def test_attach_merges_file_text_into_context() -> None:
+    prepared = pipe.prepare(
+        "看下这份日志", workspace_root=None, attachments=[_attachment("app.log", "ERROR boom")]
+    )
+    attach = _stage(prepared, "attach")
+    assert attach.items == 1
+    assert attach.changed is True
+    assert "1 份附件已读取" == attach.summary
+    assert "ERROR boom" in prepared.text
+    # 附件进入的是材料附录，而不是用户原话
+    assert prepared.text.startswith("看下这份日志")
+
+
+def test_attach_reports_failed_file_without_breaking_turn() -> None:
+    prepared = pipe.prepare(
+        "分析", workspace_root=None, attachments=[_attachment("blob.bin", "", "二进制文件")]
+    )
+    attach = _stage(prepared, "attach")
+    assert attach.status == "error"
+    assert attach.failed == 1
+    assert prepared.degraded == 1
+    assert "分析" in prepared.text
+
+
+def test_attachment_text_is_redacted_before_model() -> None:
+    """上传文件里的密钥同样不能进上下文——脱敏对正文与材料一视同仁。"""
+    prepared = pipe.prepare(
+        "看看配置",
+        workspace_root=None,
+        attachments=[_attachment(".env", "OPENAI=sk-abcdefghijklmnopqrstuvwxyz012345")],
+    )
+    assert "sk-abcdefghijklmnopqrstuvwxyz012345" not in prepared.text
+    assert "{{secret:openai_key}}" in prepared.text
+    assert _stage(prepared, "redact").items == 1
+
+
+def test_secret_sink_receives_detected_value() -> None:
+    captured: list[tuple[str, str]] = []
+    pipe.prepare(
+        "key=sk-abcdefghijklmnopqrstuvwxyz012345",
+        workspace_root=None,
+        on_secret=lambda name, value: captured.append((name, value)),
+    )
+    assert captured == [("openai_key", "sk-abcdefghijklmnopqrstuvwxyz012345")]
+
+
+def test_different_secrets_get_distinct_placeholder_names() -> None:
+    """两把不同的 key 不能共用一个占位符，否则注入时必然张冠李戴。"""
+    first = "sk-" + "a" * 30
+    second = "sk-" + "b" * 30
+    prepared = pipe.prepare(f"{first} 和 {second}", workspace_root=None)
+    assert "{{secret:openai_key}}" in prepared.text
+    assert "{{secret:openai_key_2}}" in prepared.text
+
+
+def test_same_secret_reuses_placeholder() -> None:
+    secret = "sk-" + "c" * 30
+    prepared = pipe.prepare(f"{secret} 再贴一次 {secret}", workspace_root=None)
+    assert prepared.text.count("{{secret:openai_key}}") == 2
+    assert "openai_key_2" not in prepared.text
+
+
+def test_budget_trims_material_before_user_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """材料再多也不能把用户原话挤没：先按份额裁材料，正文最后才动。"""
+    monkeypatch.setattr(pipe, "MAX_TOTAL_CHARS", 600)
+    prepared = pipe.prepare(
+        "一句话问题",
+        workspace_root=None,
+        # 每行都不同：重复行会被去噪折叠掉，就测不到「按份额裁剪」这条路径了
+        attachments=[_attachment("big.log", "\n".join(f"第 {i} 行 内容" for i in range(400)))],
+    )
+    budget = _stage(prepared, "budget")
+    assert budget.status == "ok"
+    assert "材料裁剪" in budget.summary
+    assert "一句话问题" in prepared.text
+    assert len(prepared.text) < 2000
+
+
+def test_budget_keeps_short_material_untouched() -> None:
+    prepared = pipe.prepare("问题", workspace_root=None, attachments=[_attachment("a.md", "材料")])
+    assert _stage(prepared, "budget").status == "skip"

@@ -1,10 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import type { ChatMessage, ParseStage } from '../types';
+import type { Attachment, ChatMessage, ParseStage } from '../types';
 import { turnsFromMessages } from './trace';
 
 function user(id: string, text: string, at: string): ChatMessage {
   return { id, role: 'user', text, at, steps: [] };
 }
+
+/** 一份已解析完成的附件：轨迹只关心名字与体积，正文留在服务端。 */
+const uploaded: Attachment = {
+  id: 'a1b2c3d4e5f60718',
+  name: 'run.log',
+  size: 900,
+  suffix: '.log',
+  chars: 40,
+  truncated: false,
+  status: 'ok',
+};
 
 describe('turnsFromMessages', () => {
   it('按用户消息切分轮次，统计工具与耗时', () => {
@@ -123,7 +134,67 @@ describe('turnsFromMessages', () => {
     expect(turns[0].failed).toBe(false);
     expect(turns[0].items.map((item) => item.kind)).toEqual(['parse', 'text']);
     expect(turns[0].items[0].stages).toHaveLength(3);
-    expect(turns[0].parse).toEqual({ refs: 1, redactions: 1, degraded: 1 });
+    expect(turns[0].parse).toEqual({ attachments: 0, refs: 1, redactions: 1, degraded: 1 });
     expect(turns[0].tools).toBe(0);
+  });
+
+  it('附件数取用户消息上挂的文件数，无附件时缺省', () => {
+    const turns = turnsFromMessages([
+      { ...user('u1', '看下 run.log', '2026-11-23T10:00:00.000Z'), attachments: [uploaded] },
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: 'ok',
+        at: '2026-11-23T10:00:01.000Z',
+        endedAt: '2026-11-23T10:00:01.000Z',
+        steps: [],
+      },
+      user('u2', '再来一次', '2026-11-23T10:00:02.000Z'),
+    ]);
+
+    expect(turns[0].attachments).toBe(1);
+    expect(turns[1].attachments).toBeUndefined();
+  });
+
+  it('附件读取阶段计入轮级计数，与脱敏互不覆盖', () => {
+    const stage = (over: Partial<ParseStage> & { stage: string }): ParseStage => ({
+      label: '',
+      status: 'ok',
+      summary: '',
+      before: 0,
+      after: 0,
+      items: 0,
+      ms: 0,
+      detail: '',
+      changed: true,
+      failed: 0,
+      ...over,
+    });
+    const turns = turnsFromMessages([
+      user('u1', '看下 ./a.md', '2026-11-23T10:00:00.000Z'),
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '',
+        at: '2026-11-23T10:00:01.000Z',
+        steps: [
+          {
+            id: 'parse:input-parse',
+            kind: 'parse',
+            label: '输入解析',
+            detail: '',
+            state: 'success',
+            at: '2026-11-23T10:00:01.000Z',
+            parseStages: [
+              stage({ stage: 'attach', items: 1 }),
+              stage({ stage: 'detect', items: 1 }),
+              stage({ stage: 'redact', items: 2 }),
+            ],
+          },
+        ],
+      },
+    ]);
+
+    expect(turns[0].parse).toEqual({ attachments: 1, refs: 1, redactions: 2, degraded: 0 });
   });
 });

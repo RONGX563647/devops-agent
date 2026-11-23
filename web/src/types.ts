@@ -160,6 +160,27 @@ export interface ProcessEntry {
   parseStages?: ParseStage[];
 }
 
+/** 一份上传附件：服务端返回元信息，正文留在服务端由解析管线取用。 */
+export interface Attachment {
+  id: string;
+  name: string;
+  size: number;
+  suffix: string;
+  chars: number;
+  truncated: boolean;
+  /** uploading 是本地乐观态，服务端只会返回 ok / error。 */
+  status: 'ok' | 'error' | 'uploading';
+  problem?: string;
+  /** 前若干字符的预览，够确认「传对了文件」。 */
+  preview?: string;
+}
+
+/** 输入框里的一份待发送附件：带上本地主键，避免同名文件互相覆盖。 */
+export interface PendingAttachment extends Attachment {
+  /** 本地唯一键（服务端返回前用临时 id，返回后仍是它）。 */
+  key: string;
+}
+
 /** 一条会话消息：用户消息或一轮助手回答（助手消息携带该轮过程步骤）。 */
 export interface ChatMessage {
   id: string;
@@ -168,6 +189,8 @@ export interface ChatMessage {
   /** 消息时间（ISO）。 */
   at: string;
   steps: ProcessEntry[];
+  /** 该条用户消息附带的文件（仅 user 消息）。 */
+  attachments?: Attachment[];
   error?: string;
   pending?: boolean;
   /** 用户主动停止且没有任何产出时置位，界面显示「已停止」。 */
@@ -227,5 +250,17 @@ export interface TraceTurn {
   failed: boolean;
   items: TraceStep[];
   /** 该轮输入解析的计数摘要（无解析时缺省）。 */
-  parse?: { refs: number; redactions: number; degraded: number };
+  parse?: { refs: number; redactions: number; degraded: number; attachments: number };
+  /** 该轮用户消息附带的文件数（无附件时缺省）。 */
+  attachments?: number;
+}
+
+/** 保险箱里的一条凭据（GET /api/secrets）：只给元信息，没有值。 */
+export interface SecretMeta {
+  name: string;
+  hint: string;
+  source: string;
+  created_at: string;
+  last_used_at: string | null;
+  uses: number;
 }

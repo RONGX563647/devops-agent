@@ -9,15 +9,19 @@ from typing import Any
 
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from devops_agent.env import load_env
+from devops_agent.input.api import router as attachments_router
+from devops_agent.input.attachments import Attachment, AttachmentStore
 from devops_agent.input.events import events as parse_events
 from devops_agent.input.pipeline import PreparedInput, prepare
 from devops_agent.observability.api import router as observability_router
 from devops_agent.observability.recorder import RunRecorder
 from devops_agent.runtime.agent import build_agentscope_runtime
 from devops_agent.runtime.runtime import AgentRuntime, EchoRuntime
+from devops_agent.secrets.api import router as secrets_router
+from devops_agent.secrets.vault import get_vault
 
 
 def select_runtime() -> AgentRuntime:
@@ -35,11 +39,15 @@ app = FastAPI(title="devops-agent")
 load_env()
 app.state.runtime = select_runtime()
 app.include_router(observability_router)
+app.include_router(attachments_router)
+app.include_router(secrets_router)
 
 
 class RunRequest(BaseModel):
     session_id: str
     user_input: str
+    # 附件 id 列表（由 POST /api/attachments 返回）：正文留服务端，只在这里带 id
+    attachments: list[str] = Field(default_factory=list)
 
 
 @app.get("/health")
@@ -59,10 +67,28 @@ def _sse_frame(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def _prepare_input(user_input: str) -> PreparedInput | None:
+def _load_attachments(ids: list[str]) -> list[Attachment]:
+    """按 id 取回附件正文；读取失败一律降级成空列表，不阻断这一轮。"""
+    if not ids:
+        return []
+    try:
+        return AttachmentStore().load(ids)
+    except Exception:
+        return []
+
+
+def _save_secret(name: str, value: str) -> None:
+    """把解析阶段认出的凭据加密入库；保险箱不可用时只脱敏、不保存。"""
+    try:
+        get_vault().put(name, value, source="input")
+    except Exception:
+        return
+
+
+def _prepare_input(user_input: str, attachments: list[Attachment]) -> PreparedInput | None:
     """解析输入；任何意外都退回 None（沿用原始输入），不让解析层阻断对话。"""
     try:
-        return prepare(user_input)
+        return prepare(user_input, attachments=attachments, on_secret=_save_secret)
     except Exception:
         return None
 
@@ -94,7 +120,7 @@ async def run_stream(
         # 输入解析在真正调用 Agent 之前完成：事件照常推给前端画轨迹，
         # 但只有 prepared.text 会进入模型上下文——密钥与裁剪细节不外泄。
         payload = req.user_input
-        prepared = _prepare_input(req.user_input)
+        prepared = _prepare_input(req.user_input, _load_attachments(req.attachments))
         if prepared is not None:
             payload = prepared.text
             for frame in parse_events(prepared):

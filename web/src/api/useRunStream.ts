@@ -90,15 +90,31 @@ function toParseStage(event: StreamEvent): ParseStage {
   return parsed;
 }
 
+/** 摘要里按顺序展示的计数项：阶段名 + 中文单位，值为 0 时跳过。 */
+const SUMMARY_COUNTERS: Array<[stage: string, unit: string]> = [
+  ['attach', '附件'],
+  ['detect', '引用'],
+  ['redact', '脱敏'],
+];
+
+/** 该阶段是否真的动了输入：有改动、出错、或内部有降级。 */
+function isUseful(stage: ParseStage): boolean {
+  return stage.changed || stage.status === 'error' || stage.failed > 0;
+}
+
+function countItems(stages: ParseStage[], name: string): number {
+  return stages.find((stage) => stage.stage === name)?.items ?? 0;
+}
+
 /** 父行摘要只统计真正生效的阶段，避免「6 阶段」里 5 个是无需处理。 */
 export function parseSummary(stages: ParseStage[]): string {
-  const useful = stages.filter((stage) => stage.changed || stage.status === 'error' || stage.failed > 0);
-  const parts = [`${useful.length}/${stages.length} 阶段生效`];
-  const refs = stages.find((stage) => stage.stage === 'detect')?.items ?? 0;
-  const redactions = stages.find((stage) => stage.stage === 'redact')?.items ?? 0;
+  const useful = stages.filter(isUseful).length;
+  const parts = [`${useful}/${stages.length} 阶段生效`];
+  for (const [name, unit] of SUMMARY_COUNTERS) {
+    const count = countItems(stages, name);
+    if (count) parts.push(`${count} ${unit}`);
+  }
   const failed = stages.reduce((sum, stage) => sum + stage.failed, 0);
-  if (refs) parts.push(`${refs} 引用`);
-  if (redactions) parts.push(`${redactions} 脱敏`);
   if (failed) parts.push(`${failed} 处降级`);
   return parts.join(' · ');
 }
@@ -536,6 +552,7 @@ export async function streamRun(
   onEvent: (event: StreamEvent) => void,
   signal: AbortSignal,
   requestId: string,
+  attachmentIds: string[] = [],
 ): Promise<void> {
   const resp = await fetch('/run/stream', {
     method: 'POST',
@@ -543,7 +560,12 @@ export async function streamRun(
       'Content-Type': 'application/json',
       'X-Request-ID': requestId,
     },
-    body: JSON.stringify({ session_id: sessionId, user_input: userInput }),
+    // 只带 id：附件正文留在服务端，由解析管线取用并统一脱敏/裁预算
+    body: JSON.stringify({
+      session_id: sessionId,
+      user_input: userInput,
+      attachments: attachmentIds,
+    }),
     signal,
   });
   if (!resp.ok || !resp.body) {

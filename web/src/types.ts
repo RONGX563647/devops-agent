@@ -116,4 +116,64 @@ export interface ProcessEntry {
   detail: string;
   state: 'running' | 'success' | 'error';
   toolCallId?: string;
+  /** 首次出现的事件时间（ISO），用于轨迹里估算步骤耗时。 */
+  at?: string;
+  /** 结束事件时间（ISO），缺省表示仍在执行。 */
+  endedAt?: string | null;
+  /** 工具入参增量（与返回分开展示，避免正文/参数混在一起）。 */
+  args?: string;
+  /** 工具返回增量。 */
+  result?: string;
+  /** 工具原始标识，排查时展示。 */
+  toolName?: string;
+}
+
+/** 一条会话消息：用户消息或一轮助手回答（助手消息携带该轮过程步骤）。 */
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  /** 消息时间（ISO）。 */
+  at: string;
+  steps: ProcessEntry[];
+  error?: string;
+  pending?: boolean;
+  /** 用户主动停止且没有任何产出时置位，界面显示「已停止」。 */
+  stopped?: boolean;
+  modelName?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  runId?: number | null;
+  endedAt?: string | null;
+}
+
+/** 轨迹步骤：由消息与过程步骤派生的只读视图。 */
+export interface TraceStep {
+  id: string;
+  kind: 'text' | 'tool' | 'error';
+  title: string;
+  text: string;
+  /** 毫秒时间戳。 */
+  at: number;
+  durationMs: number;
+  status?: ProcessEntry['state'];
+  toolCallId?: string;
+  toolName?: string;
+  args?: string;
+  result?: string;
+}
+
+/** 轨迹轮次：一条用户输入到其后的助手产出。 */
+export interface TraceTurn {
+  id: string;
+  index: number;
+  question: string;
+  userText: string;
+  at: number;
+  startedAt: number;
+  endedAt: number;
+  steps: number;
+  tools: number;
+  failed: boolean;
+  items: TraceStep[];
 }

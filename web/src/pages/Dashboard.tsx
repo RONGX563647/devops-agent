@@ -9,31 +9,31 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { useState } from 'react';
 import { fetchRuns, fetchSummary, fetchTimeseries } from '../api/client';
-import { useRunStream } from '../api/useRunStream';
 import { MetricCard } from '../components/MetricCard';
 import { StatusBadge } from '../components/StatusBadge';
+import { formatDateTime, formatDuration } from '../workspace/time';
 
 function formatMs(ms: number | null): string {
   if (ms === null) return '—';
-  return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms}ms`;
+  return formatDuration(ms);
 }
 
 export function Dashboard() {
   const summary = useQuery({ queryKey: ['summary'], queryFn: fetchSummary, refetchInterval: 5000 });
   const timeseries = useQuery({ queryKey: ['timeseries'], queryFn: () => fetchTimeseries(7), refetchInterval: 10000 });
   const recent = useQuery({ queryKey: ['runs', 'recent'], queryFn: () => fetchRuns({ limit: 8 }), refetchInterval: 5000 });
-  const stream = useRunStream();
-  const [sessionId, setSessionId] = useState('live-1');
-  const [input, setInput] = useState('用一句话说明什么是 CI');
 
   const s = summary.data;
+  const points = timeseries.data ?? [];
+  const recentItems = recent.data?.items ?? [];
 
   return (
     <div className="page">
       <h1>总览 Dashboard</h1>
       <p className="subtitle">Agent 运行好坏的实时画像（数据来自后端观测 API）</p>
+
+      {summary.isError && <p className="query-error">总览指标加载失败，稍后自动重试。</p>}
 
       <div className="metrics-grid">
         <MetricCard
@@ -59,80 +59,93 @@ export function Dashboard() {
       <div className="panel-grid">
         <section className="panel">
           <h2>健康度趋势（近 7 天运行量）</h2>
-          <div className="chart-wrap">
-            <ResponsiveContainer width="100%" height={260}>
-              <AreaChart data={timeseries.data ?? []}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" />
-                <XAxis dataKey="date" fontSize={12} />
-                <YAxis fontSize={12} allowDecimals={false} />
-                <Tooltip />
-                <Area type="monotone" dataKey="success" name="成功" stroke="#16a34a" fill="#bbf7d0" />
-                <Area type="monotone" dataKey="failed" name="失败" stroke="#dc2626" fill="#fecaca" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
+          {timeseries.isError && <p className="query-error">趋势数据加载失败。</p>}
+          {timeseries.isLoading && points.length === 0 && <p className="query-loading">正在加载趋势…</p>}
+          {!timeseries.isLoading && !timeseries.isError && points.length === 0 && (
+            <p className="muted">近 7 天还没有运行记录。</p>
+          )}
+          {points.length > 0 && (
+            <div className="chart-wrap">
+              <ResponsiveContainer width="100%" height={260}>
+                <AreaChart data={points}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" />
+                  <XAxis dataKey="date" fontSize={12} />
+                  <YAxis fontSize={12} allowDecimals={false} />
+                  <Tooltip />
+                  <Area type="monotone" dataKey="success" name="成功" stroke="#16a34a" fill="#bbf7d0" />
+                  <Area type="monotone" dataKey="failed" name="失败" stroke="#dc2626" fill="#fecaca" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </section>
 
         <section className="panel">
-          <h2>实时流式运行</h2>
-          <p className="hint">POST /run/stream · SSE 逐帧渲染（用户强调的流式能力）</p>
-          <div className="stream-form">
-            <input
-              aria-label="会话 ID"
-              value={sessionId}
-              onChange={(e) => setSessionId(e.target.value)}
-              disabled={stream.running}
-            />
-            <input
-              aria-label="用户输入"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              disabled={stream.running}
-            />
-            <button onClick={() => void stream.start(sessionId, input)} disabled={stream.running}>
-              {stream.running ? '运行中…' : '开始运行'}
-            </button>
-            {stream.running && <button onClick={stream.stop}>停止</button>}
-          </div>
-          <div className="stream-output">
-            {stream.text || (stream.running ? '等待首个 token…' : '点击「开始运行」查看流式输出')}
-          </div>
-          {stream.error && <div className="error">错误：{stream.error}</div>}
-          <div className="stream-meta">
-            事件 {stream.events.length} 帧 · 输入 token {stream.inputTokens} / 输出 token {stream.outputTokens}
-            {stream.runId !== null && ` · run #${stream.runId}`}
+          <h2>运行构成</h2>
+          <p className="hint">概览来自 /api/summary；实时对话请到「对话」tab。</p>
+          <ul className="summary-list">
+            <li>
+              <span>总运行</span>
+              <strong className="mono">{s?.total_runs ?? 0}</strong>
+            </li>
+            <li>
+              <span>成功</span>
+              <strong className="mono">{s?.success_count ?? 0}</strong>
+            </li>
+            <li>
+              <span>失败</span>
+              <strong className="mono">{s?.failed_count ?? 0}</strong>
+            </li>
+            <li>
+              <span>工具调用</span>
+              <strong className="mono">{s?.tool_call_count ?? 0}</strong>
+            </li>
+            <li>
+              <span>工具失败</span>
+              <strong className="mono">{s?.tool_failed_count ?? 0}</strong>
+            </li>
+          </ul>
+          <div className="panel-links">
+            <Link to="/?tab=quality">看质量评估</Link>
+            <Link to="/?tab=cost">看成本分布</Link>
           </div>
         </section>
       </div>
 
       <section className="panel">
         <h2>最近运行</h2>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>ID</th><th>会话</th><th>域</th><th>状态</th>
-              <th>健康分</th><th>耗时</th><th>Token</th><th>开始时间</th><th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {(recent.data?.items ?? []).map((run) => (
-              <tr key={run.id}>
-                <td>#{run.id}</td>
-                <td>{run.session_id}</td>
-                <td>{run.domain}</td>
-                <td><StatusBadge status={run.status} /></td>
-                <td>{run.health_score ?? '—'}</td>
-                <td>{formatMs(run.duration_ms)}</td>
-                <td>{run.total_tokens}</td>
-                <td className="muted">{run.started_at.slice(0, 19)}</td>
-                <td><Link to={`/runs/${run.id}`}>详情</Link></td>
+        {recent.isError && <p className="query-error">最近运行加载失败。</p>}
+        {recent.isLoading && recentItems.length === 0 && (
+          <p className="query-loading">正在加载最近运行…</p>
+        )}
+        {!recent.isLoading && !recent.isError && recentItems.length === 0 && (
+          <p className="muted">暂无运行记录，先去「对话」tab 跑一次。</p>
+        )}
+        {recentItems.length > 0 && (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>ID</th><th>会话</th><th>域</th><th>状态</th>
+                <th>健康分</th><th>耗时</th><th>Token</th><th>开始时间</th><th></th>
               </tr>
-            ))}
-            {recent.data?.items.length === 0 && (
-              <tr><td colSpan={9} className="muted">暂无运行记录，先用上面的流式面板跑一次。</td></tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {recentItems.map((run) => (
+                <tr key={run.id}>
+                  <td>#{run.id}</td>
+                  <td>{run.session_id}</td>
+                  <td>{run.domain}</td>
+                  <td><StatusBadge status={run.status} /></td>
+                  <td>{run.health_score ?? '—'}</td>
+                  <td>{formatMs(run.duration_ms)}</td>
+                  <td>{run.total_tokens}</td>
+                  <td className="muted">{formatDateTime(run.started_at)}</td>
+                  <td><Link to={`/runs/${run.id}`}>详情</Link></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
     </div>
   );

@@ -1,12 +1,14 @@
 /** 会话工作台：左侧会话栏 + 单行顶栏（会话标题、运行统计、视图 tab）。 */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { SessionSidebar, aggregateSessions, useSessionRuns } from './SessionSidebar';
+import { SessionSidebar, useSessionList } from './SessionSidebar';
 import { Dashboard } from '../pages/Dashboard';
 import { Quality } from '../pages/Quality';
 import { Cost } from '../pages/Cost';
 import { ChatTab } from './ChatTab';
 import { TraceTab } from './TraceTab';
+import { ensureHistory } from './store';
+import { newId } from './id';
 
 const TABS = [
   { key: 'chat', label: '对话' },
@@ -34,14 +36,20 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
   const [params, setParams] = useSearchParams();
   const tab = parseTab(params.get('tab') ?? initialTab);
   const session = params.get('session') ?? initialSession;
-  const [newNonce, setNewNonce] = useState(0);
+  // 新会话先用一个草稿 id 承载消息，首次发送时再落到 URL，避免固定 live-1。
+  const [draftId, setDraftId] = useState(() => newId('sess'));
+  const sessionId = session ?? draftId;
 
-  const runs = useSessionRuns();
-  const sessions = aggregateSessions(runs.data?.items ?? []);
-  const current = session ? sessions.find((s) => s.id === session) : undefined;
+  const sessions = useSessionList();
+  const current = session ? sessions.find((item) => item.id === session) : undefined;
   const title = session ? (current?.title ?? session) : '新会话';
-  const totalRuns = sessions.reduce((sum, s) => sum + s.runCount, 0);
-  const failedRuns = sessions.reduce((sum, s) => sum + s.failedCount, 0);
+  const totalRuns = sessions.reduce((sum, item) => sum + item.runCount, 0);
+  const failedRuns = sessions.reduce((sum, item) => sum + item.failedCount, 0);
+
+  // 选中历史会话时，本地没有缓存就用后端 runs 重建只读历史。
+  useEffect(() => {
+    if (session) void ensureHistory(session);
+  }, [session]);
 
   function switchTab(key: TabKey) {
     const next = new URLSearchParams(params);
@@ -56,10 +64,15 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
     setParams(next, { replace: true });
   }
 
-  /** 新会话 = 清空当前对话：换 key 让 ChatTab 重挂载，即使已在「全部会话」也生效。 */
+  /** 新会话 = 换一个草稿 id 并清空选中；即使当前已经在「新会话」也生效。 */
   function startNewSession() {
-    setNewNonce((n) => n + 1);
+    setDraftId(newId('sess'));
     switchSession(null);
+  }
+
+  /** 首次发送：把草稿 id 写回 URL，让刷新/深链能回到同一会话。 */
+  function handleFirstSend() {
+    if (!session) switchSession(draftId);
   }
 
   return (
@@ -69,7 +82,8 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
         <header className="workspace-header">
           <h1 className="workspace-title">{title}</h1>
           <span className="workspace-chip">
-            {totalRuns} 次运行{failedRuns ? ` · ${failedRuns} 次失败` : ''}
+            {sessions.length} 个会话 · {totalRuns} 次运行
+            {failedRuns ? ` · ${failedRuns} 次失败` : ''}
           </span>
           <nav className="workspace-tabs" role="tablist" aria-label="会话视图">
             {TABS.map((t) => (
@@ -87,9 +101,14 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
         </header>
         <main className={`workspace-body${tab === 'chat' ? ' is-chat' : ''}`} role="tabpanel">
           {tab === 'chat' && (
-            <ChatTab key={`${session ?? 'new'}-${newNonce}`} session={session} />
+            <ChatTab
+              key={sessionId}
+              session={sessionId}
+              onFirstSend={handleFirstSend}
+              onOpenTrace={() => switchTab('trace')}
+            />
           )}
-          {tab === 'trace' && <TraceTab session={session} />}
+          {tab === 'trace' && <TraceTab key={`trace-${session ?? 'all'}`} session={session} />}
           {tab === 'metrics' && <Dashboard />}
           {tab === 'quality' && <Quality />}
           {tab === 'cost' && <Cost />}

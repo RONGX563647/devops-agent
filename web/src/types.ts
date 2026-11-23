@@ -68,6 +68,9 @@ export interface Run {
   health_score: number | null;
   input_tokens: number;
   output_tokens: number;
+  /** 前缀缓存命中/写入量；老记录缺省为 0。 */
+  cache_input_tokens?: number;
+  cache_creation_input_tokens?: number;
   /** 本轮权限档位；老记录为空串。 */
   permission?: string;
 }
@@ -91,6 +94,11 @@ export interface Span {
   tokens: number;
   status: 'ok' | 'error';
   error: string | null;
+  /** 逐调用 token 分拆；工具 span 恒为 0，老记录缺省。 */
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_input_tokens?: number;
+  cache_creation_input_tokens?: number;
 }
 
 export interface RunHealth {
@@ -343,6 +351,8 @@ export interface TraceStats {
   tokPerSec: number | null;
   /** 缓存命中率 0~1；模型不回传缓存字段时为 null。 */
   cacheRate: number | null;
+  /** 每轮第一次模型调用的命中率 0~1：这一枪必然冷读，单独标出才不冤枉缓存。 */
+  firstCallRate: number | null;
 }
 
 /** 一次运行落库的解析阶段（GET /api/runs/{id}/input-stages）。 */
@@ -385,6 +395,8 @@ export interface TraceTurn {
   errorCount: number;
   /** 同题的上一轮序号：用来对比「同一个问题这次是变快还是变慢」。 */
   repeatOf?: number;
+  /** 本轮第一次模型调用的输入与缓存命中：冷读是必然成本，单独记账。 */
+  firstCall?: { in: number; cache?: number };
 }
 
 /** 保险箱里的一条凭据（GET /api/secrets）：只给元信息，没有值。 */

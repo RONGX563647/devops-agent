@@ -26,6 +26,9 @@ function spanToStep(span: Span, index: number): TraceStep {
     result: span.output,
     argsSummary: summarizeArgs(span.input),
     resultSummary: summarizeResult(span.output, status),
+    tokensIn: span.input_tokens,
+    tokensOut: span.output_tokens,
+    cacheTokens: span.cache_input_tokens,
   };
 }
 

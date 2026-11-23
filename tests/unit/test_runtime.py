@@ -157,6 +157,48 @@ def test_build_system_prompt_declares_tools(tmp_path: Path) -> None:
     assert "必须真的发起工具调用" in prompt
 
 
+def test_system_prompt_is_profile_independent(tmp_path: Path) -> None:
+    """系统提示必须与档位无关：那里改一个字，工具 schema 与整段历史全部缓存失效。"""
+    from devops_agent.governance.profiles import resolve
+    from devops_agent.runtime.profile_note import policy_note
+
+    prompt = build_system_prompt(tmp_path)
+    # 档位说明不在系统提示里
+    assert "本会话权限" not in prompt
+    assert "Write" not in prompt
+    # 但两档的注记必须不同，否则切档等于没切
+    readonly_note = policy_note(resolve("readonly"))
+    workspace_note = policy_note(resolve("workspace"))
+    assert readonly_note != workspace_note
+    assert "只读" in readonly_note
+
+
+def test_profile_note_middleware_appends_trailing_message(tmp_path: Path) -> None:
+    """档位注记追加在 messages 末尾：前缀全部保留，变的只有尾部。"""
+    import asyncio
+
+    from agentscope.message import UserMsg
+
+    from devops_agent.governance.profiles import resolve
+    from devops_agent.runtime.profile_note import ProfileNoteMiddleware
+
+    mw = ProfileNoteMiddleware(resolve("readonly"))
+    history = [UserMsg(name="user", content="第一问"), UserMsg(name="assistant", content="第一答")]
+    seen: dict[str, object] = {}
+
+    async def nxt(**kwargs: object) -> str:
+        seen.update(kwargs)
+        return "ok"
+
+    asyncio.run(mw.on_model_call(agent=None, input_kwargs={"messages": history}, next_handler=nxt))  # type: ignore[arg-type]
+    sent = seen["messages"]
+    assert isinstance(sent, list)
+    assert len(sent) == len(history) + 1
+    assert "本会话权限" in str(sent[-1].get_text_content())
+    # 原列表不能被就地改写：那会污染会话历史，下一轮重复累积
+    assert len(history) == 2
+
+
 def test_resolve_workdir_prefers_argument(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(WORKDIR_ENV, str(tmp_path / "from-env"))
     assert resolve_workdir(tmp_path) == tmp_path.resolve()

@@ -301,6 +301,44 @@ describe('applyEvent', () => {
     expect(s.steps[1]).toMatchObject({ kind: 'error', label: '达到最大迭代次数', state: 'error' });
   });
 
+  it('MODEL_CALL 的 token 逐调用累加，RUN_DONE 用后端总和覆盖', () => {
+    let s = applyEvent(INITIAL, {
+      type: 'MODEL_CALL_START',
+      reply_id: 'r1',
+      model_name: 'qwen3.8-flash',
+    });
+    s = applyEvent(s, {
+      type: 'MODEL_CALL_END',
+      reply_id: 'r1',
+      input_tokens: 3060,
+      output_tokens: 20,
+      cache_input_tokens: 0,
+    });
+    s = applyEvent(s, { type: 'MODEL_CALL_START', reply_id: 'r2', model_name: 'qwen3.8-flash' });
+    s = applyEvent(s, {
+      type: 'MODEL_CALL_END',
+      reply_id: 'r2',
+      input_tokens: 9645,
+      output_tokens: 30,
+      cache_input_tokens: 9216,
+    });
+    // 只留最后一次会让命中率被低估「调用次数」倍：这里必须累加
+    expect(s.inputTokens).toBe(3060 + 9645);
+    expect(s.cacheInputTokens).toBe(9216);
+
+    s = applyEvent(s, {
+      type: 'RUN_DONE',
+      run_id: 7,
+      input_tokens: 12705,
+      output_tokens: 50,
+      cache_input_tokens: 9216,
+      text: '完成',
+    });
+    expect(s.inputTokens).toBe(12705);
+    expect(s.outputTokens).toBe(50);
+    expect(s.cacheInputTokens).toBe(9216);
+  });
+
   it('HINT_BLOCK 过滤系统提醒类噪音', () => {
     const next = applyEvent(INITIAL, {
       type: 'HINT_BLOCK',

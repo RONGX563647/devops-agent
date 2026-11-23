@@ -95,6 +95,13 @@ function StatusBar({
   running: boolean;
 }) {
   const cache = stats.cacheRate === null ? null : `${Math.round(stats.cacheRate * 100)}%`;
+  // 首枪必然冷读：单列出来，免得把「新轮次的第一枪」当成缓存失效
+  const cold =
+    stats.firstCallRate !== null &&
+    stats.cacheRate !== null &&
+    stats.firstCallRate < stats.cacheRate - 0.05
+      ? `${Math.round(stats.firstCallRate * 100)}%`
+      : null;
   return (
     <div className="trace-status mono">
       <span>
@@ -104,6 +111,7 @@ function StatusBar({
       <span>
         {stats.tokensIn + stats.tokensOut} tok
         {cache && ` · 缓存 ${cache}`}
+        {cold && <span className="trace-status-cold"> · 首枪 {cold}</span>}
       </span>
       <span className={stats.errors > 0 ? 'has-error' : ''}>异常 {stats.errors}</span>
       <span className="trace-status-right">
@@ -139,8 +147,8 @@ function SessionTrace({
 
   // 第 0 步要展示的系统提示词与工具清单来自后端装配区，读不到就显示为空而不编造
   const context = useQuery({
-    queryKey: ['agent-context'],
-    queryFn: fetchContext,
+    queryKey: ['agent-context', session],
+    queryFn: () => fetchContext(session),
     staleTime: 5 * 60_000,
     retry: false,
   });
@@ -264,6 +272,7 @@ function SessionTrace({
               step={activeStep}
               turn={activeTurn}
               totalMs={stats.totalMs}
+              profile={context.data?.profile}
             />
           </div>
 

@@ -2308,18 +2308,121 @@ a:hover {
 .trace-context-body {
   border-left-color: var(--line-soft);
 }
-.trace-context-tools {
+/* 上下文构成：系统 / 工具 / 历史 / 输入 —— 工具 schema 才是大头，别再只报「4 个工具」 */
+.ctx-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-}
-.trace-context-tools code {
-  padding: 1px 6px;
-  border-radius: var(--radius-xs);
-  background: var(--surface);
-  color: var(--ink-soft);
-  font-family: var(--font-mono);
+  gap: 10px;
+  padding-bottom: 6px;
+  color: var(--ink-faint);
   font-size: 10.5px;
+}
+.ctx-comp {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-bottom: 4px;
+}
+.ctx-comp-bar {
+  display: flex;
+  gap: 1px;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--surface-muted);
+}
+.ctx-seg {
+  min-width: 2px;
+  border-radius: 2px;
+  background: var(--ink-faint);
+}
+.ctx-seg[data-kind='tools'] {
+  background: var(--lane-tool);
+}
+.ctx-seg[data-kind='history'] {
+  background: var(--lane-model);
+}
+.ctx-seg[data-kind='input'] {
+  background: var(--ink-soft);
+}
+.ctx-seg[data-kind='policy'] {
+  background: var(--line-strong);
+}
+.ctx-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--ink-muted);
+  font-size: 10.5px;
+}
+.ctx-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-radius: 2px;
+  background: var(--ink-faint);
+}
+.ctx-legend i[data-kind='tools'] {
+  background: var(--lane-tool);
+}
+.ctx-legend i[data-kind='history'] {
+  background: var(--lane-model);
+}
+.ctx-legend i[data-kind='input'] {
+  background: var(--ink-soft);
+}
+.ctx-legend i[data-kind='policy'] {
+  background: var(--line-strong);
+}
+.ctx-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ctx-tool {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.ctx-tool > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  cursor: pointer;
+  list-style: none;
+}
+.ctx-tool > summary::-webkit-details-marker {
+  display: none;
+}
+.ctx-tool > summary::before {
+  content: '›';
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+.ctx-tool[open] > summary::before {
+  content: '⌄';
+}
+.ctx-tool > summary code {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.ctx-tool-meta {
+  margin-left: auto;
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+.ctx-tool-desc {
+  margin: 0;
+  padding: 0 8px 6px 18px;
+  color: var(--ink-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.ctx-tool .trace-detail-code {
+  margin: 0 8px 8px;
 }
 .trace-idx {
   color: var(--ink-faint);
@@ -2659,6 +2762,10 @@ a:hover {
 .trace-status-right {
   margin-left: auto;
   color: var(--ink-soft);
+}
+/* 首枪冷读：与「缓存命中」同排但压低对比，说明这是必然成本而非失效 */
+.trace-status-cold {
+  color: var(--ink-faint);
 }
 .trace-ask {
   display: flex;

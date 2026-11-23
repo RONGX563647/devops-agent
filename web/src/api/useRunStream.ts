@@ -280,9 +280,11 @@ const HANDLERS: Record<string, EventHandler> = {
   }),
   MODEL_CALL_END: (s, e) => ({
     ...s,
-    inputTokens: e.input_tokens ?? s.inputTokens,
-    outputTokens: e.output_tokens ?? s.outputTokens,
-    cacheInputTokens: e.cache_input_tokens ?? s.cacheInputTokens,
+    // 一轮里模型会被调用多次：这里必须累加，否则 message 上只剩最后一次的量，
+    // 而 RUN_DONE 给的 input 是整轮总和 —— 分子分母不同口径，命中率必被低估。
+    inputTokens: s.inputTokens + (e.input_tokens ?? 0),
+    outputTokens: s.outputTokens + (e.output_tokens ?? 0),
+    cacheInputTokens: s.cacheInputTokens + (e.cache_input_tokens ?? 0),
     steps: patchStep(
       s.steps,
       blockStepId(e, 'model'),

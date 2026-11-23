@@ -44,6 +44,9 @@ class RunOut(BaseModel):
     health_score: float | None
     input_tokens: int
     output_tokens: int
+    # 前缀缓存命中/写入量；老记录为 0，前端据此显示「无缓存数据」而不是 0%
+    cache_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
     # 本轮权限档位；老记录为空串
     permission: str = ""
 
@@ -60,6 +63,11 @@ class SpanOut(BaseModel):
     tokens: int
     status: str
     error: str | None
+    # 逐调用的 token 分拆：模型 span 才有值，工具 span 保持 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
 
 
 class InputStageOut(BaseModel):
@@ -288,6 +296,8 @@ def _run_out(run: RunRecord) -> RunOut:
         health_score=run.health_score,
         input_tokens=run.input_tokens,
         output_tokens=run.output_tokens,
+        cache_input_tokens=run.cache_input_tokens,
+        cache_creation_input_tokens=run.cache_creation_input_tokens,
         permission=run.permission,
     )
 
@@ -307,6 +317,10 @@ def _span_out(span: SpanRecord) -> SpanOut:
         tokens=span.tokens,
         status=span.status,
         error=span.error,
+        input_tokens=span.input_tokens,
+        output_tokens=span.output_tokens,
+        cache_input_tokens=span.cache_input_tokens,
+        cache_creation_input_tokens=span.cache_creation_input_tokens,
     )
 
 

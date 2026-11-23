@@ -1,27 +1,33 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "dashscope/qwen3.8-flash",
-  "default_agent": "reviewer",
-  "agents": {
+  "agent": {
     "reviewer": {
       "mode": "primary",
+      "model": "dashscope/qwen3.8-flash",
       "steps": 1,
-      "system": "审查 prompt 中提供的代码改动。列出所有确认的问题，每条标注 file:line，按严重度从高到低排序。跳过风格/命名/文档建议，不报推测性问题。末尾单独一行输出 FINDINGS_TOTAL: <问题总数>。不要输出其它内容。"
+      "tools": {
+        "write": false,
+        "edit": false,
+        "bash": false,
+        "patch": false,
+        "task": false
+      },
+      "prompt": "审查 prompt 中提供的代码改动。列出所有确认的问题，每条标注 file:line，按严重度从高到低排序。跳过风格/命名/文档建议，不报推测性问题。末尾单独一行输出 FINDINGS_TOTAL: <问题总数>。不要输出其它内容。"
     }
   },
-  "providers": {
+  "provider": {
     "dashscope": {
+      "npm": "@ai-sdk/openai-compatible",
       "name": "DashScope Compatible",
-      "env": ["OPENCODE_REVIEW_KEY"],
-      "package": "@opencode/ai/providers/openai-compatible",
-      "settings": {
-        "baseURL": "https://llm-ah65cbyzn2a9z0d2.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+      "options": {
+        "baseURL": "https://llm-ah65cbyzn2a9z0d2.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "apiKey": "{env:OPENCODE_REVIEW_KEY}"
       },
       "models": {
         "qwen3.8-flash": {
           "name": "qwen3.8-flash",
-          "modelID": "qwen3.8-flash",
-          "limit": { "output": 16000 }
+          "limit": { "context": 200000, "output": 16000 }
         }
       }
     }

@@ -4,3 +4,8 @@ quality_gates:
   complexity_threshold: 10         # 圈复杂度上限
   mutation_score: 70               # % 变异测试得分
   dead_code_min_confidence: 80     # vulture 置信度
+
+# 前端门禁阈值（web/ 下的 ESLint / Vitest 读取）
+frontend_gates:
+  coverage_fail_under: 65          # % 覆盖率棘轮，随测试补齐抬升
+  complexity_threshold: 10         # 圈复杂度上限，与后端对齐

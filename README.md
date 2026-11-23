@@ -144,6 +144,15 @@ curl -X POST http://127.0.0.1:8000/run \
 
 工具链：`ruff`（风格）+ `mypy`（类型）+ `vulture`（死代码）+ `radon`（复杂度）+ `pytest-cov`（覆盖率）+ `mutmut`（测试效果）。
 
+**前端门禁**（CI 的 `frontend` job）阈值同样来自 `config/gates.yaml`，读其中的 `frontend_gates` 段：`eslint.config.js` 取 `complexity_threshold`（只对 `.ts` 逻辑文件生效，JSX 条件渲染不计入圈复杂度），`vitest.config.ts` 取 `coverage_fail_under`（coverage-v8）。
+
+| 命令 | 门禁 |
+|---|---|
+| `npm run lint` | ESLint + typescript-eslint + react-hooks |
+| `npm run typecheck` | `tsc -b --noEmit` |
+| `npm run test:coverage` | Vitest + 覆盖率阈值判定 |
+| `npm run build` | 生产构建 |
+
 ---
 
 ## 可观测性与前端
@@ -169,7 +178,10 @@ curl -X POST http://127.0.0.1:8000/run \
 
 ```bash
 cd web && npm ci && npm run dev        # 前端开发服务器（配合后端 :8000）
-npm run build                          # 类型检查 + 生产构建（CI 亦执行）
+npm run lint                           # ESLint（CI 执行）
+npm run typecheck                      # 类型检查（CI 执行）
+npm run test:coverage                  # Vitest + 覆盖率（CI 执行）
+npm run build                          # 生产构建（CI 执行）
 ```
 
 数据库路径默认 `workspace/observability.db`（已 gitignore），可用 `DEVOPS_AGENT_DB_PATH` 覆盖。

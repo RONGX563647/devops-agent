@@ -26,7 +26,7 @@ const INITIAL: StreamState = {
 // 手写 SSE 帧解析而非引入 fetch-event-source：本应用只需 POST + data 帧 + abort，
 // 约 10 行即可覆盖，且后端每帧的 type 已写在 data 里、不依赖 event: 行语义。
 // 按 SSE 规范兼容 CRLF 与 \n 两种换行，并支持多行 data 拼接。
-function parseFrame(frame: string): StreamEvent | null {
+export function parseFrame(frame: string): StreamEvent | null {
   const normalized = frame.replace(/\r\n/g, '\n');
   const dataLines = normalized
     .split('\n')
@@ -37,6 +37,49 @@ function parseFrame(frame: string): StreamEvent | null {
     return JSON.parse(dataLines.join('\n')) as StreamEvent;
   } catch {
     return null;
+  }
+}
+
+/** 把一帧事件折叠进状态：纯函数，便于单测，也让 start 的复杂度降下来。 */
+export function applyEvent(prev: StreamState, event: StreamEvent): StreamState {
+  const next: StreamState = { ...prev, events: [...prev.events, event] };
+  switch (event.type) {
+    case 'TEXT_BLOCK_DELTA':
+      if (event.delta) next.text = prev.text + event.delta;
+      break;
+    case 'RUN_DONE':
+      next.text = event.text ?? prev.text;
+      next.runId = event.run_id ?? null;
+      next.inputTokens = event.input_tokens ?? prev.inputTokens;
+      next.outputTokens = event.output_tokens ?? prev.outputTokens;
+      next.running = false;
+      break;
+    case 'RUN_ERROR':
+      next.error = event.error ?? '未知错误';
+      next.running = false;
+      break;
+  }
+  return next;
+}
+
+/** 逐帧读取 SSE 流并回调；抽成独立函数便于单测，也降低 start 的复杂度。 */
+export async function consumeStream(
+  body: ReadableStream<Uint8Array>,
+  onEvent: (event: StreamEvent) => void,
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+    const frames = buffer.split('\n\n');
+    buffer = frames.pop() ?? '';
+    for (const frame of frames) {
+      const event = parseFrame(frame);
+      if (event) onEvent(event);
+    }
   }
 }
 
@@ -64,40 +107,9 @@ export function useRunStream() {
         throw new Error(`流式请求失败 ${resp.status}`);
       }
 
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-        const frames = buffer.split('\n\n');
-        buffer = frames.pop() ?? '';
-        for (const frame of frames) {
-          const event = parseFrame(frame);
-          if (!event) continue;
-          setState((prev) => {
-            const next: StreamState = {
-              ...prev,
-              events: [...prev.events, event],
-            };
-            if (event.type === 'TEXT_BLOCK_DELTA' && event.delta) {
-              next.text = prev.text + event.delta;
-            } else if (event.type === 'RUN_DONE') {
-              next.text = event.text ?? prev.text;
-              next.runId = event.run_id ?? null;
-              next.inputTokens = event.input_tokens ?? prev.inputTokens;
-              next.outputTokens = event.output_tokens ?? prev.outputTokens;
-              next.running = false;
-            } else if (event.type === 'RUN_ERROR') {
-              next.error = event.error ?? '未知错误';
-              next.running = false;
-            }
-            return next;
-          });
-        }
-      }
+      await consumeStream(resp.body, (event) => {
+        setState((prev) => applyEvent(prev, event));
+      });
       setState((prev) => ({ ...prev, running: false }));
     } catch (err) {
       if (controller.signal.aborted) return;

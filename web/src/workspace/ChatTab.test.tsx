@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChatTab } from './ChatTab';
+import { ChatTab, shouldStickToBottom } from './ChatTab';
 
 const start = vi.fn();
 const stop = vi.fn();
@@ -49,6 +49,21 @@ beforeEach(() => {
   start.mockClear();
   stop.mockClear();
   resetStream();
+});
+
+describe('shouldStickToBottom', () => {
+  it('贴底或接近底部时继续吸底', () => {
+    expect(shouldStickToBottom(1000, 600, 400)).toBe(true); // 正好在底部
+    expect(shouldStickToBottom(1000, 550, 400)).toBe(true); // 距底 50px
+  });
+
+  it('上翻超过阈值后不再吸底，避免拽回阅读位置', () => {
+    expect(shouldStickToBottom(1000, 400, 400)).toBe(false); // 距底 200px
+  });
+
+  it('内容不足一屏时始终吸底', () => {
+    expect(shouldStickToBottom(300, 0, 400)).toBe(true);
+  });
 });
 
 describe('ChatTab', () => {

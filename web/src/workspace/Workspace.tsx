@@ -67,7 +67,7 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
             </button>
           ))}
         </nav>
-        <main className="workspace-body" role="tabpanel">
+        <main className={`workspace-body${tab === 'chat' ? ' is-chat' : ''}`} role="tabpanel">
           {tab === 'chat' && <ChatTab session={session} />}
           {tab === 'trace' && <TraceTab session={session} />}
           {tab === 'metrics' && <Dashboard />}

@@ -99,7 +99,7 @@ describe('Workspace', () => {
     renderWorkspace();
     expect(screen.getAllByRole('tab')).toHaveLength(5);
     expect(screen.getByRole('tab', { name: '对话' }).getAttribute('aria-selected')).toBe('true');
-    expect(screen.getByText(/逐帧渲染/)).toBeTruthy();
+    expect(screen.getByText(/输入问题开始对话/)).toBeTruthy();
   });
 
   it('从 URL 读取初始 tab，点击切换到指标', async () => {

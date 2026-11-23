@@ -11,10 +11,10 @@ import re
 import subprocess
 import sys
 
-MAX_DIFF_LINES = 800
-MAX_CONTEXT_CHARS = 12000
-CALLER_WINDOW = 15
-MAX_SYMBOLS = 10
+MAX_DIFF_LINES = 600
+MAX_CONTEXT_CHARS = 8000
+CALLER_WINDOW = 10
+MAX_SYMBOLS = 8
 DIFF_PATHS = ["src", "tests", "scripts", ".github/workflows", "opencode.json", ".opencode/agents"]
 GREP_PATHS = ["src", "tests", "scripts", ".github/workflows"]
 

@@ -1,0 +1,223 @@
+"""评测只读 API —— 批次列表、批次详情、用例分页与基线对比。
+
+设计：
+- 只读：不提供写入口，评测写入由 CLI 负责；
+- 数据库不可用（文件不可写、表缺失、路径异常）时返回空列表或 404，
+  不把运维问题放大成 500；
+- 字段名与 CLI 产出的 summary_json 对齐，前端不需要自己解 JSON。
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from collections.abc import Callable
+from typing import Any, TypeVar
+
+from fastapi import APIRouter, HTTPException, Query
+
+from devops_agent.eval import report as report_mod
+from devops_agent.observability import repository as repo
+
+router = APIRouter(prefix="/api/eval", tags=["eval"])
+
+T = TypeVar("T")
+
+_HARD_DEFAULTS: dict[str, int] = {"safety": 0, "forbidden_tool": 0, "format": 0}
+
+
+def _read(operation: Callable[[sqlite3.Connection], T]) -> T | None:
+    """在短连接里执行只读操作；数据库不可用返回 None。"""
+    try:
+        with repo.connect(repo.eval_db_path()) as conn:
+            repo.init_db(conn)
+            return operation(conn)
+    except (sqlite3.Error, OSError):
+        return None
+
+
+def _as_dict(value: object) -> dict[str, Any]:
+    """把 JSON 字符串解析成 dict；脏数据一律回退空 dict。"""
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _as_list(value: object) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _to_int(value: object) -> int:
+    """把 DB 里的 object 安全转成 int。"""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _batch_out(row: dict[str, object]) -> dict[str, Any]:
+    """把 DB 行 + summary_json 摊平成稳定响应字段。"""
+    summary = _as_dict(row.get("summary_json"))
+    hard = summary.get("hard_failures")
+    hard_failures = (
+        {key: int(hard.get(key, 0) or 0) for key in _HARD_DEFAULTS}
+        if isinstance(hard, dict)
+        else dict(_HARD_DEFAULTS)
+    )
+    judge = summary.get("judge")
+    verdict = str(summary.get("verdict") or "")
+    if not verdict and row.get("status") == "running":
+        verdict = "running"
+    return {
+        "id": _to_int(row["id"]),
+        "suite": str(row.get("suite") or ""),
+        "suite_version": str(row.get("suite_version") or ""),
+        "suite_sha": str(row.get("suite_sha") or ""),
+        "prompt_id": str(row.get("prompt_id") or ""),
+        "prompt_hash": str(row.get("prompt_sha") or ""),
+        "model": str(row.get("model") or ""),
+        "profile": str(row.get("profile") or ""),
+        "started_at": str(row.get("started_at") or ""),
+        "finished_at": row.get("finished_at"),
+        "status": str(row.get("status") or ""),
+        "n": int(summary.get("n", 0) or 0),
+        "passed": int(summary.get("passed", 0) or 0),
+        "pass_rate": float(summary.get("pass_rate", 0.0) or 0.0),
+        "hard_failures": hard_failures,
+        "judge": judge if isinstance(judge, dict) else None,
+        "trajectory_score": summary.get("trajectory_score"),
+        "p95_ms": int(summary.get("p95_ms", 0) or 0),
+        "tokens_total": int(summary.get("tokens_total", 0) or 0),
+        "cost_total": float(summary.get("cost_total", 0.0) or 0.0),
+        "baseline_id": summary.get("baseline_id"),
+        # 运行中的批次还没 summary，前端要能显示 running 而不是空徽标
+        "verdict": verdict,
+    }
+
+
+def _case_out(row: dict[str, object]) -> dict[str, Any]:
+    """把用例行 + detail_json / scores_json 摊平。"""
+    detail = _as_dict(row.get("detail_json"))
+    scores = _as_dict(row.get("scores_json"))
+    judge = scores or detail.get("judge")
+    tags = detail.get("tags")
+    return {
+        "case_id": str(row.get("case_id") or ""),
+        "status": str(row.get("status") or ""),
+        "passed": bool(row.get("passed")),
+        "tags": [str(tag) for tag in tags] if isinstance(tags, list) else [],
+        "trajectory_score": detail.get("trajectory_score"),
+        "judge": judge if isinstance(judge, dict) else {},
+        "latency_ms": _to_int(row.get("latency_ms")),
+        "tokens": _to_int(row.get("tokens")),
+        "checks": _as_list(detail.get("checks")),
+        "run_id": row.get("run_id"),
+    }
+
+
+@router.get("/batches")
+def list_batches(
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    """最近评测批次。"""
+
+    def load(conn: sqlite3.Connection) -> tuple[list[dict[str, object]], int]:
+        return repo.list_eval_batches(conn, limit=limit, offset=offset), repo.count_eval_batches(
+            conn
+        )
+
+    result = _read(load)
+    if result is None:
+        return {"items": [], "total": 0}
+    rows, total = result
+    return {"items": [_batch_out(row) for row in rows], "total": total}
+
+
+@router.get("/batches/{batch_id}")
+def get_batch(batch_id: int) -> dict[str, Any]:
+    """批次详情 + 标签分布 + 前 50 条用例。"""
+    batch = _read(lambda conn: repo.get_eval_batch(conn, batch_id))
+    if batch is None:
+        raise HTTPException(status_code=404, detail="batch_not_found")
+    cases = _read(lambda conn: repo.list_eval_cases(conn, batch_id, limit=50)) or []
+    summary = _as_dict(batch.get("summary_json"))
+    tags = summary.get("tags")
+    return {
+        "batch": _batch_out(batch),
+        "tags": tags if isinstance(tags, dict) else {},
+        "cases": [_case_out(row) for row in cases],
+    }
+
+
+@router.get("/batches/{batch_id}/cases")
+def list_cases(
+    batch_id: int,
+    status: str | None = None,
+    tag: str | None = None,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    """按状态 / 标签分页列用例。"""
+    batch = _read(lambda conn: repo.get_eval_batch(conn, batch_id))
+    if batch is None:
+        raise HTTPException(status_code=404, detail="batch_not_found")
+
+    def load(conn: sqlite3.Connection) -> tuple[list[dict[str, object]], int]:
+        return repo.list_eval_cases(
+            conn, batch_id, status=status, tag=tag, limit=limit, offset=offset
+        ), repo.count_eval_cases(conn, batch_id, status=status, tag=tag)
+
+    result = _read(load) or ([], 0)
+    rows, total = result
+    return {"items": [_case_out(row) for row in rows], "total": total}
+
+
+def _summary_for_compare(conn: sqlite3.Connection, batch_id: int) -> dict[str, Any] | None:
+    """取 summary_json 并补上用例通过情况，供 compare 计算 case diff。"""
+    row = repo.get_eval_batch(conn, batch_id)
+    if row is None:
+        return None
+    summary = _as_dict(row.get("summary_json"))
+    cases = repo.list_eval_cases(conn, batch_id, limit=10000)
+    summary["cases"] = [
+        {"case_id": str(case.get("case_id") or ""), "passed": bool(case.get("passed"))}
+        for case in cases
+    ]
+    return summary
+
+
+@router.get("/compare")
+def compare_batches(
+    base: int = Query(..., ge=1),
+    head: int = Query(..., ge=1),
+) -> dict[str, Any]:
+    """对比两个批次的指标与用例变化。"""
+
+    def load(conn: sqlite3.Connection) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        return _summary_for_compare(conn, base), _summary_for_compare(conn, head)
+
+    result = _read(load)
+    if result is None:
+        return {"verdict": "insufficient", "metrics": [], "cases": []}
+    base_summary, head_summary = result
+    if base_summary is None:
+        raise HTTPException(status_code=404, detail="base_batch_not_found")
+    if head_summary is None:
+        raise HTTPException(status_code=404, detail="head_batch_not_found")
+    compared = report_mod.compare(head_summary, base_summary)
+    return {
+        "verdict": compared["verdict"],
+        "metrics": compared["metrics"],
+        "cases": compared["cases"],
+    }

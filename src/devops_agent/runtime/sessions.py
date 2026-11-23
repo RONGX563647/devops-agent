@@ -112,8 +112,11 @@ class SessionRegistry:
         """
         entry = self._entries.get(session_id)
         key = str(getattr(profile, "key", ""))
-        matches = entry is not None and entry.profile == key
-        if matches and (web_search is None or entry.web_search == web_search):
+        if (
+            entry is not None
+            and entry.profile == key
+            and (web_search is None or entry.web_search == web_search)
+        ):
             entry.last_used = _now().timestamp()
             self._entries.move_to_end(session_id)
             return entry

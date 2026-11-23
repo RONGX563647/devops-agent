@@ -11,6 +11,7 @@ from fastapi import FastAPI, Header, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from devops_agent.env import load_env
 from devops_agent.observability.api import router as observability_router
 from devops_agent.observability.recorder import RunRecorder
 from devops_agent.runtime.agent import build_agentscope_runtime
@@ -27,6 +28,9 @@ def select_runtime() -> AgentRuntime:
 app = FastAPI(title="devops-agent")
 # runtime 挂在 app.state（FastAPI 标准注入容器）而非裸模块变量：
 # 测试 / 部署可替换 app.state.runtime，无需改环境变量或重启进程。
+# 只在进程启动时加载一次 .env；放在 select_runtime 之前保证凭据就绪。
+# 不放进 select_runtime 内部——否则测试里 monkeypatch.delenv 会被 .env 重新填回。
+load_env()
 app.state.runtime = select_runtime()
 app.include_router(observability_router)
 

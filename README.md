@@ -79,13 +79,18 @@ uvicorn devops_agent.main:app --port 8000
 
 ### 接入真实模型（OpenAI 兼容接口）
 
-设置三个环境变量后，`/run` 自动切换到真实模型运行时；**不要把密钥写进代码或提交到仓库**，只通过环境变量注入。
+设置三个环境变量后，`/run` 自动切换到真实模型运行时；**不要把密钥写进代码或提交到仓库**。
+
+推荐本地用 `.env` 文件：把 `.env.example` 复制为 `.env` 并填入真实值，启动时代码自动加载（`.env` 已被 gitignore，不会进版本库）。已存在的环境变量优先于 `.env`，所以 CI / 容器注入的值不会被本地文件覆盖。
 
 ```bash
+cp .env.example .env      # 然后编辑 .env，填入真实 key / 端点 / 模型
+uvicorn devops_agent.main:app --port 8000
+
+# 也可直接用环境变量（优先级高于 .env）：
 export DEVOPS_AGENT_API_KEY='<your-api-key>'
 export DEVOPS_AGENT_BASE_URL='https://<your-endpoint>/compatible-mode/v1'
 export DEVOPS_AGENT_MODEL='<model-name>'
-uvicorn devops_agent.main:app --port 8000
 
 curl -X POST http://127.0.0.1:8000/run \
   -H 'Content-Type: application/json' \

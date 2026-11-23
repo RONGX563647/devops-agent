@@ -1,6 +1,10 @@
 # 权限与运行时策略（对应 agentscope.permission / ReActConfig / ModelConfig）
 permission:
-  mode: default            # default / accept_edits / explore / bypass / dont_ask
+  # dont_ask：本服务是无人值守的 HTTP 服务，没有人工确认通道。
+  # default 模式下敏感调用会返回 ASK，Agent 只发一个确认事件就结束这一轮，
+  # 前端看到的是「运行没有任何输出也没报错」。dont_ask 的契约是永不 ASK：
+  # 只读命令照常放行，其余一律拒绝并给出原因，拒绝会作为错误步骤显示出来。
+  mode: dont_ask           # default / accept_edits / explore / bypass / dont_ask
   working_directories: []
   allow_rules: []
   deny_rules: []

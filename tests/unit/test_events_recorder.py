@@ -127,6 +127,26 @@ def test_event_to_dict_native_error_flattens_to_type() -> None:
     assert data["error"] == "internal"
 
 
+def test_event_to_dict_projects_confirm_tool_names() -> None:
+    """确认事件只带 tool_calls 数组，工具名必须投影出来，否则前端只能显示「需要确认」。"""
+    from agentscope.event import RequireUserConfirmEvent
+    from agentscope.message import ToolCallBlock
+
+    event = RequireUserConfirmEvent(
+        id="e3",
+        created_at="2026-11-23T14:00:00+00:00",
+        metadata={},
+        type="REQUIRE_USER_CONFIRM",
+        reply_id="r1",
+        tool_calls=[
+            ToolCallBlock(type="tool_call", id="t1", name="Bash", input='{"command": "rm -rf x"}')
+        ],
+    )
+    data = event_to_dict(event)
+    assert data["type"] == "REQUIRE_USER_CONFIRM"
+    assert data["tool_call_name"] == "Bash"
+
+
 def test_elapsed_ms_handles_bad_dates() -> None:
     assert _elapsed_ms("bad", "also-bad") == 0
     assert _elapsed_ms("2026-11-23T14:00:00+00:00", "2026-11-23T14:00:01+00:00") == 1000

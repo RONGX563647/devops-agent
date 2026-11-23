@@ -1,6 +1,7 @@
 """编排层工厂单元测试（用 MagicMock 作为 model，不发真实模型请求）。"""
 
 import asyncio
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,11 +9,15 @@ from agentscope.agent import Agent
 from agentscope.message import Msg, TextBlock
 from agentscope.pipeline import GoalPipeline, TeamMember, TeamPipeline
 
-from devops_agent.config import ModelPolicy, ReactPolicy, RuntimePolicy
+from devops_agent.config import ModelPolicy, ReactPolicy, RuntimePolicy, load_policy
 from devops_agent.runtime.agent import (
+    WORKDIR_ENV,
     AgentScopeRuntime,
     build_agent,
+    build_agentscope_runtime,
     build_chat_model,
+    build_system_prompt,
+    resolve_workdir,
     text_from_msg,
 )
 from devops_agent.runtime.runtime import EchoRuntime
@@ -127,3 +132,51 @@ def test_build_agent_explicit_limits_override_policy() -> None:
     agent = build_agent("schedule", "sys", MagicMock(), max_iters=2, max_retries=1, policy=policy)
     assert agent.react_config.max_iters == 2
     assert agent.model_config.max_retries == 1
+
+
+def test_build_agent_injects_permission_state() -> None:
+    """state 必须透传到 Agent：权限上下文只能靠注入生效，Agent 内部会用它建引擎。"""
+    from agentscope.permission import PermissionContext, PermissionMode
+    from agentscope.state import AgentState
+
+    agent = build_agent(
+        "devops",
+        "sys",
+        MagicMock(),
+        state=AgentState(permission_context=PermissionContext(mode=PermissionMode.DONT_ASK)),
+    )
+    assert agent.state.permission_context.mode == PermissionMode.DONT_ASK
+
+
+def test_build_system_prompt_declares_tools(tmp_path: Path) -> None:
+    """系统提示必须写明可用工具与工作目录，否则模型会只在正文里「描述」工具调用。"""
+    prompt = build_system_prompt(tmp_path)
+    for token in ("Bash", "Read", "Glob", "Grep", str(tmp_path.resolve())):
+        assert token in prompt
+    assert "必须真的发起工具调用" in prompt
+
+
+def test_resolve_workdir_prefers_argument(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(WORKDIR_ENV, str(tmp_path / "from-env"))
+    assert resolve_workdir(tmp_path) == tmp_path.resolve()
+
+
+def test_resolve_workdir_reads_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(WORKDIR_ENV, str(tmp_path))
+    assert resolve_workdir() == tmp_path.resolve()
+
+
+def test_build_agentscope_runtime_wires_readonly_toolkit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """装配点必须真的把只读工具集与策略权限交给 Agent —— 修复前这里是空的。"""
+    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
+
+    runtime = build_agentscope_runtime(workdir=tmp_path)
+    agent = runtime._agent
+    names = {schema["function"]["name"] for schema in asyncio.run(agent.toolkit.get_tool_schemas())}
+    assert {"Bash", "Read", "Glob", "Grep"} <= names
+    assert "Write" not in names
+    assert agent.state.permission_context.mode.value == load_policy().permission.mode

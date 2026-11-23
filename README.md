@@ -99,6 +99,14 @@ curl -X POST http://127.0.0.1:8000/run \
 
 运行时的选择在 `main.select_runtime()` 中完成，并挂载到 `app.state.runtime`；测试可替换该对象而不必改环境变量。
 
+### Agent 的工具与权限
+
+真实运行时装配一组**内置只读工具**：`Bash`（shell）、`Read`、`Glob`、`Grep`。`Edit` / `Write` 不在其中——只读会话不暴露写工具。
+
+- 工作目录：`DEVOPS_AGENT_WORKDIR`（缺省为进程当前目录），同时决定 shell 的 cwd 与文件工具的路径基准。从别的目录启动服务时建议显式指定。
+- 权限：读 `config/policy.yaml` 的 `permission.mode`，默认 `dont_ask`。这是**无人值守**服务的正确模式：只读命令放行，其余一律拒绝并给出原因；`default` 模式下敏感调用会返回 ASK，而 HTTP 服务没有人工确认通道，Agent 只会发出一个确认事件就结束这一轮，表现为「没有任何输出也没报错」。
+- 想看工具调用细节：`POST /run/stream` 会推送 `TOOL_CALL_START` / `TOOL_RESULT_END`（含 `state` 与 `tool_call_name`），前端把它渲染成一行式步骤。
+
 ---
 
 ## 架构：agentscope 真实 API 映射

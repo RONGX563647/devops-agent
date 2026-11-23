@@ -33,7 +33,9 @@ def test_load_policy_from_repo() -> None:
     assert policy.react.default == 12
     assert policy.react.delivery == 16
     assert policy.model.max_retries == 3
-    assert policy.permission.mode == "default"
+    # 无人值守服务的默认权限模式：只读放行、其余拒绝，绝不返回 ASK。
+    # 若这里被改回 default，敏感调用会退化成「发个确认事件就结束」的静默中断。
+    assert policy.permission.mode == "dont_ask"
     assert cfg.load_policy() is policy  # 缓存命中
 
 

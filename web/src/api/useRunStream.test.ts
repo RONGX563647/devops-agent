@@ -60,6 +60,25 @@ describe('applyEvent', () => {
     expect(applyEvent(INITIAL, { type: 'RUN_ERROR' }).error).toBe('未知错误');
   });
 
+  it('等待确认的事件必须带工具名并标记为错误，不能静默', () => {
+    const next = applyEvent(INITIAL, {
+      type: 'REQUIRE_USER_CONFIRM',
+      reply_id: 'r1',
+      tool_call_name: 'Bash',
+    });
+    expect(next.steps[0]).toMatchObject({
+      kind: 'control',
+      label: '需要确认 · Bash',
+      state: 'error',
+    });
+    expect(next.steps[0].detail).toContain('无人值守');
+  });
+
+  it('确认事件缺工具名时仍给出可读提示', () => {
+    const next = applyEvent(INITIAL, { type: 'REQUIRE_USER_CONFIRM', reply_id: 'r1' });
+    expect(next.steps[0].label).toBe('需要确认');
+  });
+
   it('HINT_BLOCK 标注为 lifecycle 且带 hint 文案', () => {
     const next = applyEvent(INITIAL, {
       type: 'HINT_BLOCK',

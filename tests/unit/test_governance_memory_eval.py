@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 from agentscope.permission import PermissionEngine, PermissionMode, PermissionRule
 
+from devops_agent.config import PermissionPolicy, RuleSpec, RuntimePolicy, WorkingDirSpec
 from devops_agent.eval.scorer import EvalDimension
 from devops_agent.governance.policy import build_permission_engine, deny_rule
 from devops_agent.memory import ledger
@@ -26,6 +27,23 @@ def test_build_permission_engine() -> None:
 
 def test_build_permission_engine_defaults() -> None:
     assert isinstance(build_permission_engine(), PermissionEngine)
+
+
+def test_build_permission_engine_from_policy() -> None:
+    policy = RuntimePolicy(
+        permission=PermissionPolicy(
+            mode="explore",
+            working_directories=[WorkingDirSpec(path="/tmp/work", source="policy")],
+            deny_rules=[RuleSpec(tool_name="write_file", behavior="deny")],
+            ask_rules=[RuleSpec(tool_name="shell", behavior="ask")],
+        )
+    )
+    engine = build_permission_engine(policy=policy)
+    assert isinstance(engine, PermissionEngine)
+    assert engine.context.mode == PermissionMode.EXPLORE
+    assert "write_file" in engine.context.deny_rules
+    assert "shell" in engine.context.ask_rules
+    assert "/tmp/work" in engine.context.working_directories
 
 
 def test_build_mem0_middleware(monkeypatch: object) -> None:

@@ -44,16 +44,21 @@ def _to_rule_map(specs: list[RuleSpec]) -> dict[str, list[PermissionRule]]:
     return buckets
 
 
-def build_permission_engine(
+def build_permission_context(
     mode: PermissionMode | None = None,
     deny_rules: dict[str, list[PermissionRule]] | None = None,
     *,
     policy: RuntimePolicy | None = None,
-) -> PermissionEngine:
-    """按模式装配权限引擎；省略参数时从 config/policy.yaml 读取。"""
+) -> PermissionContext:
+    """按模式装配权限上下文；省略参数时从 config/policy.yaml 读取。
+
+    单独暴露 context 而不只给 engine：Agent 的权限判定读的是
+    `AgentState.permission_context`（Agent 内部自建引擎），装配时直接注入
+    context 才能让 policy.yaml 真正生效，无需另建一套引擎。
+    """
     resolved = policy if policy is not None else load_policy()
     cfg = resolved.permission
-    context = PermissionContext(
+    return PermissionContext(
         mode=mode if mode is not None else PermissionMode(cfg.mode),
         working_directories={
             w.path: AdditionalWorkingDirectory(path=w.path, source=w.source)
@@ -63,4 +68,13 @@ def build_permission_engine(
         deny_rules=deny_rules if deny_rules is not None else _to_rule_map(cfg.deny_rules),
         ask_rules=_to_rule_map(cfg.ask_rules),
     )
-    return PermissionEngine(context)
+
+
+def build_permission_engine(
+    mode: PermissionMode | None = None,
+    deny_rules: dict[str, list[PermissionRule]] | None = None,
+    *,
+    policy: RuntimePolicy | None = None,
+) -> PermissionEngine:
+    """按模式装配权限引擎；省略参数时从 config/policy.yaml 读取。"""
+    return PermissionEngine(build_permission_context(mode, deny_rules, policy=policy))

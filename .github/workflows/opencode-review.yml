@@ -53,9 +53,11 @@ jobs:
           issue = gh("issue", "list", "--state", "all", "--label", label,
                      "--json", "number", "--jq", ".[0].number // empty")
           if not issue:
-              issue = gh("issue", "create", "--title", "[bot] OpenCode review state",
-                         "--body", "{}", "--label", label, "--json", "number",
-                         "--jq", ".number")
+              # runner 内置 gh 的 issue create 不支持 --json，创建后用 list 回查编号
+              gh("issue", "create", "--title", "[bot] OpenCode review state",
+                 "--body", "{}", "--label", label)
+              issue = gh("issue", "list", "--state", "all", "--label", label,
+                         "--json", "number", "--jq", ".[0].number // empty")
           body = gh("issue", "view", issue, "--json", "body", "--jq", ".body")
           try:
               state = json.loads(body)

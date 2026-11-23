@@ -99,6 +99,14 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 
 运行时的选择在 `main.select_runtime()` 中完成，并挂载到 `app.state.runtime`；测试可替换该对象而不必改环境变量。
 
+### 模型侧联网搜索（可选）
+
+`DEVOPS_AGENT_ENABLE_SEARCH=1` 时，模型请求体会附加 `enable_search=true`，由供应商（如 DashScope 兼容接口）执行联网检索。**默认关闭**。
+
+- 检索发生在供应商侧，事件流里没有工具调用 span，只能看到最终回答，无法审计检索了哪些页面。
+- 供应商或模型不支持该参数时可能直接返回 400；关掉开关即可回退。
+- 检索通常按次计费，开启前请确认额度与共享环境的影响。
+
 ### Agent 的工具与权限
 
 真实运行时装配一组**内置只读工具**：`Bash`（shell）、`Read`、`Glob`、`Grep`。`Edit` / `Write` 不在其中——只读会话不暴露写工具。

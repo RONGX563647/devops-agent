@@ -93,7 +93,26 @@ CREATE TABLE IF NOT EXISTS eval_scores (
     comment     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_scores_run ON eval_scores(run_id);
+CREATE TABLE IF NOT EXISTS session_states (
+    session_id  TEXT PRIMARY KEY,
+    state_json  TEXT NOT NULL DEFAULT '',
+    permission  TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL
+);
 """
+
+# 后加的列（CREATE TABLE IF NOT EXISTS 不会给老库补列，必须 ALTER）。
+# parked：该 run 正在等用户确认；用独立列而不是塞进 status，
+# 因为 status 的 CHECK 约束在 SQLite 里改不了，加列比重建表安全。
+_RUN_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("permission", "TEXT NOT NULL DEFAULT ''"),
+    ("parked", "INTEGER NOT NULL DEFAULT 0"),
+    ("pending_json", "TEXT"),
+    ("expires_at", "TEXT"),
+    # 本 run 已发出的确认请求次数：模型被拒后换个写法重试会产生新的 tool_call_id，
+    # 按 id 去重挡不住，只能按 run 计数兜底
+    ("ask_count", "INTEGER NOT NULL DEFAULT 0"),
+)
 
 
 def default_db_path() -> Path:
@@ -126,8 +145,18 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """建表（幂等）。"""
+    """建表（幂等），并给老库补齐后加的列。"""
     conn.executescript(_SCHEMA)
+    _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """按 PRAGMA 结果补列。已存在的列跳过，重复执行安全。"""
+    existing = {str(row["name"]) for row in conn.execute("PRAGMA table_info(runs)")}
+    for name, ddl in _RUN_COLUMNS:
+        if name not in existing:
+            # 列名与 DDL 都是模块内常量，不含外部输入
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {ddl}")
 
 
 def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
@@ -145,8 +174,8 @@ def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
         """INSERT INTO runs
            (session_id, domain, status, input, output, started_at, ended_at,
             duration_ms, model, total_tokens, health_score,
-            input_tokens, output_tokens, request_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            input_tokens, output_tokens, request_id, permission)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run.session_id,
             run.domain,
@@ -162,6 +191,7 @@ def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
             run.input_tokens,
             run.output_tokens,
             run.request_id or None,
+            run.permission,
         ),
     )
     assert cur.lastrowid is not None  # INSERT 成功时 sqlite3 保证有 lastrowid
@@ -305,6 +335,7 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         input_tokens=row["input_tokens"],
         output_tokens=row["output_tokens"],
         request_id=row["request_id"],
+        permission=row["permission"] or "",
     )
 
 
@@ -457,7 +488,7 @@ def summary_rows(conn: sqlite3.Connection) -> list[RunRecord]:
     rows = conn.execute(
         """SELECT id, session_id, domain, status, started_at, ended_at, duration_ms,
                   model, total_tokens, health_score, input_tokens, output_tokens, request_id,
-                  input, output
+                  input, output, permission
            FROM runs"""
     ).fetchall()
     return [_run_from_row(row) for row in rows]
@@ -477,3 +508,111 @@ def all_scores(conn: sqlite3.Connection) -> list[EvalScoreRecord]:
     """取出全部评分供趋势聚合。"""
     rows = conn.execute("SELECT * FROM eval_scores ORDER BY created_at, id").fetchall()
     return [_score_from_row(row) for row in rows]
+
+
+# --- 挂起与恢复 ---------------------------------------------------------
+# 一条 run 在等用户确认时被标记 parked。所有状态迁移都用「带前置状态的条件
+# UPDATE」完成：影响 0 行即说明状态已被别人改过，调用方据此返回 409，
+# 这样双击「允许」或两个标签页同时确认都不会重复执行。
+
+
+def park_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    *,
+    pending_json: str,
+    expires_at: str,
+) -> bool:
+    """把 run 标记为等待确认；已处于挂起态时返回 False（幂等）。"""
+    cur = conn.execute(
+        "UPDATE runs SET parked=1, pending_json=?, expires_at=? WHERE id=? AND parked=0",
+        (pending_json, expires_at, run_id),
+    )
+    return cur.rowcount > 0
+
+
+def unpark_run(conn: sqlite3.Connection, run_id: int, *, now: str) -> bool:
+    """解除挂起；已解除或已过期返回 False。
+
+    过期判定放在 SQL 里一起做，避免「先查再改」的竞态窗口。
+    """
+    cur = conn.execute(
+        """UPDATE runs SET parked=0, pending_json=NULL, expires_at=NULL
+           WHERE id=? AND parked=1 AND (expires_at IS NULL OR expires_at > ?)""",
+        (run_id, now),
+    )
+    return cur.rowcount > 0
+
+
+def get_pending(conn: sqlite3.Connection, run_id: int) -> dict[str, object] | None:
+    """取挂起信息：run_id / session_id / pending_json / expires_at / parked。"""
+    row = conn.execute(
+        """SELECT id, session_id, parked, pending_json, expires_at, permission
+           FROM runs WHERE id=?""",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "run_id": int(row["id"]),
+        "session_id": str(row["session_id"]),
+        "parked": bool(row["parked"]),
+        "pending_json": row["pending_json"],
+        "expires_at": row["expires_at"],
+        "permission": str(row["permission"] or ""),
+    }
+
+
+def active_run_for_session(conn: sqlite3.Connection, session_id: str) -> int | None:
+    """同一会话是否已有未结束的 run（含挂起）。"""
+    row = conn.execute(
+        "SELECT id FROM runs WHERE session_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1",
+        (session_id,),
+    ).fetchone()
+    return int(row["id"]) if row is not None else None
+
+
+def bump_asks(conn: sqlite3.Connection, run_id: int) -> int:
+    """把本 run 的确认次数 +1 并返回新值。"""
+    conn.execute("UPDATE runs SET ask_count=ask_count+1 WHERE id=?", (run_id,))
+    row = conn.execute("SELECT ask_count FROM runs WHERE id=?", (run_id,)).fetchone()
+    return int(row["ask_count"]) if row is not None else 0
+
+
+# --- 会话状态 -----------------------------------------------------------
+
+
+def save_session_state(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    state_json: str,
+    permission: str,
+    updated_at: str,
+) -> None:
+    """整份覆盖写会话快照（AgentState 的 JSON）。"""
+    conn.execute(
+        """INSERT INTO session_states (session_id, state_json, permission, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(session_id) DO UPDATE SET
+             state_json=excluded.state_json,
+             permission=excluded.permission,
+             updated_at=excluded.updated_at""",
+        (session_id, state_json, permission, updated_at),
+    )
+
+
+def load_session_state(conn: sqlite3.Connection, session_id: str) -> tuple[str, str] | None:
+    """读取会话快照，返回 (state_json, permission)；没有则 None。"""
+    row = conn.execute(
+        "SELECT state_json, permission FROM session_states WHERE session_id=?", (session_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row["state_json"] or ""), str(row["permission"] or "")
+
+
+def delete_session_state(conn: sqlite3.Connection, session_id: str) -> bool:
+    """删除会话快照，返回是否命中。"""
+    cur = conn.execute("DELETE FROM session_states WHERE session_id=?", (session_id,))
+    return cur.rowcount > 0

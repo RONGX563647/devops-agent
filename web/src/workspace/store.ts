@@ -3,17 +3,27 @@
  * 放在 React 组件之外，切换 tab / 会话 / 重挂载都不会丢消息，流也能在后台继续跑。
  */
 import { useCallback, useSyncExternalStore } from 'react';
-import { fetchRuns } from '../api/client';
+import { fetchPending, fetchRuns } from '../api/client';
 import {
   applyEvent,
   INITIAL_STATE,
+  streamConfirm,
   streamRun,
   type StreamState,
 } from '../api/useRunStream';
-import type { Attachment, ChatMessage, Run } from '../types';
+import type {
+  Attachment,
+  AwaitingState,
+  ChatMessage,
+  ConfirmDecision,
+  PermissionKey,
+  Run,
+} from '../types';
 import {
   loadMessages,
+  loadPermission,
   saveMessages,
+  savePermission,
   listStoredSessions,
   type StoredSession,
 } from './history';
@@ -24,6 +34,20 @@ import { toSessionTitle } from './sidebar-utils';
 const WATCHDOG_MS = 60_000;
 /** 流式过程中写盘节流，避免逐 token 打满 localStorage。 */
 const PERSIST_MS = 500;
+/** 新会话的默认档位；服务端会用 /api/permissions 的真实默认覆盖它。 */
+export const DEFAULT_PERMISSION: PermissionKey = 'workspace';
+
+const PERMISSION_KEYS: readonly PermissionKey[] = [
+  'readonly',
+  'workspace',
+  'execute',
+  'unrestricted',
+  'auto',
+];
+
+function resolvePermission(raw: string | null): PermissionKey {
+  return PERMISSION_KEYS.find((key) => key === raw) ?? DEFAULT_PERMISSION;
+}
 
 export interface SessionSnapshot {
   sessionId: string;
@@ -36,6 +60,10 @@ export interface SessionSnapshot {
   runId: number | null;
   error: string | null;
   modelName: string;
+  /** 本会话生效的权限档位。 */
+  permission: PermissionKey;
+  /** 等待确认的挂起态；非空时发送按钮应禁用。 */
+  awaiting: AwaitingState | null;
 }
 
 interface Entry {
@@ -46,6 +74,7 @@ interface Entry {
   loading: boolean;
   hydrated: boolean;
   abort: AbortController | null;
+  permission: PermissionKey;
   /** 代次：每次发起/停止 +1，旧流的回调据此丢弃，避免污染新会话。 */
   generation: number;
   persistTimer: ReturnType<typeof setTimeout> | null;
@@ -68,6 +97,8 @@ function toSnapshot(entry: Entry): SessionSnapshot {
     runId: entry.stream.runId,
     error: entry.stream.error,
     modelName: entry.stream.modelName,
+    permission: entry.permission,
+    awaiting: entry.stream.awaiting ?? entry.messages[entry.messages.length - 1]?.awaiting ?? null,
   };
 }
 
@@ -75,6 +106,7 @@ function ensureEntry(sessionId: string): Entry {
   const existing = entries.get(sessionId);
   if (existing) return existing;
   const messages = loadMessages(sessionId) ?? [];
+  const permission = resolvePermission(loadPermission(sessionId));
   const entry: Entry = {
     sessionId,
     messages,
@@ -83,6 +115,7 @@ function ensureEntry(sessionId: string): Entry {
     loading: false,
     hydrated: messages.length > 0,
     abort: null,
+    permission,
     generation: 0,
     persistTimer: null,
     snapshot: {
@@ -96,6 +129,8 @@ function ensureEntry(sessionId: string): Entry {
       runId: null,
       error: null,
       modelName: '',
+      permission,
+      awaiting: null,
     },
   };
   entries.set(sessionId, entry);
@@ -144,6 +179,7 @@ function syncAssistant(entry: Entry): void {
     steps: entry.stream.steps,
     error: entry.stream.error ?? undefined,
     pending: entry.stream.running,
+    awaiting: entry.stream.awaiting ?? undefined,
     modelName: entry.stream.modelName || current.modelName,
     inputTokens: entry.stream.inputTokens,
     outputTokens: entry.stream.outputTokens,
@@ -187,6 +223,7 @@ function finalize(entry: Entry, mode: FinalizeMode): void {
       error: entry.stream.error ?? current.error,
       pending: false,
       stopped: mode === 'stopped' || undefined,
+      awaiting: undefined,
       endedAt: entry.stream.endedAt ?? new Date().toISOString(),
     });
   }
@@ -194,11 +231,44 @@ function finalize(entry: Entry, mode: FinalizeMode): void {
   emit(entry);
 }
 
+/** 挂起收尾：这一轮没结束，只是停住等确认，所以不写 endedAt、不写占位文本。 */
+function finalizeParked(entry: Entry): void {
+  entry.running = false;
+  entry.stream = { ...entry.stream, running: false };
+  entry.abort = null;
+  const current = entry.messages[entry.messages.length - 1];
+  if (current && current.role === 'assistant') {
+    replaceLastAssistant(entry, {
+      ...current,
+      text: entry.stream.text,
+      steps: entry.stream.steps,
+      error: entry.stream.error ?? current.error,
+      pending: false,
+      awaiting: entry.stream.awaiting ?? current.awaiting,
+      endedAt: null,
+    });
+  }
+  persistNow(entry);
+  emit(entry);
+}
+
+/** 流结束后的统一收尾：有挂起态就停在确认，否则按正常/失败结束。 */
+function settle(entry: Entry, mode: FinalizeMode): void {
+  if (entry.stream.awaiting) finalizeParked(entry);
+  else finalize(entry, mode);
+}
+
 /** 发起一轮对话：追加 user + assistant 占位消息，并在后台消费 SSE。 */
-export function send(sessionId: string, text: string, attachments: Attachment[] = []): void {
+export function send(
+  sessionId: string,
+  text: string,
+  attachments: Attachment[] = [],
+  permission?: PermissionKey,
+): void {
   if (!sessionId) return;
   const entry = ensureEntry(sessionId);
   if (entry.running) return;
+  if (permission && permission !== entry.permission) setPermission(sessionId, permission);
 
   const now = new Date().toISOString();
   const files = attachments.filter((item) => item.status === 'ok');
@@ -209,6 +279,7 @@ export function send(sessionId: string, text: string, attachments: Attachment[] 
     at: now,
     steps: [],
     attachments: files.length > 0 ? files : undefined,
+    permission: entry.permission,
   };
   const assistant: ChatMessage = {
     id: newId('msg'),
@@ -261,10 +332,11 @@ export function send(sessionId: string, text: string, attachments: Attachment[] 
     controller.signal,
     newId('req'),
     files.map((item) => item.id),
+    entry.permission,
   )
     .then(() => {
       if (generation !== entry.generation) return;
-      finalize(entry, 'done');
+      settle(entry, 'done');
     })
     .catch((err: unknown) => {
       if (generation !== entry.generation) return;
@@ -291,8 +363,89 @@ export function stop(sessionId: string): void {
   finalize(entry, 'stopped');
 }
 
-function runToMessages(run: Run): ChatMessage[] {
-  return [
+/** 切换本会话的档位：只影响后续的轮次，不改已经发生过的事。 */
+export function setPermission(sessionId: string, key: PermissionKey): void {
+  const entry = ensureEntry(sessionId);
+  if (entry.permission === key) return;
+  entry.permission = key;
+  savePermission(sessionId, key);
+  emit(entry);
+}
+
+/** 提交确认并接着跑同一条 run（不新开一轮，所以不追加消息）。 */
+export function confirm(sessionId: string, decisions: ConfirmDecision[]): void {
+  const entry = ensureEntry(sessionId);
+  if (entry.running) return;
+  const awaiting = entry.stream.awaiting ?? entry.messages[entry.messages.length - 1]?.awaiting;
+  if (!awaiting?.runId) return;
+
+  entry.running = true;
+  // 卡片先收起来：正在执行时还挂着「等待确认」会误导
+  entry.stream = { ...entry.stream, running: true, error: null, awaiting: null };
+  // 消息上的挂起态也要一起清，否则快照会回落到它、卡片又冒出来
+  syncAssistant(entry);
+  entry.generation += 1;
+  const generation = entry.generation;
+  const controller = new AbortController();
+  entry.abort = controller;
+  emit(entry);
+
+  void streamConfirm(
+    awaiting.runId,
+    sessionId,
+    decisions,
+    (event) => {
+      if (generation !== entry.generation) return;
+      entry.stream = applyEvent(entry.stream, event);
+      syncAssistant(entry);
+      schedulePersist(entry);
+      emit(entry);
+    },
+    controller.signal,
+  )
+    .then(() => {
+      if (generation !== entry.generation) return;
+      settle(entry, 'done');
+    })
+    .catch((err: unknown) => {
+      if (generation !== entry.generation) return;
+      if (controller.signal.aborted) return;
+      entry.stream = {
+        ...entry.stream,
+        running: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+      syncAssistant(entry);
+      finalize(entry, 'error');
+    });
+}
+
+/** 刷新后恢复挂起卡片：权威状态在服务端，前端只是把它取回来。 */
+export async function refreshPending(sessionId: string): Promise<void> {
+  const entry = ensureEntry(sessionId);
+  const last = entry.messages[entry.messages.length - 1];
+  const awaiting = entry.stream.awaiting ?? last?.awaiting;
+  if (entry.running || !awaiting?.runId) return;
+  try {
+    const pending = await fetchPending(awaiting.runId, sessionId);
+    entry.stream = {
+      ...entry.stream,
+      awaiting: {
+        runId: pending.run_id,
+        calls: pending.tool_calls,
+        expiresAt: pending.expires_at,
+      },
+    };
+    syncAssistant(entry);
+  } catch {
+    // 404 / 403 / 409：挂起已失效（超时、已确认、换实例），把卡片清掉
+    entry.stream = { ...entry.stream, awaiting: null };
+    if (last?.role === 'assistant') replaceLastAssistant(entry, { ...last, awaiting: undefined });
+  }
+  emit(entry);
+}
+
+function runToMessages(run: Run): ChatMessage[] {  return [
     {
       id: `run-${run.id}-user`,
       role: 'user',

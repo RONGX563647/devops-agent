@@ -4,6 +4,7 @@ import { toSessionTitle } from './sidebar-utils';
 
 const MESSAGE_PREFIX = 'da.chat.';
 const INDEX_KEY = 'da.sessions';
+const PERMISSION_PREFIX = 'da.permission.';
 const MAX_MESSAGES = 200;
 /** 单条工具返回最长保留字符数，避免日志把 localStorage 撑爆。 */
 const MAX_TEXT = 20_000;
@@ -132,7 +133,28 @@ export function clearAllHistory(): void {
   const keys: string[] = [];
   for (let i = 0; i < store.length; i += 1) {
     const key = store.key(i);
-    if (key && (key.startsWith(MESSAGE_PREFIX) || key === INDEX_KEY)) keys.push(key);
+    if (key && (key.startsWith(MESSAGE_PREFIX) || key.startsWith(PERMISSION_PREFIX) || key === INDEX_KEY)) {
+      keys.push(key);
+    }
   }
   keys.forEach((key) => store.removeItem(key));
+}
+
+/** 档位按会话记忆：同一个会话重开时沿用上次的选择，新会话走默认。 */
+export function loadPermission(sessionId: string): string | null {
+  if (!sessionId) return null;
+  try {
+    return storage()?.getItem(PERMISSION_PREFIX + sessionId) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function savePermission(sessionId: string, key: string): void {
+  if (!sessionId) return;
+  try {
+    storage()?.setItem(PERMISSION_PREFIX + sessionId, key);
+  } catch {
+    // 隐私模式 / 配额满：只影响下次默认值，不该阻断对话
+  }
 }

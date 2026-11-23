@@ -4,6 +4,8 @@ import type {
   Attachment,
   EvalTrends,
   InputStage,
+  PendingState,
+  PermissionCatalog,
   Run,
   RunHealth,
   RunList,
@@ -66,6 +68,18 @@ export async function deleteSecret(name: string): Promise<void> {
 
 export function fetchRun(id: number): Promise<Run> {
   return getJson<Run>(`/api/runs/${id}`);
+}
+
+/** 本部署开放的权限档位：前端只能用这里列出来的，越权档服务端会 403。 */
+export function fetchPermissions(): Promise<PermissionCatalog> {
+  return getJson<PermissionCatalog>('/api/permissions');
+}
+
+/** 刷新后恢复挂起态：必须带 session_id，服务端会校验归属。 */
+export function fetchPending(runId: number, sessionId: string): Promise<PendingState> {
+  return getJson<PendingState>(
+    `/run/${runId}/pending?session_id=${encodeURIComponent(sessionId)}`,
+  );
 }
 
 export function fetchSpans(id: number): Promise<Span[]> {

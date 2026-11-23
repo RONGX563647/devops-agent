@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from devops_agent.runtime.confirm import pending_call
+
 # 需要落库为 span 的关键事件类型（其余 delta 类事件只用于前端流式渲染）
 SPAN_EVENT_TYPES = frozenset(
     {
@@ -90,7 +92,25 @@ def _from_duck_typed(event: object) -> dict[str, Any]:
     error = getattr(event, "error", None)
     if error is not None:
         data["error"] = _error_type(error)
+    calls = _duck_tool_calls(event)
+    if calls:
+        data["tool_calls"] = calls
     return data
+
+
+def _duck_tool_calls(event: object) -> list[dict[str, Any]]:
+    """假事件的 tool_calls：块对象能自己序列化就序列化，否则原样保留 dict。"""
+    calls = getattr(event, "tool_calls", None)
+    if not isinstance(calls, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for call in calls:
+        dumper = getattr(call, "model_dump", None)
+        if callable(dumper):
+            out.append(dumper(mode="json"))
+        elif isinstance(call, dict):
+            out.append(call)
+    return out
 
 
 def _tool_call_names(raw: dict[str, Any]) -> str:
@@ -110,6 +130,32 @@ def _tool_call_names(raw: dict[str, Any]) -> str:
     return ", ".join(names)
 
 
+def _confirm_calls(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """把待确认的 tool_calls 摊平成前端能直接渲染的数组。
+
+    只留展示需要的四个字段，且 input 换成「命令本身」而不是原始 JSON：
+    前端要用它渲染确认卡片，服务端保留权威 ToolCallBlock 用于真正执行，
+    客户端不需要（也不应该）拿到可回传的完整块。
+    """
+    calls = raw.get("tool_calls")
+    if not isinstance(calls, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        item = pending_call(call)
+        result.append(
+            {
+                "tool_call_id": item.tool_call_id,
+                "name": item.name,
+                "input": item.input,
+                "risk": item.risk,
+            }
+        )
+    return result
+
+
 def _project(raw: dict[str, Any]) -> dict[str, Any]:
     """把任意来源的字段字典投影成稳定的输出 key 集合。"""
     data: dict[str, Any] = {"type": str(raw.get("type", "UNKNOWN"))}
@@ -123,6 +169,12 @@ def _project(raw: dict[str, Any]) -> dict[str, Any]:
         names = _tool_call_names(raw)
         if names:
             data["tool_call_name"] = names
+    if data["type"] == "REQUIRE_USER_CONFIRM":
+        # 这条事件原生的 tool_calls 数组此前被压成一行名字，前端拿不到命令原文，
+        # 确认卡片就成了空壳。单独保留一份精简数组。
+        calls = _confirm_calls(raw)
+        if calls:
+            data["tool_calls"] = calls
     error = raw.get("error")
     if error is not None:
         data["error"] = _error_type(error)

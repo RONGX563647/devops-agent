@@ -1,13 +1,59 @@
 # 权限与运行时策略（对应 agentscope.permission / ReActConfig / ModelConfig）
 permission:
-  # dont_ask：本服务是无人值守的 HTTP 服务，没有人工确认通道。
-  # default 模式下敏感调用会返回 ASK，Agent 只发一个确认事件就结束这一轮，
-  # 前端看到的是「运行没有任何输出也没报错」。dont_ask 的契约是永不 ASK：
-  # 只读命令照常放行，其余一律拒绝并给出原因，拒绝会作为错误步骤显示出来。
+  # mode 只是「没有档位上下文时」的回落值（脚本、单测直接建引擎时用）。
+  # 正常对话由请求里的档位决定，映射关系见 src/devops_agent/governance/profiles.py：
+  #   readonly → explore / workspace → accept_edits / execute → accept_edits + 白名单
+  #   unrestricted → bypass / auto → dont_ask
   mode: dont_ask           # default / accept_edits / explore / bypass / dont_ask
+
+  # 前端默认档位：工作区可写 + 越界弹确认，是「人在会话框前」时的合理默认。
+  default_profile: workspace
+  # 本部署开放给前端的档位。unrestricted 默认不开放 —— 它跳过逐次确认，
+  # 只适合本地/一次性环境，要开就显式加进来。
+  available: [readonly, workspace, execute, auto]
+
+  # execute 档的放行前缀。框架会把复合命令拆成子命令逐个匹配，
+  # 所以 "pytest; rm -rf /" 里的 rm 匹配不上任何一条，整条不会被放行。
+  # 注意这是「信任这个命令」而不是「验证这次行为」：pytest 会执行 conftest.py，
+  # npm run 会执行 package.json 里的脚本 —— 白名单的固有属性，不是漏洞。
+  command_allowlist:
+    - "pytest:*"
+    - "python -m pytest:*"
+    - "python -m ruff:*"
+    - "python -m mypy:*"
+    - "npm run:*"
+    - "npm test:*"
+    - "npm ci:*"
+    - "npm install:*"
+    - "npx:*"
+    - "pnpm:*"
+    - "yarn:*"
+    - "make:*"
+    - "cargo:*"
+    - "go test:*"
+    - "go build:*"
+
   working_directories: []
   allow_rules: []
-  deny_rules: []
+  deny_rules:
+    # source: profile 表示「只在 hard_deny 档（unrestricted）生效」。
+    # 这是点防御：Bash 走子串/前缀匹配，挡不住 python -c "shutil.rmtree(...)"。
+    - tool_name: Bash
+      rule_content: ".git/"
+      behavior: deny
+      source: profile
+    - tool_name: Bash
+      rule_content: ".env"
+      behavior: deny
+      source: profile
+    - tool_name: Write
+      rule_content: ".git/"
+      behavior: deny
+      source: profile
+    - tool_name: Edit
+      rule_content: ".git/"
+      behavior: deny
+      source: profile
   ask_rules: []
 
 react:

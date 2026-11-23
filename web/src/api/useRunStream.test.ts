@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ParseStage, StreamEvent } from '../types';
-import { applyEvent, consumeStream, parseFrame, parseSummary, streamRun } from './useRunStream';
+import type { ParseStage, PendingCall, StreamEvent } from '../types';
+import {
+  applyEvent,
+  consumeStream,
+  parseFrame,
+  parseSummary,
+  streamConfirm,
+  streamRun,
+} from './useRunStream';
 import { INITIAL_STATE } from './useRunStream';
 import type { StreamState } from './useRunStream';
 
@@ -8,6 +15,11 @@ const INITIAL: StreamState = {
   ...INITIAL_STATE,
   running: true,
 };
+
+/** 服务端给的一条待确认调用：input 是展示文本，不是可回传的命令。 */
+const CALLS: PendingCall[] = [
+  { tool_call_id: 't1', name: 'Bash', input: 'rm -rf build', risk: 'danger' },
+];
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -145,23 +157,58 @@ describe('applyEvent', () => {
     expect(applyEvent(INITIAL, { type: 'RUN_ERROR' }).error).toBe('未知错误');
   });
 
-  it('等待确认的事件必须带工具名并标记为错误，不能静默', () => {
+  it('确认请求不再当错误：仍算运行中，并把待确认调用摊出来', () => {
     const next = applyEvent(INITIAL, {
       type: 'REQUIRE_USER_CONFIRM',
       reply_id: 'r1',
       tool_call_name: 'Bash',
+      tool_calls: CALLS,
     });
+    expect(next.running).toBe(true);
     expect(next.steps[0]).toMatchObject({
       kind: 'control',
-      label: '需要确认 · Bash',
-      state: 'error',
+      label: '等待确认 · Bash',
+      state: 'running',
     });
-    expect(next.steps[0].detail).toContain('无人值守');
+    expect(next.awaiting?.calls).toEqual(CALLS);
   });
 
-  it('确认事件缺工具名时仍给出可读提示', () => {
+  it('确认事件缺工具名或调用列表时仍可读，且不伪造挂起态', () => {
     const next = applyEvent(INITIAL, { type: 'REQUIRE_USER_CONFIRM', reply_id: 'r1' });
-    expect(next.steps[0].label).toBe('需要确认');
+    expect(next.steps[0].label).toBe('等待确认');
+    expect(next.awaiting).toBeNull();
+  });
+
+  it('RUN_PARKED 结束这条流但保留挂起态，不写 endedAt', () => {
+    let s = applyEvent(INITIAL, {
+      type: 'REQUIRE_USER_CONFIRM',
+      reply_id: 'r1',
+      tool_call_name: 'Bash',
+      tool_calls: CALLS,
+    });
+    s = applyEvent(s, {
+      type: 'RUN_PARKED',
+      run_id: 12,
+      expires_at: '2026-11-23T10:10:00',
+      tool_calls: CALLS,
+    });
+    expect(s.running).toBe(false);
+    expect(s.endedAt).toBeNull();
+    expect(s.awaiting).toMatchObject({ runId: 12, expiresAt: '2026-11-23T10:10:00' });
+    expect(s.steps[0].state).toBe('success');
+  });
+
+  it('RUN_DONE 清掉挂起态，确认完不留残卡', () => {
+    const parked = applyEvent(INITIAL, {
+      type: 'RUN_PARKED',
+      run_id: 12,
+      expires_at: null,
+      tool_calls: CALLS,
+    });
+    const next = applyEvent(parked, { type: 'RUN_DONE', text: '做完了', run_id: 12 });
+    expect(next.awaiting).toBeNull();
+    expect(next.running).toBe(false);
+    expect(next.text).toBe('做完了');
   });
 
   it('HINT_BLOCK 标注为 lifecycle 且带 hint 文案', () => {
@@ -349,6 +396,18 @@ describe('streamRun', () => {
 
     const body = JSON.parse(String(spy.mock.calls[0][1]?.body));
     expect(body.attachments).toEqual([]);
+    // 没选档位就不发字段：让服务端用默认档，前端不猜
+    expect('permission' in body).toBe(false);
+  });
+
+  it('选过档位才把 permission 写进请求体', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(okStream(), { status: 200 }));
+
+    await streamRun('s-1', 'hi', () => {}, new AbortController().signal, 'req-4', [], 'readonly');
+
+    expect(JSON.parse(String(spy.mock.calls[0][1]?.body)).permission).toBe('readonly');
   });
 
   it('非 2xx 抛错，交给 store 记成中断', async () => {
@@ -356,6 +415,51 @@ describe('streamRun', () => {
     await expect(
       streamRun('s-1', 'hi', () => {}, new AbortController().signal, 'req-3'),
     ).rejects.toThrow('流式请求失败 500');
+  });
+});
+
+describe('streamConfirm', () => {
+  function okStream(): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder();
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"RUN_DONE","text":"接上了"}\n\n'));
+        controller.close();
+      },
+    });
+  }
+
+  it('打到同一条 run 的 confirm，只回 id 与决策', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(okStream(), { status: 200 }));
+    const events: StreamEvent[] = [];
+
+    await streamConfirm(
+      12,
+      's-1',
+      [{ tool_call_id: 't1', confirmed: true, scope: 'once' }],
+      (event) => events.push(event),
+      new AbortController().signal,
+    );
+
+    const [url, init] = spy.mock.calls[0];
+    expect(url).toBe('/run/12/confirm');
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(String(init?.body))).toEqual({
+      session_id: 's-1',
+      results: [{ tool_call_id: 't1', confirmed: true, scope: 'once' }],
+    });
+    // 客户端不回传命令原文：要执行什么以服务端挂起态为准
+    expect(String(init?.body)).not.toContain('rm -rf');
+    expect(events.map((event) => event.type)).toEqual(['RUN_DONE']);
+  });
+
+  it('非 2xx 抛错，交给 store 记成中断', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 409 }));
+    await expect(
+      streamConfirm(12, 's-1', [], () => {}, new AbortController().signal),
+    ).rejects.toThrow('确认失败 409');
   });
 });
 

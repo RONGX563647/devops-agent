@@ -30,6 +30,8 @@ class RunRecord:
     output_tokens: int = 0
     # P1 补充：客户端幂等键，防止重试写入重复 run
     request_id: str = ""
+    # 本轮的权限档位（readonly / workspace / execute / unrestricted / auto）
+    permission: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -4,6 +4,8 @@ import {
   deleteSecret,
   fetchEvalTrends,
   fetchInputStages,
+  fetchPending,
+  fetchPermissions,
   fetchRun,
   fetchRunHealth,
   fetchRuns,
@@ -60,6 +62,20 @@ describe('client', () => {
   it('非 2xx 抛错', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 500 }));
     await expect(fetchRuns()).rejects.toThrow('请求失败 500');
+  });
+
+  it('fetchPermissions 拉本部署开放的档位', async () => {
+    const spy = mockJson({ default: 'workspace', available: [] });
+    const catalog = await fetchPermissions();
+    expect(spy).toHaveBeenCalledWith('/api/permissions');
+    expect(catalog.default).toBe('workspace');
+  });
+
+  it('fetchPending 把 session_id 编码进查询串，服务端据此校验归属', async () => {
+    const spy = mockJson({ run_id: 3, status: 'parked', expires_at: null, tool_calls: [] });
+    const pending = await fetchPending(3, 's 1');
+    expect(spy).toHaveBeenCalledWith('/run/3/pending?session_id=s%201');
+    expect(pending.run_id).toBe(3);
   });
 
   it('postFeedback 发送 JSON body', async () => {

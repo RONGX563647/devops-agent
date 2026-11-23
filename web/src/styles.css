@@ -262,3 +262,50 @@ a:hover { text-decoration: underline; }
   padding: 6px 12px; border: 1px solid #d1d5db; border-radius: 6px;
   background: #fff; color: #334155; font-size: 12px; cursor: pointer;
 }
+
+/* ---- 过程块：按事件类别用不同标注色 ---- */
+.process-block {
+  background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+  margin-bottom: 10px; overflow: hidden;
+}
+.process-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 10px 14px; border: 0; background: #f8fafc;
+  cursor: pointer; text-align: left; font-size: 13px; color: #0f172a;
+}
+.process-head:hover { background: #f1f5f9; }
+.process-title { font-weight: 500; }
+.process-meta { font-size: 11px; color: #94a3b8; }
+.process-toggle { margin-left: auto; font-size: 11px; color: #64748b; flex-shrink: 0; }
+.process-steps { list-style: none; margin: 0; padding: 8px 14px; display: flex; flex-direction: column; gap: 2px; }
+.process-step {
+  display: flex; align-items: baseline; gap: 8px; padding: 5px 8px;
+  border-left: 2px solid #cbd5e1; border-radius: 4px; font-size: 12px; line-height: 1.6;
+}
+.process-step.tone-sys { border-left-color: #94a3b8; background: #f8fafc; }
+.process-step.tone-text { border-left-color: #16a34a; background: #f0fdf4; }
+.process-step.tone-think { border-left-color: #d97706; background: #fffbeb; }
+.process-step.tone-tool { border-left-color: #7c3aed; background: #f5f3ff; }
+.process-step.tone-control { border-left-color: #0891b2; background: #ecfeff; }
+.process-step.tone-error { border-left-color: #dc2626; background: #fef2f2; }
+.process-tag {
+  flex-shrink: 0; font-size: 10px; padding: 1px 6px; border-radius: 4px;
+  background: #f1f5f9; color: #475569; align-self: center;
+}
+.tone-sys .process-tag { background: #e2e8f0; color: #334155; }
+.tone-think .process-tag { background: #fde68a; color: #78350f; font-weight: 500; }
+.tone-tool .process-tag { background: #ddd6fe; color: #4c1d95; font-weight: 500; }
+.tone-text .process-tag { background: #bbf7d0; color: #14532d; font-weight: 500; }
+.tone-control .process-tag { background: #a5f3fc; color: #164e63; font-weight: 500; }
+.tone-error .process-tag { background: #fecaca; color: #7f1d1d; font-weight: 500; }
+.process-label { color: #334155; flex-shrink: 0; }
+.process-detail { color: #64748b; font-style: italic; word-break: break-word; flex: 1; }
+.proc-icon { width: 13px; height: 13px; flex-shrink: 0; align-self: center; }
+.proc-icon.success { color: #16a34a; }
+.proc-icon.error { color: #dc2626; }
+.proc-icon.running {
+  width: 9px; height: 9px; margin: 2px; border-radius: 50%;
+  border: 2px solid #cbd5e1; border-top-color: #2563eb; animation: proc-spin 0.8s linear infinite;
+}
+@keyframes proc-spin { to { transform: rotate(360deg); } }
+.process-foot { padding: 8px 14px; border-top: 1px solid #f1f5f9; font-size: 11px; color: #94a3b8; }

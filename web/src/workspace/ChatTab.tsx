@@ -1,12 +1,20 @@
 /** 对话 tab：SSE 流式运行 + 消息列表（复用 useRunStream）。 */
 import { useEffect, useRef, useState } from 'react';
 import { useRunStream } from '../api/useRunStream';
+import type { ProcessEntry } from '../types';
+import { ProcessBlock } from './ProcessBlock';
 
 interface Message {
   role: 'user' | 'assistant';
   text: string;
   error?: string;
   pending?: boolean;
+  steps?: ProcessEntry[];
+  modelName?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  startedAt?: string | null;
+  endedAt?: string | null;
 }
 
 interface Props {
@@ -25,11 +33,31 @@ export function ChatTab({ session }: Props) {
     setMessages((prev) =>
       prev.map((m, i) =>
         i === idx
-          ? { ...m, text: stream.text, error: stream.error ?? undefined, pending: false }
+          ? {
+              ...m,
+              text: stream.text,
+              error: stream.error ?? undefined,
+              pending: false,
+              steps: stream.steps,
+              modelName: stream.modelName,
+              inputTokens: stream.inputTokens,
+              outputTokens: stream.outputTokens,
+              startedAt: stream.startedAt,
+              endedAt: stream.endedAt,
+            }
           : m,
       ),
     );
-  }, [stream.text, stream.error]);
+  }, [
+    stream.text,
+    stream.error,
+    stream.steps,
+    stream.modelName,
+    stream.inputTokens,
+    stream.outputTokens,
+    stream.startedAt,
+    stream.endedAt,
+  ]);
 
   function submit() {
     const text = input.trim();
@@ -54,6 +82,17 @@ export function ChatTab({ session }: Props) {
         {messages.map((m, i) => (
           <div className={`chat-msg ${m.role}`} key={i}>
             <span className="chat-role">{m.role === 'user' ? '我' : 'Agent'}</span>
+            {m.role === 'assistant' && m.steps && m.steps.length > 0 && (
+              <ProcessBlock
+                steps={m.steps}
+                running={stream.running && i === messages.length - 1}
+                modelName={m.modelName ?? ''}
+                inputTokens={m.inputTokens ?? 0}
+                outputTokens={m.outputTokens ?? 0}
+                startedAt={m.startedAt ?? null}
+                endedAt={m.endedAt ?? null}
+              />
+            )}
             <div className={`chat-bubble ${m.error ? 'has-error' : ''}`}>
               {m.text || (m.pending && stream.running ? '等待首个 token…' : '')}
             </div>

@@ -98,7 +98,6 @@ class QualityGates(BaseModel):
     """gates.yaml 的 quality_gates 段。"""
 
     coverage_fail_under: int = 80
-    duplicate_code_threshold: int = 5
     complexity_threshold: int = 10
     mutation_score: int = 70
     dead_code_min_confidence: int = 80

@@ -56,6 +56,53 @@ def test_event_to_dict_tolerates_missing_fields() -> None:
     assert data["session_id"] == ""
 
 
+def test_event_to_dict_uses_native_pydantic_serialization() -> None:
+    """真实 AgentScope 事件走 model_dump(mode=json)，输出仍稳定投影。"""
+    from agentscope.event import ModelCallEndEvent
+
+    event = ModelCallEndEvent(
+        id="e1",
+        created_at="2026-11-23T14:00:00+00:00",
+        metadata={"k": "v"},
+        type="MODEL_CALL_END",
+        reply_id="r1",
+        input_tokens=100,
+        output_tokens=50,
+        cache_input_tokens=0,
+        cache_creation_input_tokens=0,
+        finished_reason="completed",
+    )
+    data = event_to_dict(event)
+    assert data["type"] == "MODEL_CALL_END"
+    assert data["reply_id"] == "r1"
+    assert data["input_tokens"] == 100
+    assert data["output_tokens"] == 50
+    assert data["finished_reason"] == "completed"  # 枚举已被原生转成字符串
+    assert "id" not in data  # 内部字段被投影层丢弃
+    assert "metadata" not in data
+    assert data["session_id"] == ""  # 该事件无此字段，稳定补空串
+
+
+def test_event_to_dict_native_error_flattens_to_type() -> None:
+    """原生序列化里 error 是嵌套 dict，投影后仍取 type 字符串，契约不变。"""
+    from agentscope.event import ReplyEndEvent
+    from agentscope.types._reply import ErrorInfo
+
+    event = ReplyEndEvent(
+        id="e2",
+        created_at="2026-11-23T14:00:01+00:00",
+        metadata={},
+        type="REPLY_END",
+        session_id="s1",
+        reply_id="r1",
+        finished_reason="error",
+        error=ErrorInfo(type="internal", message="boom"),
+    )
+    data = event_to_dict(event)
+    assert data["type"] == "REPLY_END"
+    assert data["error"] == "internal"
+
+
 def test_elapsed_ms_handles_bad_dates() -> None:
     assert _elapsed_ms("bad", "also-bad") == 0
     assert _elapsed_ms("2026-11-23T14:00:00+00:00", "2026-11-23T14:00:01+00:00") == 1000

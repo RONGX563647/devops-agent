@@ -2,6 +2,12 @@
 
 - TeamPipeline(leader, members=[TeamMember(agent=..., description=...)])
 - GoalPipeline(executor, verifier, max_iters=10, max_retries=3)
+
+为何保留这层薄工厂（不是无意义的透传）：
+- 框架隔离边界：调用方只依赖本模块的工厂，不散落 `import agentscope`（AGENTS.md §3.1）；
+  框架类或签名变更时，改动集中在此处，不扩散到业务与测试。
+- 装配单一入口：`build_goal_pipeline` 固化了 max_iters / max_retries 默认值，
+  是策略落点；其余函数提供稳定的命名，便于三域装配代码复用。
 """
 
 from __future__ import annotations

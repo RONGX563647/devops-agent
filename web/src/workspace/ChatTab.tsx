@@ -469,7 +469,7 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
             </div>
           )}
           {links.length > 0 && (
-            <div className="link-row" aria-label="消息中的链接">
+            <div className="link-row" role="group" aria-label="消息中的链接">
               {links.map((link) => (
                 <a
                   key={link.url}

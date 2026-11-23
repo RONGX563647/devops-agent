@@ -1,0 +1,7 @@
+# 质量门禁阈值（CI 读取）
+quality_gates:
+  coverage_fail_under: 80          # % 覆盖率棘轮，只升不降
+  duplicate_code_threshold: 5      # % 重复代码上限
+  complexity_threshold: 10         # 圈复杂度上限
+  mutation_score: 70               # % 变异测试得分
+  dead_code_min_confidence: 80     # vulture 置信度

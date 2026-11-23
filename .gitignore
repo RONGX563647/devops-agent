@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# runtime workspace (NOT committed — process state lives here, not source)
+workspace/
+
+# secrets & env
+.env
+.env.*
+*.key
+*.pem
+secrets/
+
+# tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.mutmut-cache/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

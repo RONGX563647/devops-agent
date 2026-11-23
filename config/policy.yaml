@@ -1,0 +1,16 @@
+# 权限与运行时策略（对应 agentscope.permission / ReActConfig / ModelConfig）
+permission:
+  mode: default            # default / accept_edits / explore / bypass / dont_ask
+  working_directories: []
+  allow_rules: []
+  deny_rules: []
+  ask_rules: []
+
+react:
+  max_iters:
+    default: 12
+    delivery: 16
+
+model:
+  max_retries: 3
+  fallback_model: null     # 降级模型，类型待确认

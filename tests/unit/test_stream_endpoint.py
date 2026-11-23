@@ -90,6 +90,26 @@ def test_run_stream_honors_request_id(
         assert len(repo.list_runs(conn)) == 1
 
 
+def test_run_stream_sends_anti_buffering_headers(
+    echo_runtime: None, monkeypatch: object, tmp_path: Path
+) -> None:
+    """SSE 必须带禁缓冲头，否则代理会把整段流攒到结束才下发。
+
+    这正是"后端在流、前端一次性渲染"的典型成因之一，用测试锁死。
+    """
+    monkeypatch.setenv("DEVOPS_AGENT_DB_PATH", str(tmp_path / "hdr.db"))  # type: ignore[attr-defined]
+
+    with client.stream(
+        "POST", "/run/stream", json={"session_id": "s1", "user_input": "hi"}
+    ) as resp:
+        assert resp.headers["cache-control"] == "no-cache"
+        assert resp.headers["x-accel-buffering"] == "no"
+        body = "".join(resp.iter_text())
+
+    # 首帧注释心跳：让代理与浏览器在模型推理空窗期就确认流已建立
+    assert body.startswith(": ping")
+
+
 def test_legacy_run_still_works(echo_runtime: None) -> None:
     """非流式 /run 契约保持不变。"""
     resp = client.post("/run", json={"session_id": "s1", "user_input": "hello"})

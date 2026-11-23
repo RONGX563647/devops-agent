@@ -128,7 +128,7 @@ def build_agent(
     )
 
 
-def build_chat_model() -> OpenAIChatModel:
+def build_chat_model(enable_search: bool | None = None) -> OpenAIChatModel:
     """从环境变量构造 OpenAI 兼容模型。
 
     必填 env（缺失抛 RuntimeError，不打印 key）：
@@ -139,6 +139,8 @@ def build_chat_model() -> OpenAIChatModel:
     可选 env：
     - DEVOPS_AGENT_ENABLE_SEARCH：设为 1 时给模型请求体加 `enable_search=true`
       （DashScope 兼容接口的联网搜索开关）；默认关闭。
+
+    enable_search 显式传入时优先于环境变量：前端逐请求的「联网」开关走这条路。
     """
     api_key = os.environ.get("DEVOPS_AGENT_API_KEY")
     base_url = os.environ.get("DEVOPS_AGENT_BASE_URL")
@@ -159,8 +161,9 @@ def build_chat_model() -> OpenAIChatModel:
     # stream=True（框架默认值，显式写出以固定契约）：模型边生成边返回 chunk，
     # AgentScope 才会逐块发出 TEXT_BLOCK_DELTA。若关闭，整段文本会作为单个 delta
     # 在回复结束时瞬间补发 —— 前端表现为「一次性渲染」，实测 SET 到 DELTA 仅差 0.07ms。
-    # 联网搜索默认关闭：它会带来额外计费与供应商侧的不确定错误，必须由部署方显式开启。
-    enable_search = os.environ.get("DEVOPS_AGENT_ENABLE_SEARCH") == "1"
+    # 联网搜索默认关闭：它会带来额外计费与供应商侧的不确定错误，必须显式开启。
+    if enable_search is None:
+        enable_search = os.environ.get("DEVOPS_AGENT_ENABLE_SEARCH") == "1"
     return OpenAIChatModel(
         credential=credential,
         model=model_name,
@@ -280,6 +283,7 @@ def build_agentscope_runtime(
     workdir: str | os.PathLike[str] | None = None,
     profile: PermissionProfile | None = None,
     state: AgentState | None = None,
+    web_search: bool | None = None,
 ) -> AgentScopeRuntime:
     """装配真实运行时（env 提供模型凭据）。
 
@@ -295,7 +299,7 @@ def build_agentscope_runtime(
         system_prompt=system_prompt
         if system_prompt is not None
         else build_system_prompt(base),
-        model=build_chat_model(),
+        model=build_chat_model(enable_search=web_search),
         toolkit=build_toolkit_for(resolved.tools, base, middlewares=[build_secret_middleware()]),
         middlewares=[ProfileNoteMiddleware(resolved)],
         state=_state_for(resolved, state),
@@ -303,17 +307,22 @@ def build_agentscope_runtime(
     return AgentScopeRuntime(agent, profile=resolved)
 
 
-def session_runtime_factory(base: object) -> Callable[[str, Any, str | None], Any]:
+def session_runtime_factory(base: object) -> Callable[..., Any]:
     """会话工厂：真实运行时按档位重建，Echo / 测试替身直接复用同一实例。
 
     Echo 是无状态的，复用没有副作用；真实运行时则必须每会话一份，
     否则消息历史与权限规则会在会话之间互相污染。
     """
 
-    def make(session_id: str, profile: Any, state_json: str | None) -> Any:
+    def make(
+        session_id: str,
+        profile: Any,
+        state_json: str | None,
+        web_search: bool = False,
+    ) -> Any:
         if not isinstance(base, AgentScopeRuntime):
             return base
         state = AgentState.model_validate_json(state_json) if state_json else None
-        return build_agentscope_runtime(profile=profile, state=state)
+        return build_agentscope_runtime(profile=profile, state=state, web_search=web_search)
 
     return make

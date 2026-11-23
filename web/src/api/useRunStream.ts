@@ -607,6 +607,7 @@ export async function streamRun(
   requestId: string,
   attachmentIds: string[] = [],
   permission?: string,
+  webSearch = false,
 ): Promise<void> {
   const resp = await fetch('/run/stream', {
     method: 'POST',
@@ -620,6 +621,8 @@ export async function streamRun(
       user_input: userInput,
       attachments: attachmentIds,
       ...(permission ? { permission } : {}),
+      // 默认关闭：不选就不带这个字段，避免误触发供应商检索计费
+      ...(webSearch ? { web_search: true } : {}),
     }),
     signal,
   });

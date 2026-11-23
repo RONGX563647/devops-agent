@@ -28,8 +28,8 @@ from devops_agent.runtime.runtime import AgentRuntime
 
 logger = logging.getLogger(__name__)
 
-# 工厂：session_id + 档位 + 历史快照（JSON 或 None）→ 运行时实例
-RuntimeFactory = Callable[[str, Any, str | None], AgentRuntime]
+# 工厂：session_id + 档位 + 历史快照（JSON 或 None）+ 联网开关 → 运行时实例
+RuntimeFactory = Callable[..., AgentRuntime]
 
 
 def _now() -> datetime:
@@ -43,6 +43,8 @@ class SessionEntry:
     session_id: str
     runtime: AgentRuntime
     profile: str
+    # 联网搜索会改变模型请求体，所以必须和档位一样纳入「变了就重建」的判断
+    web_search: bool
     last_used: float
     # 同一会话同时只跑一个 run：SSE 流整段持有它，别让两个请求互相踩 state
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -87,31 +89,42 @@ class SessionRegistry:
             self._entries.pop(victim, None)
             logger.debug("会话实例被回收: %s", victim)
 
-    def _build(self, session_id: str, profile: Any) -> SessionEntry:
+    def _build(self, session_id: str, profile: Any, web_search: bool) -> SessionEntry:
         state_json = self._load_state(session_id)
-        runtime = self._factory(session_id, profile, state_json)
+        runtime = self._factory(session_id, profile, state_json, web_search)
         entry = SessionEntry(
             session_id=session_id,
             runtime=runtime,
             profile=str(getattr(profile, "key", "")),
+            web_search=web_search,
             last_used=_now().timestamp(),
         )
         return entry
 
     # --- 对外 ---------------------------------------------------------
-    def acquire(self, session_id: str, profile: Any) -> SessionEntry:
-        """取得会话实例：命中复用；档位变了重建；未命中从 DB 快照重建。"""
+    def acquire(
+        self, session_id: str, profile: Any, web_search: bool | None = None
+    ) -> SessionEntry:
+        """取得会话实例：命中复用；档位或联网开关变了重建；未命中从 DB 快照重建。
+
+        web_search=None 表示「不关心」：确认/续跑沿用现有实例的配置，
+        否则前端没带这个字段就会把挂起中的会话重建掉。
+        """
         entry = self._entries.get(session_id)
         key = str(getattr(profile, "key", ""))
-        if entry is not None and entry.profile == key:
+        if (
+            entry is not None
+            and entry.profile == key
+            and (web_search is None or entry.web_search == web_search)
+        ):
             entry.last_used = _now().timestamp()
             self._entries.move_to_end(session_id)
             return entry
         if entry is not None:
-            # 切换档位：先把旧状态存下来，再用新档位重建同一个会话
+            # 切换档位/开关：先把旧状态存下来，再用新配置重建同一个会话
             self.save(session_id)
             self._entries.pop(session_id, None)
-        fresh = self._build(session_id, profile)
+        fresh = self._build(session_id, profile, bool(web_search))
         self._entries[session_id] = fresh
         self._evict()
         return fresh

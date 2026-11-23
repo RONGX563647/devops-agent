@@ -80,6 +80,8 @@ class RunRequest(BaseModel):
     attachments: list[str] = Field(default_factory=list)
     # 权限档位；省略用服务端默认档
     permission: str | None = None
+    # 逐请求的联网搜索开关：默认关闭，前端「联网」按钮控制
+    web_search: bool = False
 
 
 class ConfirmItem(BaseModel):
@@ -293,7 +295,7 @@ async def run_stream(
     """
     profile = _profile_or_403(req.permission)
     registry = _registry(request)
-    entry = registry.acquire(req.session_id, profile)
+    entry = registry.acquire(req.session_id, profile, req.web_search)
     if entry.lock.locked():
         raise HTTPException(status_code=409, detail="session_busy")
     # domain/model 由部署环境注入，观测数据才能反映真实运行上下文；

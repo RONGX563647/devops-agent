@@ -40,6 +40,7 @@ from devops_agent.runtime.confirm import (
     rule_content_for,
 )
 from devops_agent.runtime.events import event_to_dict
+from devops_agent.runtime.profile_note import ProfileNoteMiddleware
 from devops_agent.secrets.middleware import build_secret_middleware
 from devops_agent.tools.catalog import build_toolkit_for, shell_name
 
@@ -51,37 +52,19 @@ WORKDIR_ENV = "DEVOPS_AGENT_WORKDIR"
 
 # 工具约定必须写进系统提示：修复前 Agent 收到的只有一句角色描述，
 # 模型不知道自己有工具，于是把「工具调用 functions.exec」写进正文后直接结束。
+#
+# 注意：这一段**不含任何随会话变化的内容**。前缀缓存按字节比对，这里改一个字，
+# 后面的工具 schema 与整段历史一起作废（实测跨档命中 21%）。档位说明因此不在
+# 系统提示里，而是由 ProfileNoteMiddleware 追加在每次请求的最后一条消息。
 _TOOL_PROMPT = """你可以调用以下工具来获取真实信息，而不是凭记忆回答：
 - shell（工具名 {shell_tool}）：执行命令行，语法为 {shell}，工作目录 {workdir}
 - {read_tool} / {glob_tool} / {grep_tool}：读文件、按模式找文件、按正则搜内容
-{write_tool_line}
 硬性要求：
 1. 需要文件内容、目录列表、命令输出时，必须真的发起工具调用；
    不要用「工具调用 xxx」这样的文字描述代替调用。
 2. 不要编造命令输出或文件内容。工具失败就据实说明失败原因，
    并改用其他只读手段（如 {glob_tool} / {grep_tool}）重试。
-3. {write_rule}
-4. 最终回答用中文，可用 Markdown（标题、列表、表格、代码块）；引用工具输出时保持原样。"""
-
-# 按档位改写的第 3 条：只读档说「没有写权限」，其余档说边界在哪。
-# 这条不同步改的话，切到放开档模型仍然不会写文件，表现为「权限切了但毫无变化」。
-_WRITE_RULES: dict[str, str] = {
-    "readonly": "本会话是只读档：没有写权限，不要尝试 Edit/Write 类操作，被拒绝时如实说明。",
-    "workspace": (
-        "本会话可在工作区内建/删/改文件；工作区外的操作会被拦下并要求确认，"
-        "遇到拒绝就说明原因、换方案。"
-    ),
-    "execute": (
-        "本会话可在工作区内建/删/改文件，并可执行白名单内的构建/测试命令；"
-        "越界操作会要求确认，遇到拒绝就说明原因。"
-    ),
-    "auto": "本会话是无人值守档：越界操作一律被拒绝，不要反复重试同一条被拒的命令。",
-    "unrestricted": (
-        "本会话可直接改文件；但 .git/ 与 .env 类路径被硬性拒绝，遇到拒绝就换方案，不要绕过。"
-    ),
-}
-
-_WRITE_TOOL_LINE = "- {write_tool} / {edit_tool}：在工作区内新建文件、按片段替换已有内容"
+3. 最终回答用中文，可用 Markdown（标题、列表、表格、代码块）；引用工具输出时保持原样。"""
 
 
 def resolve_workdir(workdir: str | os.PathLike[str] | None = None) -> Path:
@@ -91,31 +74,24 @@ def resolve_workdir(workdir: str | os.PathLike[str] | None = None) -> Path:
     return Path(os.environ.get(WORKDIR_ENV) or os.getcwd()).expanduser().resolve()
 
 
-def build_system_prompt(
-    workdir: str | os.PathLike[str] | None = None,
-    profile: PermissionProfile | None = None,
-) -> str:
-    """拼装系统提示：角色描述 + 可用工具契约 + 运行环境（按档位改写权限段）。"""
+def build_system_prompt(workdir: str | os.PathLike[str] | None = None) -> str:
+    """拼装系统提示：角色描述 + 可用工具契约。
+
+    **整段与会话无关、逐字节稳定**——这是前缀缓存真正能复用的部分。
+    随档位变化的内容（能不能写、越界怎么办）不放在这里：系统提示在请求最前面，
+    那里改一个字，后面的工具 schema 与整段历史全部作废（实测跨档命中 21%）。
+    档位约束改由 `runtime/profile_note.py` 追加在消息末尾（实测 96%）。
+    """
     base = resolve_workdir(workdir)
-    resolved = profile if profile is not None else default_profile()
-    writes = "write" in resolved.tools
-    return "\n\n".join(
-        [
-            DEFAULT_SYSTEM_PROMPT,
-            _TOOL_PROMPT.format(
-                shell_tool="Bash",
-                shell=shell_name(),
-                workdir=base,
-                read_tool="Read",
-                glob_tool="Glob",
-                grep_tool="Grep",
-                write_tool_line=(
-                    _WRITE_TOOL_LINE.format(write_tool="Write", edit_tool="Edit") if writes else ""
-                ),
-                write_rule=_WRITE_RULES.get(resolved.key, _WRITE_RULES["workspace"]),
-            ),
-        ]
+    tool_prompt = _TOOL_PROMPT.format(
+        shell_tool="Bash",
+        shell=shell_name(),
+        workdir=base,
+        read_tool="Read",
+        glob_tool="Glob",
+        grep_tool="Grep",
     )
+    return "\n\n".join([DEFAULT_SYSTEM_PROMPT, tool_prompt])
 
 
 def build_agent(
@@ -316,9 +292,10 @@ def build_agentscope_runtime(
         name="devops",
         system_prompt=system_prompt
         if system_prompt is not None
-        else build_system_prompt(base, resolved),
+        else build_system_prompt(base),
         model=build_chat_model(),
         toolkit=build_toolkit_for(resolved.tools, base, middlewares=[build_secret_middleware()]),
+        middlewares=[ProfileNoteMiddleware(resolved)],
         state=_state_for(resolved, state),
     )
     return AgentScopeRuntime(agent, profile=resolved)

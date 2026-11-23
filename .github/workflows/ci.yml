@@ -39,5 +39,7 @@ jobs:
         run: npm run lint
       - name: typecheck
         run: npm run typecheck
+      - name: test + coverage
+        run: npm run test:coverage
       - name: build
         run: npm run build

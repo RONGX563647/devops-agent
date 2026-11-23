@@ -26,7 +26,7 @@ def test_run_requires_fields() -> None:
     assert resp.status_code == 422
 
 
-def test_run_uses_injected_runtime(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_run_uses_injected_runtime() -> None:
     """替换 app.state.runtime 即可改变 /run 行为，无需改 env 或重启。"""
 
     class StubRuntime:
@@ -34,9 +34,13 @@ def test_run_uses_injected_runtime(monkeypatch) -> None:  # type: ignore[no-unty
             return f"stub:{session_id}:{user_input}"
 
     stub: AgentRuntime = StubRuntime()
-    monkeypatch.setattr(app.state, "runtime", stub)
-    resp = client.post("/run", json={"session_id": "s9", "user_input": "hi"})
-    assert resp.json() == {"result": "stub:s9:hi"}
+    original = app.state.runtime
+    app.state.runtime = stub
+    try:
+        resp = client.post("/run", json={"session_id": "s9", "user_input": "hi"})
+        assert resp.json() == {"result": "stub:s9:hi"}
+    finally:
+        app.state.runtime = original
 
 
 def test_select_runtime_is_exposed() -> None:

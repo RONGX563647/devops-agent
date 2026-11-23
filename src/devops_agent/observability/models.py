@@ -25,6 +25,11 @@ class RunRecord:
     model: str
     total_tokens: int
     health_score: float | None
+    # P1 补充：输入输出 token 分拆，用于按不同单价算成本
+    input_tokens: int = 0
+    output_tokens: int = 0
+    # P1 补充：客户端幂等键，防止重试写入重复 run
+    request_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +47,9 @@ class SpanRecord:
     tokens: int
     status: str  # ok / error
     error: str | None
+    # P1 补充：模型调用的 token 分拆，工具 span 保持 0
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)

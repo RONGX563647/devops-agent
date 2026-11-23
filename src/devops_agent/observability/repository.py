@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id    TEXT NOT NULL,
     domain        TEXT NOT NULL,
-    status        TEXT NOT NULL,
+    status        TEXT NOT NULL CHECK (status IN ('running', 'success', 'failed')),
     input         TEXT NOT NULL,
     output        TEXT NOT NULL DEFAULT '',
     started_at    TEXT NOT NULL,
@@ -32,28 +32,36 @@ CREATE TABLE IF NOT EXISTS runs (
     duration_ms   INTEGER,
     model         TEXT NOT NULL DEFAULT '',
     total_tokens  INTEGER NOT NULL DEFAULT 0,
-    health_score  REAL
+    health_score  REAL,
+    input_tokens  INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    request_id    TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_request ON runs(request_id)
+    WHERE request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_runs_query ON runs(domain, status, started_at);
 CREATE TABLE IF NOT EXISTS spans (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id          INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    type            TEXT NOT NULL,
+    type            TEXT NOT NULL CHECK (type IN ('model', 'tool', 'permission')),
     name            TEXT NOT NULL,
     start_offset_ms INTEGER NOT NULL DEFAULT 0,
     duration_ms     INTEGER,
     input           TEXT NOT NULL DEFAULT '',
     output          TEXT NOT NULL DEFAULT '',
     tokens          INTEGER NOT NULL DEFAULT 0,
-    status          TEXT NOT NULL DEFAULT 'ok',
-    error           TEXT
+    status          TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok', 'error')),
+    error           TEXT,
+    input_tokens    INTEGER NOT NULL DEFAULT 0,
+    output_tokens   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_spans_run ON spans(run_id);
 CREATE TABLE IF NOT EXISTS eval_scores (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    dimension   TEXT NOT NULL,
+    dimension   TEXT NOT NULL CHECK (dimension IN ('correctness', 'performance', 'safety')),
     score       REAL NOT NULL,
-    source      TEXT NOT NULL,
+    source      TEXT NOT NULL CHECK (source IN ('human', 'judge', 'rule')),
     rater       TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     comment     TEXT NOT NULL DEFAULT ''
@@ -78,6 +86,9 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL：SSE 边写 span 与前端并发读 runs 时不互相阻塞；busy_timeout 吞掉瞬时锁竞争
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         yield conn
         conn.commit()
@@ -94,12 +105,22 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 
 def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
-    """插入一条运行记录，返回自增 id。"""
+    """插入一条运行记录，返回 id。
+
+    幂等：若 request_id 非空且已存在，返回已有 id，不重复插入（防前端重试）。
+    """
+    if run.request_id:
+        existing = conn.execute(
+            "SELECT id FROM runs WHERE request_id=?", (run.request_id,)
+        ).fetchone()
+        if existing is not None:
+            return int(existing["id"])
     cur = conn.execute(
         """INSERT INTO runs
            (session_id, domain, status, input, output, started_at, ended_at,
-            duration_ms, model, total_tokens, health_score)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            duration_ms, model, total_tokens, health_score,
+            input_tokens, output_tokens, request_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run.session_id,
             run.domain,
@@ -112,6 +133,9 @@ def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
             run.model,
             run.total_tokens,
             run.health_score,
+            run.input_tokens,
+            run.output_tokens,
+            run.request_id or None,
         ),
     )
     assert cur.lastrowid is not None  # INSERT 成功时 sqlite3 保证有 lastrowid
@@ -128,12 +152,24 @@ def finish_run(
     duration_ms: int,
     total_tokens: int,
     health_score: float | None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
 ) -> None:
-    """运行结束时回填结果与聚合指标。"""
+    """运行结束时回填结果与聚合指标（含 token 分拆）。"""
     conn.execute(
         """UPDATE runs SET status=?, output=?, ended_at=?, duration_ms=?,
-           total_tokens=?, health_score=? WHERE id=?""",
-        (status, output, ended_at, duration_ms, total_tokens, health_score, run_id),
+           total_tokens=?, health_score=?, input_tokens=?, output_tokens=? WHERE id=?""",
+        (
+            status,
+            output,
+            ended_at,
+            duration_ms,
+            total_tokens,
+            health_score,
+            input_tokens,
+            output_tokens,
+            run_id,
+        ),
     )
 
 
@@ -142,8 +178,8 @@ def add_span(conn: sqlite3.Connection, span: SpanRecord) -> int:
     cur = conn.execute(
         """INSERT INTO spans
            (run_id, type, name, start_offset_ms, duration_ms, input, output,
-            tokens, status, error)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            tokens, status, error, input_tokens, output_tokens)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             span.run_id,
             span.type,
@@ -155,6 +191,8 @@ def add_span(conn: sqlite3.Connection, span: SpanRecord) -> int:
             span.tokens,
             span.status,
             span.error,
+            span.input_tokens,
+            span.output_tokens,
         ),
     )
     assert cur.lastrowid is not None  # INSERT 成功时 sqlite3 保证有 lastrowid
@@ -195,6 +233,9 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         model=row["model"],
         total_tokens=row["total_tokens"],
         health_score=row["health_score"],
+        input_tokens=row["input_tokens"],
+        output_tokens=row["output_tokens"],
+        request_id=row["request_id"],
     )
 
 
@@ -211,6 +252,8 @@ def _span_from_row(row: sqlite3.Row) -> SpanRecord:
         tokens=row["tokens"],
         status=row["status"],
         error=row["error"],
+        input_tokens=row["input_tokens"],
+        output_tokens=row["output_tokens"],
     )
 
 

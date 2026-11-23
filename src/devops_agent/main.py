@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import os
+from collections.abc import AsyncIterator
+from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from devops_agent.observability.recorder import RunRecorder
 from devops_agent.runtime.agent import build_agentscope_runtime
 from devops_agent.runtime.runtime import AgentRuntime, EchoRuntime
 
@@ -39,3 +44,48 @@ async def run(req: RunRequest, request: Request) -> dict[str, str]:
     runtime: AgentRuntime = request.app.state.runtime
     result = await runtime.run(req.session_id, req.user_input)
     return {"result": result}
+
+
+def _sse_frame(payload: dict[str, Any]) -> str:
+    """把一个 dict 包装成标准 SSE data 帧。"""
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@app.post("/run/stream")
+async def run_stream(
+    req: RunRequest,
+    request: Request,
+    x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
+) -> StreamingResponse:
+    """SSE 流式端点：实时推送事件，并同步把事件落库为 run + spans。
+
+    - 每个事件一个 `data: {...}` 帧，前端可边收边渲染；
+    - 结束时发 `event: done` 帧带 run_id 与汇总；
+    - X-Request-ID 提供幂等键，重试不会写入重复 run。
+    """
+    runtime: AgentRuntime = request.app.state.runtime
+    recorder = RunRecorder(request_id=x_request_id or "")
+
+    async def generate() -> AsyncIterator[str]:
+        recorder.start(req.session_id, req.user_input)
+        try:
+            async for event in runtime.stream(req.session_id, req.user_input):
+                recorder.consume(event)
+                yield _sse_frame(event)
+        except Exception as exc:  # 异常也要落库，记录失败
+            recorder.finish(status="failed")
+            yield _sse_frame({"type": "RUN_ERROR", "error": str(exc)})
+            return
+        run_id = recorder.finish()
+        in_tok, out_tok = recorder.token_usage
+        done = {
+            "type": "RUN_DONE",
+            "run_id": run_id,
+            "status": "success",
+            "input_tokens": in_tok,
+            "output_tokens": out_tok,
+            "text": recorder.final_text,
+        }
+        yield f"event: done\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")

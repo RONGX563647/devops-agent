@@ -13,7 +13,8 @@ agentscope 2.x 真实 API（2.0.12 introspect 已核实）：
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from typing import Any
 
 from agentscope.agent import Agent, ModelConfig, ReActConfig
 from agentscope.credential import OpenAICredential
@@ -24,6 +25,7 @@ from agentscope.tool import Toolkit
 from pydantic import SecretStr
 
 from devops_agent.config import RuntimePolicy, load_policy
+from devops_agent.runtime.events import event_to_dict
 
 DEFAULT_SYSTEM_PROMPT = "你是 DevOps 助手，帮助处理持续交付、项目排期与 Bug 定位。"
 
@@ -98,14 +100,26 @@ class AgentScopeRuntime:
     def __init__(self, agent: Agent) -> None:
         self._agent = agent
 
-    async def run(self, session_id: str, user_input: str) -> str:
-        msg = Msg(
+    @staticmethod
+    def _make_msg(session_id: str, user_input: str) -> Msg:
+        return Msg(
             name=session_id,
             content=[TextBlock(type="text", text=user_input, id="input", created_at="")],
             role="user",
         )
-        reply = await self._agent.reply(msg)
+
+    async def run(self, session_id: str, user_input: str) -> str:
+        reply = await self._agent.reply(self._make_msg(session_id, user_input))
         return text_from_msg(reply)
+
+    async def stream(self, session_id: str, user_input: str) -> AsyncIterator[dict[str, Any]]:
+        """消费 AgentScope reply_stream，逐个转成框架无关的 dict 往外吐。
+
+        事件对象只在本方法内存在，越过边界的只有普通 dict：
+        这是"agent.py 单一装配点"约束在流式路径上的延续。
+        """
+        async for event in self._agent.reply_stream(self._make_msg(session_id, user_input)):
+            yield event_to_dict(event)
 
 
 def build_agentscope_runtime(system_prompt: str = DEFAULT_SYSTEM_PROMPT) -> AgentScopeRuntime:

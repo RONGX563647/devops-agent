@@ -1,0 +1,10 @@
+# 健康分权重（0-100，加权聚合）
+# ADR-0001：把"运行好坏"的四类信号聚合成单一健康分，权重集中在此配置。
+health:
+  weights:
+    execution: 0.35  # 执行健康：成功/失败、未收敛、工具失败
+    efficiency: 0.25  # 效率成本：延迟、token 用量
+    quality: 0.25  # 效果质量：correctness / 人工反馈 / judge
+    safety: 0.15  # 安全合规：权限拒绝、越界
+  # 延迟评分基准：端到端耗时 ≤ 此值得满分，超过按线性衰减到 0
+  latency_baseline_ms: 5000

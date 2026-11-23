@@ -11,6 +11,7 @@ from fastapi import FastAPI, Header, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from devops_agent.observability.api import router as observability_router
 from devops_agent.observability.recorder import RunRecorder
 from devops_agent.runtime.agent import build_agentscope_runtime
 from devops_agent.runtime.runtime import AgentRuntime, EchoRuntime
@@ -27,6 +28,7 @@ app = FastAPI(title="devops-agent")
 # runtime 挂在 app.state（FastAPI 标准注入容器）而非裸模块变量：
 # 测试 / 部署可替换 app.state.runtime，无需改环境变量或重启进程。
 app.state.runtime = select_runtime()
+app.include_router(observability_router)
 
 
 class RunRequest(BaseModel):

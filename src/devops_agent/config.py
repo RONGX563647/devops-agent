@@ -103,6 +103,22 @@ class QualityGates(BaseModel):
     dead_code_min_confidence: int = 80
 
 
+class HealthWeights(BaseModel):
+    """健康分四类信号的权重（来自 health.yaml）。"""
+
+    execution: float = 0.35
+    efficiency: float = 0.25
+    quality: float = 0.25
+    safety: float = 0.15
+
+
+class HealthPolicy(BaseModel):
+    """health.yaml 的完整类型化视图。"""
+
+    weights: HealthWeights = Field(default_factory=HealthWeights)
+    latency_baseline_ms: int = 5000
+
+
 @cache
 def load_policy() -> RuntimePolicy:
     """加载并缓存运行时策略。"""
@@ -116,7 +132,15 @@ def load_gates() -> QualityGates:
     return QualityGates.model_validate(data.get("quality_gates", data))
 
 
+@cache
+def load_health() -> HealthPolicy:
+    """加载并缓存健康分配置（health.yaml 的 health 段）。"""
+    data = _load_yaml("health.yaml")
+    return HealthPolicy.model_validate(data.get("health", data))
+
+
 def clear_cache() -> None:
     """测试中切换配置目录后调用。"""
     load_policy.cache_clear()
     load_gates.cache_clear()
+    load_health.cache_clear()

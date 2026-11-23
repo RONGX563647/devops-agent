@@ -134,6 +134,16 @@ describe('applyEvent', () => {
     expect(s.steps[1]).toMatchObject({ kind: 'error', label: '达到最大迭代次数', state: 'error' });
   });
 
+  it('HINT_BLOCK 过滤系统提醒类噪音', () => {
+    const next = applyEvent(INITIAL, {
+      type: 'HINT_BLOCK',
+      block_id: 'b9',
+      hint: '<system-reminder>current time ...</system-reminder>',
+    });
+    expect(next.steps).toHaveLength(0);
+    expect(next.events).toHaveLength(1);
+  });
+
   it('未知事件类型不改步骤、只入 events', () => {
     const next = applyEvent(INITIAL, { type: 'CUSTOM' });
     expect(next.steps).toHaveLength(0);

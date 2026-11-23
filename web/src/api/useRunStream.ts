@@ -126,16 +126,21 @@ const HANDLERS: Record<string, EventHandler> = {
     outputTokens: e.output_tokens ?? s.outputTokens,
     steps: finishStep(s.steps, stepId(e, 'model'), 'lifecycle', '模型调用', 'success'),
   }),
-  HINT_BLOCK: (s, e) => ({
-    ...s,
-    steps: upsertStep(s.steps, {
-      id: stepId(e, 'hint'),
-      kind: 'lifecycle',
-      label: e.source ? `分析提示 · ${e.source}` : '分析提示',
-      detail: e.hint ?? '',
-      state: 'success',
-    }),
-  }),
+  HINT_BLOCK: (s, e) => {
+    // AgentScope 会把系统提醒（如当前时间）也作为 HINT_BLOCK 发出，
+    // 这类内容与智能体执行过程无关，过滤掉避免污染时间线。
+    if (!e.hint || e.hint.includes('<system-reminder>')) return s;
+    return {
+      ...s,
+      steps: upsertStep(s.steps, {
+        id: stepId(e, 'hint'),
+        kind: 'lifecycle',
+        label: e.source ? `分析提示 · ${e.source}` : '分析提示',
+        detail: e.hint,
+        state: 'success',
+      }),
+    };
+  },
 
   // 正文：既累积气泡文本，也留一条标注步骤
   TEXT_BLOCK_DELTA: (s, e) => ({

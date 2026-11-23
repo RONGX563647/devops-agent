@@ -14,6 +14,8 @@ interface Props {
   step: TraceStep | null;
   turn: TraceTurn | null;
   totalMs: number;
+  /** 当前会话档位：Schema 页签要按同一档位的工具集查，否则会答「没有这个工具」。 */
+  profile?: string;
 }
 
 type Tab = 'summary' | 'args' | 'result' | 'text' | 'schema' | 'timing';
@@ -190,11 +192,11 @@ function Summary({ step, turn }: { step: TraceStep; turn: TraceTurn | null }) {
   );
 }
 
-function SchemaTab({ step }: { step: TraceStep }) {
+function SchemaTab({ step, profile }: { step: TraceStep; profile?: string }) {
   const enabled = Boolean(step.toolName);
   const schemas = useQuery({
-    queryKey: ['tool-schemas'],
-    queryFn: fetchToolSchemas,
+    queryKey: ['tool-schemas', profile ?? 'default'],
+    queryFn: () => fetchToolSchemas(profile),
     staleTime: 5 * 60_000,
     enabled,
   });
@@ -219,7 +221,7 @@ function SchemaTab({ step }: { step: TraceStep }) {
   );
 }
 
-export function TraceInspector({ step, turn, totalMs }: Props) {
+export function TraceInspector({ step, turn, totalMs, profile }: Props) {
   const [tab, setTab] = useState<Tab>('summary');
 
   if (!step) {
@@ -282,7 +284,7 @@ export function TraceInspector({ step, turn, totalMs }: Props) {
             {(step.result || !step.diff) && <Block label="返回原文" text={resultText} />}
           </>
         )}
-        {current === 'schema' && <SchemaTab step={step} />}
+        {current === 'schema' && <SchemaTab step={step} profile={profile} />}
         {current === 'timing' && (
           <div className="inspect-timing">
             <div className="inspect-grid">

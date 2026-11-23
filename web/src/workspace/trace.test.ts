@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Attachment, ChatMessage, ParseStage } from '../types';
-import { turnsFromMessages } from './trace';
+import { buildLanes, traceStats, turnsFromMessages } from './trace';
 
 function user(id: string, text: string, at: string): ChatMessage {
   return { id, role: 'user', text, at, steps: [] };
@@ -197,5 +197,62 @@ describe('turnsFromMessages', () => {
     ]);
 
     expect(turns[0].parse).toEqual({ attachments: 1, refs: 1, redactions: 2, degraded: 0 });
+  });
+});
+
+describe('traceStats 缓存口径', () => {
+  /** cache 省略 = 模型没回传这个字段，与「回传了 0」必须区分开。 */
+  const modelStep = (id: string, at: string, tokensIn: number, cache?: number) => ({
+    id,
+    kind: 'model' as const,
+    label: '模型调用',
+    detail: '',
+    state: 'success' as const,
+    at,
+    tokensIn,
+    tokensOut: 10,
+    ...(cache === undefined ? {} : { cacheTokens: cache }),
+  });
+
+  it('命中率按 Σcache ÷ Σinput，首枪单独给出', () => {
+    const turns = turnsFromMessages([
+      user('u1', '第一问', '2026-11-23T10:00:00.000Z'),
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '',
+        at: '2026-11-23T10:00:01.000Z',
+        endedAt: '2026-11-23T10:00:09.000Z',
+        inputTokens: 3060 + 9645,
+        outputTokens: 20,
+        cacheInputTokens: 9216,
+        steps: [
+          modelStep('m1', '2026-11-23T10:00:01.000Z', 3060, 0),
+          modelStep('m2', '2026-11-23T10:00:05.000Z', 9645, 9216),
+        ],
+      },
+    ]);
+    const stats = traceStats(turns, buildLanes(turns));
+    expect(stats.cacheRate).toBeCloseTo(9216 / 12705, 3);
+    // 首枪必然是冷读：单独给数，才不会被当成「缓存失效」
+    expect(stats.firstCallRate).toBe(0);
+  });
+
+  it('模型不回传缓存字段时两项均为 null，不编 0%', () => {
+    const turns = turnsFromMessages([
+      user('u1', '第一问', '2026-11-23T10:00:00.000Z'),
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '',
+        at: '2026-11-23T10:00:01.000Z',
+        inputTokens: 500,
+        outputTokens: 10,
+        steps: [modelStep('m1', '2026-11-23T10:00:01.000Z', 500)],
+      },
+    ]);
+    const stats = traceStats(turns, buildLanes(turns));
+    expect(stats.cacheRate).toBeNull();
+    expect(stats.firstCallRate).toBeNull();
   });
 });

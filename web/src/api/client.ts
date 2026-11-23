@@ -116,20 +116,46 @@ export interface ToolSchema {
   };
 }
 
-export function fetchToolSchemas(): Promise<ToolSchema[]> {
-  return getJson<ToolSchema[]>('/api/tools/schema');
+/** 按档位取 schema：放开档实际挂了 Write/Edit，写死只读会让 Schema 页签答错。 */
+export function fetchToolSchemas(profile?: string): Promise<ToolSchema[]> {
+  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : '';
+  return getJson<ToolSchema[]>(`/api/tools/schema${suffix}`);
 }
 
-/** 本轮对话动手前手里有的东西：系统提示词、工具清单、工作目录。 */
+/** 一个工具在上下文里占多少，以及它完整声明了什么。 */
+export interface AgentToolContext {
+  name: string;
+  description: string;
+  /** schema 序列化后的字符数：上下文的大头就在这里。 */
+  schema_chars: number;
+  tokens: number;
+  parameters: Record<string, unknown>;
+}
+
+/** 本轮对话动手前手里有的东西：系统提示词、工具 schema、前缀指纹。 */
 export interface AgentContext {
+  /** 这一轮实际使用的权限档位；工具集随它变化。 */
+  profile: string;
+  profile_label: string;
   system_prompt: string;
   system_prompt_chars: number;
-  tools: { name: string; description: string }[];
+  system_prompt_tokens: number;
+  tools: AgentToolContext[];
+  tools_chars: number;
+  tools_tokens: number;
+  /** 系统提示 + 工具 schema 的 token 估算：能命中缓存的就是这一段。 */
+  prefix_tokens: number;
+  /** 前缀指纹：变了说明这一枪必然从缓存读不到。 */
+  prefix_fingerprint: string;
+  /** 档位约束：追加在每次请求的最后一条消息里，不占前缀。 */
+  policy_note: string;
+  policy_note_tokens: number;
   workdir: string;
 }
 
-export function fetchContext(): Promise<AgentContext> {
-  return getJson<AgentContext>('/api/context');
+export function fetchContext(session?: string): Promise<AgentContext> {
+  const suffix = session ? `?session=${encodeURIComponent(session)}` : '';
+  return getJson<AgentContext>(`/api/context${suffix}`);
 }
 
 export async function postFeedback(

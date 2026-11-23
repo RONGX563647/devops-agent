@@ -223,15 +223,23 @@ function pushFailure(turn: TraceTurn, message: ChatMessage, at: number): void {
 }
 
 /** 单条过程步骤进轮次：泳道区间、解析计数、列表条目各归各的。 */
+/** 步骤 → 泳道区间：模型（含思考）走模型泳道，工具走工具泳道，其余不画。 */
+function spanFor(step: ProcessEntry, at: number): TraceSpan | null {
+  if (step.kind === 'model' || step.kind === 'thinking') return modelSpan(step, at);
+  if (step.kind === 'tool') return toolSpan(step, at);
+  return null;
+}
+
+/** 记下本轮第一次模型调用的输入与命中：它等于「前缀 + 历史 + 输入」。 */
+function noteFirstCall(turn: TraceTurn, step: ProcessEntry): void {
+  if (step.kind !== 'model' || (step.tokensIn ?? 0) <= 0 || turn.firstCall) return;
+  turn.firstCall = { in: step.tokensIn ?? 0, cache: step.cacheTokens };
+}
+
 function absorbStep(turn: TraceTurn, step: ProcessEntry): void {
-  const stepAt = toMs(step.at);
-  const span =
-    step.kind === 'model' || step.kind === 'thinking'
-      ? modelSpan(step, stepAt)
-      : step.kind === 'tool'
-        ? toolSpan(step, stepAt)
-        : null;
+  const span = spanFor(step, toMs(step.at));
   if (span) turn.spans.push(span);
+  noteFirstCall(turn, step);
   if (step.kind === 'parse' && step.parseStages) accumulateParse(turn, step.parseStages);
   const trace = stepToTrace(step, 0);
   if (!trace) return;
@@ -373,6 +381,7 @@ export function traceStats(turns: TraceTurn[], lanes: TraceLanes): TraceStats {
   const first = turns[0]?.startedAt ?? 0;
   const last = turns.reduce((max, turn) => Math.max(max, turn.endedAt), first);
   const modelMs = lanes.model.reduce((sum, span) => sum + (span.end - span.start), 0);
+  const cold = firstCalls(turns);
   return {
     totalMs: Math.max(0, last - first),
     turns: turns.length,
@@ -384,5 +393,24 @@ export function traceStats(turns: TraceTurn[], lanes: TraceLanes): TraceStats {
     cacheTokens,
     tokPerSec: modelMs > 0 && tokensOut > 0 ? (tokensOut / modelMs) * 1000 : null,
     cacheRate: tokensIn > 0 && cacheTokens > 0 ? cacheTokens / tokensIn : null,
+    firstCallRate: cold.in > 0 && cold.seen > 0 ? cold.cache / cold.in : null,
   };
+}
+
+/** 每轮第一次模型调用的 (命中, 输入, 有几轮真的带缓存字段)。
+ *
+ * 首枪命中为 0 是**必然**的（缓存还没建立），必须原样给 0 而不是 null；
+ * 只有模型压根不回传缓存字段时才返回 null——两种情况含义完全不同。
+ */
+function firstCalls(turns: TraceTurn[]): { in: number; cache: number; seen: number } {
+  let inTok = 0;
+  let cacheTok = 0;
+  let seen = 0;
+  for (const turn of turns) {
+    if (!turn.firstCall) continue;
+    inTok += turn.firstCall.in;
+    cacheTok += turn.firstCall.cache ?? 0;
+    if (turn.firstCall.cache !== undefined) seen += 1;
+  }
+  return { in: inTok, cache: cacheTok, seen };
 }

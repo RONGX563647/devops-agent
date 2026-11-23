@@ -33,6 +33,11 @@ def ctx(monkeypatch):
     return module, responses
 
 
+def _stub_base(module, responses, base="base"):
+    """模拟 base commit 可解析。"""
+    responses[("rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")] = base
+
+
 def test_changed_symbols_dedup_and_limit(ctx):
     module, _ = ctx
     diff = "\n".join(
@@ -55,7 +60,7 @@ def test_changed_symbols_caps_at_max(ctx):
 
 def test_caller_snippets_skips_changed_files(ctx):
     module, responses = ctx
-    responses[("grep", "-n", "alpha", "--", *module.GREP_PATHS)] = (
+    responses[("grep", "-n", "-w", "-F", "alpha", "--", *module.GREP_PATHS)] = (
         "src/devops_agent/changed.py:10:alpha\nsrc/devops_agent/caller.py:20:alpha = alpha()\n"
     )
     responses[("show", "HEAD:src/devops_agent/caller.py")] = "\n".join(
@@ -74,12 +79,13 @@ def test_caller_snippets_ignores_grep_with_no_hits(ctx):
 
 def test_build_packs_diff_and_callers(ctx):
     module, responses = ctx
+    _stub_base(module, responses, "abc123")
     responses[("diff", "abc123...HEAD", "--", *module.DIFF_PATHS)] = (
         "diff --git a/src/devops_agent/main.py b/src/devops_agent/main.py\n"
         "+++ b/src/devops_agent/main.py\n"
         "+def new_api():\n"
     )
-    responses[("grep", "-n", "new_api", "--", *module.GREP_PATHS)] = (
+    responses[("grep", "-n", "-w", "-F", "new_api", "--", *module.GREP_PATHS)] = (
         "src/devops_agent/caller.py:5:new_api()\n"
     )
     responses[("show", "HEAD:src/devops_agent/caller.py")] = "new_api()\n"
@@ -92,6 +98,7 @@ def test_build_packs_diff_and_callers(ctx):
 
 def test_build_truncates_long_diff(ctx):
     module, responses = ctx
+    _stub_base(module, responses, "base")
     responses[("diff", "base...HEAD", "--", *module.DIFF_PATHS)] = "\n".join(
         f"line {i}" for i in range(module.MAX_DIFF_LINES + 50)
     )
@@ -108,13 +115,30 @@ def test_changed_paths_strips_b_prefix(ctx):
 def test_build_skips_changed_file_callers(ctx):
     """build() 产出的 changed 集合必须是干净路径，避免把改动文件重复注入。"""
     module, responses = ctx
+    _stub_base(module, responses, "base")
     responses[("diff", "base...HEAD", "--", *module.DIFF_PATHS)] = (
         "+++ b/src/devops_agent/main.py\n+def new_api():\n"
     )
-    responses[("grep", "-n", "new_api", "--", *module.GREP_PATHS)] = (
+    responses[("grep", "-n", "-w", "-F", "new_api", "--", *module.GREP_PATHS)] = (
         "src/devops_agent/main.py:5:new_api()\n"
     )
     responses[("show", "HEAD:src/devops_agent/main.py")] = "new_api()\n"
     text = module.build("base")
     assert "CALLER CONTEXT" in text
     assert "main.py:5" not in text  # 改动文件已被跳过
+
+
+def test_build_rejects_unresolvable_base(ctx):
+    """base 不可解析时必须抛错，避免 fail-open 静默判过。"""
+    module, _ = ctx  # rev-parse 未登记 → 返回空串 → 视为不可解析
+    with pytest.raises(ValueError, match="unresolvable base"):
+        module.build("deadbeef")
+
+
+def test_build_rejects_empty_diff(ctx):
+    """空 diff 必须抛错，避免未审代码被静默判过。"""
+    module, responses = ctx
+    _stub_base(module, responses, "base")
+    responses[("diff", "base...HEAD", "--", *module.DIFF_PATHS)] = ""
+    with pytest.raises(ValueError, match="empty diff"):
+        module.build("base")

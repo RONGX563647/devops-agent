@@ -38,7 +38,7 @@ def caller_snippets(symbols: list[str], changed_files: set[str]) -> str:
     """在代码目录里找符号引用点，截取上下文；跳过本次改动的文件。"""
     blocks: list[str] = []
     for symbol in symbols:
-        hits = git("grep", "-n", symbol, "--", *GREP_PATHS).splitlines()[:3]
+        hits = git("grep", "-n", "-w", "-F", symbol, "--", *GREP_PATHS).splitlines()[:3]
         for hit in hits:
             parts = hit.split(":", 2)
             if len(parts) < 2:
@@ -59,9 +59,18 @@ def changed_paths(diff: str) -> set[str]:
     return {line[6:] for line in diff.splitlines() if line.startswith("+++ b/")}
 
 
+def resolve_base(base: str) -> bool:
+    """确认 base 是可解析的 commit，避免无效 SHA 导致空 diff 被静默判过。"""
+    return bool(git("rev-parse", "--verify", "--quiet", f"{base}^{{commit}}").strip())
+
+
 def build(base: str) -> str:
-    """构造完整审查上下文文本；三点 diff 排除 base 分支自身的演进。"""
+    """构造完整审查上下文；三点 diff 排除 base 分支自身的演进。"""
+    if not resolve_base(base):
+        raise ValueError(f"unresolvable base commit: {base}")
     diff = "\n".join(git("diff", f"{base}...HEAD", "--", *DIFF_PATHS).splitlines()[:MAX_DIFF_LINES])
+    if not diff.strip():
+        raise ValueError("empty diff: no reviewable changes in DIFF_PATHS")
     callers = caller_snippets(changed_symbols(diff), changed_paths(diff))
     return f"=== DIFF ===\n{diff}\n\n=== CALLER CONTEXT ===\n{callers}"
 

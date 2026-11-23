@@ -5,6 +5,11 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore: ['web/**', 'docs/**', '**/*.md', '**/package-lock.json']
 
+# 同一 PR 连续 push 时取消旧 run，避免状态 issue 读改写竞态与重复烧 token
+concurrency:
+  group: opencode-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
     # 只审同一仓库的非草稿 PR：fork PR 的 GITHUB_TOKEN 是只读的，无法写状态
@@ -19,8 +24,10 @@ jobs:
       pull-requests: write   # 把审查结论评论回 PR
       issues: write          # 防循环状态 issue
     steps:
+      # 直接 checkout PR head，使 HEAD 与状态里存的 head.sha 一致（默认 checkout 是 merge commit）
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -56,7 +63,7 @@ jobs:
 
           # 按标题精确匹配本 PR 的 issue，避免多个 PR 共用一个 body 造成读改写竞态
           listing = gh("issue", "list", "--state", "all", "--label", label,
-                       "--json", "number,title")
+                       "--limit", "1000", "--json", "number,title")
           issue = ""
           for row in json.loads(listing or "[]"):
               if row.get("title") == title:

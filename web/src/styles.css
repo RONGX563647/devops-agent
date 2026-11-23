@@ -53,6 +53,20 @@
   --danger-ink: #c0392b;
   --danger-soft: rgb(239 107 107 / 12%);
 
+  /* ---- 事件类型色：只落在「行首符号 + 类型标签」上，正文与参数保持中性 ----
+   * 取值全部按白底 11.5px 小字校过，对比度 4.7:1 起步，不靠饱和度抢注意力。 */
+  --ev-log: #6f757e; /* 运行日志：最弱的中性灰 */
+  --ev-text: #4a505a; /* 正文：中性深灰，比日志重一档 */
+  --ev-think: #6b5ac9; /* 思考：紫，表示「内部、未成文」 */
+  --ev-think-strong: #5747b3;
+  --ev-think-line: rgb(107 90 201 / 30%);
+  --ev-tool: #2f5fcc; /* 工具：沿用交互蓝，表示「对外动作」 */
+  --ev-tool-line: rgb(77 130 247 / 32%);
+  --ev-control: #8a5a12; /* 待确认 / 外部执行：琥珀，表示「卡住等人」 */
+  --ev-control-line: rgb(217 164 65 / 38%);
+  --ev-error: #c0392b; /* 异常：红，只给真正出错的行 */
+  --ev-error-line: rgb(229 77 77 / 38%);
+
   /* ---- 兼容旧 token 名（指标 / 质量 / 成本页仍在用） ---- */
   --text-1: var(--ink);
   --text-2: var(--ink-soft);
@@ -546,11 +560,12 @@ a:hover {
   height: 12px;
   border-radius: 3px;
 }
+/* 瀑布图与对话页共用一套语义：紫 = 模型/推理，蓝 = 工具/动作，琥珀 = 权限判定 */
 .bar-model {
-  background: var(--accent);
+  background: #7c66d4;
 }
 .bar-tool {
-  background: #8b5cf6;
+  background: var(--accent);
 }
 .bar-permission {
   background: var(--warn);
@@ -1106,7 +1121,8 @@ a:hover {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   line-height: 1;
-  color: var(--ink-faint);
+  color: inherit;
+  opacity: 0.7;
   transition: transform var(--dur-fast) ease;
 }
 .step-line[aria-expanded='true'] .step-chev {
@@ -1114,11 +1130,13 @@ a:hover {
 }
 .step-line.static .step-chev {
   color: transparent;
+  opacity: 1;
 }
 .step-kind {
   flex-shrink: 0;
   font-size: 11.5px;
-  color: var(--ink-soft);
+  font-weight: 500;
+  color: inherit;
 }
 .step-sep {
   flex-shrink: 0;
@@ -1129,7 +1147,8 @@ a:hover {
   min-width: 0;
   overflow: hidden;
   font-size: 10.5px;
-  color: var(--ink-faint);
+  /* 参数是「同一行的次要信息」：比类型标签弱，但要能读，不低于 4.5:1 */
+  color: var(--ev-log);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -1139,17 +1158,39 @@ a:hover {
   color: var(--ink-faint);
 }
 .step-line.success .step-state {
-  color: var(--ok);
+  color: var(--ok-ink);
 }
 .step-line.running .step-state {
   color: var(--accent-ink);
 }
-.step-line.error .step-kind,
 .step-line.error .step-state {
-  color: var(--danger);
+  color: var(--ev-error);
 }
-.step-line.warn .step-kind {
-  color: var(--warn-ink);
+
+/* 类型色：颜色只落在行首符号与类型标签上（标签继承行色），
+ * 参数摘要、状态词各自保持中性，避免一屏六种颜色互相抢。 */
+.chat-steps [data-kind='tool'] .step-line {
+  color: var(--ev-tool);
+}
+.chat-steps [data-kind='control'] .step-line {
+  color: var(--ev-control);
+}
+.chat-steps [data-kind='error'] .step-line {
+  color: var(--ev-error);
+}
+.chat-steps [data-kind='text'] .step-line {
+  color: var(--ev-text);
+}
+/* 运行时状态优先于类型色：失败的调用显示为异常，卡住的确认显示为待处理 */
+.chat-steps .step-line.error {
+  color: var(--ev-error);
+}
+.chat-steps .step-line.warn {
+  color: var(--ev-control);
+}
+/* 正文标记是分隔符而非步骤，字重压回常规，免得比正文更抢眼 */
+.chat-steps [data-kind='text'] .step-kind {
+  font-weight: 400;
 }
 /* 生命周期行：读作运行日志，比步骤更弱一档 */
 .step-log {
@@ -1157,7 +1198,7 @@ a:hover {
   overflow: hidden;
   font-size: 11px;
   line-height: 1.6;
-  color: var(--ink-muted);
+  color: var(--ev-log);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1177,11 +1218,21 @@ a:hover {
   border-left: 2px solid var(--line);
   border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
 }
+/* 展开的返回用类型色做左边线，让结果和上面的步骤行属于同一类 */
+.chat-steps [data-kind='tool'] .step-result {
+  border-left-color: var(--ev-tool-line);
+}
+.chat-steps [data-kind='control'] .step-result {
+  border-left-color: var(--ev-control-line);
+}
+.chat-steps [data-kind='error'] .step-result {
+  border-left-color: var(--ev-error-line);
+}
 
 /* 思考块：左侧竖线 + 小圆点 + 字数，默认收起 */
 .thinking {
   margin: 2px 0 var(--sp-3);
-  border-left: 2px solid var(--line-soft);
+  border-left: 2px solid var(--ev-think-line);
 }
 .thinking-head {
   display: flex;
@@ -1189,7 +1240,7 @@ a:hover {
   align-items: center;
   padding: 3px var(--sp-4);
   font-size: var(--text-2xs);
-  color: var(--ink-faint);
+  color: var(--ev-think);
   cursor: pointer;
   list-style: none;
   user-select: none;
@@ -1198,17 +1249,18 @@ a:hover {
   display: none;
 }
 .thinking-head:hover {
-  color: var(--ink-soft);
+  color: var(--ev-think-strong);
 }
 .thinking-dot {
   flex-shrink: 0;
   width: 5px;
   height: 5px;
-  background: var(--ink-faint);
+  background: var(--ev-think);
   border-radius: 50%;
+  opacity: 0.5;
 }
 .thinking-dot.live {
-  background: var(--accent);
+  opacity: 1;
   animation: thinking-pulse 1.2s ease-in-out infinite;
 }
 .thinking-count {

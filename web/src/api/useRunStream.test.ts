@@ -9,6 +9,85 @@ const INITIAL: StreamState = {
   running: true,
 };
 
+describe('输入解析事件', () => {
+  it('折叠为一条 parse 步骤：START 建行、STAGE 追加、END 收尾', () => {
+    let state = applyEvent(INITIAL, { type: 'INPUT_PARSE_START', block_id: 'input-parse' });
+    expect(state.steps).toHaveLength(1);
+    expect(state.steps[0]).toMatchObject({ kind: 'parse', label: '输入解析', state: 'running' });
+    expect(state.steps[0].parseStages).toEqual([]);
+
+    state = applyEvent(state, {
+      type: 'INPUT_PARSE_STAGE',
+      block_id: 'input-parse',
+      stage: 'normalize',
+      stage_label: '归一化',
+      state: 'ok',
+      summary: 'CRLF → LF',
+      before: 10,
+      after: 8,
+      changed: true,
+    });
+    state = applyEvent(state, {
+      type: 'INPUT_PARSE_STAGE',
+      block_id: 'input-parse',
+      stage: 'budget',
+      stage_label: '预算裁剪',
+      state: 'skip',
+      summary: '未超预算',
+      changed: false,
+    });
+    expect(state.steps[0].parseStages?.map((item) => item.stage)).toEqual(['normalize', 'budget']);
+    // 父行摘要只算生效的那一个阶段
+    expect(state.steps[0].detail).toBe('1/2 阶段生效');
+
+    state = applyEvent(state, {
+      type: 'INPUT_PARSE_END',
+      block_id: 'input-parse',
+      summary: '6 阶段 · 90 → 80 字 · ≈ 20 token',
+    });
+    expect(state.steps[0].state).toBe('success');
+    expect(state.steps[0].detail).toBe('6 阶段 · 90 → 80 字 · ≈ 20 token');
+  });
+
+  it('同一阶段重复到达时覆盖而不是追加', () => {
+    let state = applyEvent(INITIAL, { type: 'INPUT_PARSE_START', block_id: 'b1' });
+    state = applyEvent(state, {
+      type: 'INPUT_PARSE_STAGE',
+      block_id: 'b1',
+      stage: 'redact',
+      stage_label: '密钥脱敏',
+      state: 'skip',
+      summary: '未发现凭据',
+    });
+    state = applyEvent(state, {
+      type: 'INPUT_PARSE_STAGE',
+      block_id: 'b1',
+      stage: 'redact',
+      stage_label: '密钥脱敏',
+      state: 'ok',
+      summary: '1 处凭据已替换为占位符',
+      items: 1,
+      changed: true,
+    });
+    expect(state.steps[0].parseStages).toHaveLength(1);
+    expect(state.steps[0].detail).toContain('1 脱敏');
+  });
+
+  it('解析阶段缺字段时给出安全缺省值', () => {
+    const state = applyEvent(INITIAL, {
+      type: 'INPUT_PARSE_STAGE',
+      block_id: 'b2',
+      stage: 'expand',
+    });
+    expect(state.steps[0].parseStages?.[0]).toMatchObject({
+      stage: 'expand',
+      status: 'ok',
+      changed: false,
+      failed: 0,
+    });
+  });
+});
+
 describe('parseFrame', () => {
   it('兼容 CRLF 并解析 JSON', () => {
     expect(parseFrame('data: {"type":"RUN_DONE","text":"ok"}\r\n\r\n')).toEqual({

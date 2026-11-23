@@ -97,6 +97,18 @@ export interface StreamEvent {
   error?: string;
   run_id?: number;
   text?: string;
+  /** 输入解析事件字段 */
+  stage?: string;
+  stage_label?: string;
+  summary?: string;
+  before?: number;
+  after?: number;
+  items?: number;
+  ms?: number;
+  changed?: boolean;
+  failed?: number;
+  detail?: string;
+  degraded?: number;
 }
 
 /** 过程步骤的类别——每类在 UI 上有不同视觉标注。 */
@@ -106,7 +118,25 @@ export type ProcessKind =
   | 'thinking'
   | 'tool'
   | 'control'
-  | 'error';
+  | 'error'
+  | 'parse';
+
+/** 输入解析的一个阶段：与后端 INPUT_PARSE_STAGE 事件字段一一对应。 */
+export interface ParseStage {
+  stage: string;
+  label: string;
+  status: 'ok' | 'skip' | 'error';
+  summary: string;
+  before: number;
+  after: number;
+  items: number;
+  ms: number;
+  detail: string;
+  /** 该阶段是否真的改动了输入——界面只展示这些。 */
+  changed: boolean;
+  /** 阶段内部失败条数（部分降级）。 */
+  failed: number;
+}
 
 /** 一条过程步骤：由若干同类事件流聚合成，携带展示所需的标注与状态。 */
 export interface ProcessEntry {
@@ -126,6 +156,8 @@ export interface ProcessEntry {
   result?: string;
   /** 工具原始标识，排查时展示。 */
   toolName?: string;
+  /** 输入解析阶段的明细（kind === 'parse' 时有值）。 */
+  parseStages?: ParseStage[];
 }
 
 /** 一条会话消息：用户消息或一轮助手回答（助手消息携带该轮过程步骤）。 */
@@ -150,7 +182,7 @@ export interface ChatMessage {
 /** 轨迹步骤：由消息与过程步骤派生的只读视图。 */
 export interface TraceStep {
   id: string;
-  kind: 'text' | 'tool' | 'error';
+  kind: 'text' | 'tool' | 'error' | 'parse';
   title: string;
   text: string;
   /** 毫秒时间戳。 */
@@ -161,6 +193,24 @@ export interface TraceStep {
   toolName?: string;
   args?: string;
   result?: string;
+  /** 解析步骤的阶段明细。 */
+  stages?: ParseStage[];
+}
+
+/** 一次运行落库的解析阶段（GET /api/runs/{id}/input-stages）。 */
+export interface InputStage {
+  seq: number;
+  stage: string;
+  label: string;
+  status: 'ok' | 'skip' | 'error';
+  changed: boolean;
+  summary: string;
+  before: number;
+  after: number;
+  items: number;
+  duration_ms: number;
+  detail: string;
+  failed: number;
 }
 
 /** 轨迹轮次：一条用户输入到其后的助手产出。 */
@@ -176,4 +226,6 @@ export interface TraceTurn {
   tools: number;
   failed: boolean;
   items: TraceStep[];
+  /** 该轮输入解析的计数摘要（无解析时缺省）。 */
+  parse?: { refs: number; redactions: number; degraded: number };
 }

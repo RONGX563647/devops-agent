@@ -12,6 +12,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from devops_agent.env import load_env
+from devops_agent.input.events import events as parse_events
+from devops_agent.input.pipeline import PreparedInput, prepare
 from devops_agent.observability.api import router as observability_router
 from devops_agent.observability.recorder import RunRecorder
 from devops_agent.runtime.agent import build_agentscope_runtime
@@ -57,6 +59,14 @@ def _sse_frame(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _prepare_input(user_input: str) -> PreparedInput | None:
+    """解析输入；任何意外都退回 None（沿用原始输入），不让解析层阻断对话。"""
+    try:
+        return prepare(user_input)
+    except Exception:
+        return None
+
+
 @app.post("/run/stream")
 async def run_stream(
     req: RunRequest,
@@ -81,8 +91,17 @@ async def run_stream(
         # 避免这段推理空窗被当成空闲连接断开（SSE 注释帧前端会忽略）。
         yield ": ping\n\n"
         recorder.start(req.session_id, req.user_input)
+        # 输入解析在真正调用 Agent 之前完成：事件照常推给前端画轨迹，
+        # 但只有 prepared.text 会进入模型上下文——密钥与裁剪细节不外泄。
+        payload = req.user_input
+        prepared = _prepare_input(req.user_input)
+        if prepared is not None:
+            payload = prepared.text
+            for frame in parse_events(prepared):
+                recorder.consume(frame)  # 阶段缓存进 recorder，finish 时落库
+                yield _sse_frame(frame)
         try:
-            async for event in runtime.stream(req.session_id, req.user_input):
+            async for event in runtime.stream(req.session_id, payload):
                 recorder.consume(event)
                 yield _sse_frame(event)
         except Exception as exc:  # 异常也要落库，记录失败

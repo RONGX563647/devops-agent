@@ -19,7 +19,12 @@ from devops_agent.config import HealthPolicy, load_health
 from devops_agent.eval.scorer import EvalDimension
 from devops_agent.observability import health as health_mod
 from devops_agent.observability import repository as repo
-from devops_agent.observability.models import EvalScoreRecord, RunRecord, SpanRecord
+from devops_agent.observability.models import (
+    EvalScoreRecord,
+    InputStageRecord,
+    RunRecord,
+    SpanRecord,
+)
 
 router = APIRouter(prefix="/api", tags=["observability"])
 
@@ -53,6 +58,21 @@ class SpanOut(BaseModel):
     tokens: int
     status: str
     error: str | None
+
+
+class InputStageOut(BaseModel):
+    seq: int
+    stage: str
+    label: str
+    status: str
+    changed: bool
+    summary: str
+    before: int
+    after: int
+    items: int
+    duration_ms: int
+    detail: str
+    failed: int = 0
 
 
 class RunListOut(BaseModel):
@@ -132,6 +152,17 @@ def get_spans(run_id: int) -> list[SpanOut]:
             raise HTTPException(status_code=404, detail="run not found")
         spans = repo.list_spans(conn, run_id)
     return [_span_out(s) for s in spans]
+
+
+@router.get("/runs/{run_id}/input-stages", response_model=list[InputStageOut])
+def get_input_stages(run_id: int) -> list[InputStageOut]:
+    """一次运行的输入解析过程（全量，含 skip 的无改动阶段）。"""
+    with repo.connect() as conn:
+        repo.init_db(conn)
+        if repo.get_run(conn, run_id) is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        stages = repo.list_input_stages(conn, run_id)
+    return [_input_stage_out(s) for s in stages]
 
 
 @router.get("/runs/{run_id}/health")
@@ -273,4 +304,22 @@ def _span_out(span: SpanRecord) -> SpanOut:
         tokens=span.tokens,
         status=span.status,
         error=span.error,
+    )
+
+
+def _input_stage_out(stage: InputStageRecord) -> InputStageOut:
+    """InputStageRecord → InputStageOut。"""
+    return InputStageOut(
+        seq=stage.seq,
+        stage=stage.stage,
+        label=stage.label,
+        status=stage.status,
+        changed=stage.changed,
+        summary=stage.summary,
+        before=stage.before,
+        after=stage.after,
+        items=stage.items,
+        duration_ms=stage.duration_ms,
+        detail=stage.detail,
+        failed=stage.failed,
     )

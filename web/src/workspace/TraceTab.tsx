@@ -5,6 +5,7 @@ import { fetchRuns } from '../api/client';
 import { StatusBadge } from '../components/StatusBadge';
 import type { Run, TraceStep, TraceTurn } from '../types';
 import { RunTrace } from './RunTrace';
+import { stageMetric } from './StepRow';
 import { useSession } from './store';
 import { turnsFromMessages } from './trace';
 import { formatClock, formatDateTime, formatDuration } from './time';
@@ -58,19 +59,36 @@ const STEP_TONE: Record<TraceStep['kind'], string> = {
   text: 'text',
   tool: 'tool',
   error: 'error',
+  parse: 'parse',
 };
+
+const KIND_TEXT: Record<TraceStep['kind'], string> = {
+  text: '输出',
+  tool: '工具',
+  error: '异常',
+  parse: '解析',
+};
+
+/** 只展示真正生效的解析阶段：无改动且没出错的不占位置。 */
+export function visibleStages(stages: TraceStep['stages']): TraceStep['stages'] {
+  return (stages ?? []).filter(
+    (stage) => stage.changed || stage.status === 'error' || stage.failed > 0,
+  );
+}
 
 /** 单步详情：工具分入参与返回，文本与异常直接贴原文。 */
 function StepDetail({ step }: { step: TraceStep }) {
   return (
     <div className="ws-step-detail">
       <div className="ws-step-detail-head">
-        <span className={`ws-kind ${STEP_TONE[step.kind]}`}>{step.kind === 'tool' ? '工具' : step.kind === 'error' ? '异常' : '输出'}</span>
+        <span className={`ws-kind ${STEP_TONE[step.kind]}`}>{KIND_TEXT[step.kind]}</span>
         <strong>{step.title}</strong>
         <span className="muted mono">{formatDuration(step.durationMs)}</span>
         {step.status && <span className={`mono ws-status ${step.status}`}>{step.status}</span>}
       </div>
-      {step.kind === 'tool' ? (
+      {step.kind === 'parse' ? (
+        <ParseDetail step={step} />
+      ) : step.kind === 'tool' ? (
         <>
           <div className="ws-block">
             <span className="ws-block-label">入参</span>
@@ -83,6 +101,35 @@ function StepDetail({ step }: { step: TraceStep }) {
         </>
       ) : (
         <pre className="ws-step-text">{step.text || '（空）'}</pre>
+      )}
+    </div>
+  );
+}
+
+/** 解析详情：阶段表（标签 · 做了什么 · 计量）+ 未展示项说明。 */
+function ParseDetail({ step }: { step: TraceStep }) {
+  const stages = step.stages ?? [];
+  const visible = visibleStages(stages) ?? [];
+  const hidden = stages.length - visible.length;
+  return (
+    <div className="ws-parse">
+      <p className="ws-parse-note">{step.text || '输入解析完成。'}</p>
+      <div className="ws-parse-rows">
+        {visible.map((stage) => (
+          <div className="ws-parse-row" key={stage.stage} data-status={stage.status}>
+            <span className="ws-parse-label">{stage.label}</span>
+            <span className="ws-parse-summary" title={stage.detail || stage.summary}>
+              {stage.summary}
+            </span>
+            <span className="ws-parse-metric mono">{stageMetric(stage)}</span>
+          </div>
+        ))}
+        {visible.length === 0 && <p className="muted">这一轮输入没有需要处理的步骤。</p>}
+      </div>
+      {hidden > 0 && (
+        <p className="ws-parse-foot muted">
+          另有 {hidden} 项无改动（已落库，可在「运行记录」里查看完整解析链）。
+        </p>
       )}
     </div>
   );
@@ -205,7 +252,10 @@ function SessionTrace({
                   <span className="ws-turn-main">
                     <span className="ws-turn-question">{turn.question || '（空问题）'}</span>
                     <span className="ws-turn-meta mono">
-                      {formatClock(turn.at)} · {turn.tools} 工具 · {formatDuration(turn.endedAt - turn.startedAt)}
+                      {formatClock(turn.at)} · {turn.tools} 工具
+                      {turn.parse?.refs ? ` · ${turn.parse.refs} 引用` : ''}
+                      {turn.parse?.degraded ? ` · ${turn.parse.degraded} 降级` : ''} ·{' '}
+                      {formatDuration(turn.endedAt - turn.startedAt)}
                     </span>
                   </span>
                 </button>
@@ -246,7 +296,7 @@ function SessionTrace({
                         onClick={() => setSelectedStepId(step.id)}
                       >
                         <span className={`ws-kind ${STEP_TONE[step.kind]}`}>
-                          {step.kind === 'tool' ? '工具' : step.kind === 'error' ? '异常' : '输出'}
+                          {KIND_TEXT[step.kind]}
                         </span>
                         <span className="ws-step-title">{step.title}</span>
                         <span className="ws-step-meta mono">{formatDuration(step.durationMs)}</span>

@@ -1,6 +1,6 @@
 /** 过程时间线：每种事件一行，工具/异常可点开看完整入参与返回。 */
 import { useState } from 'react';
-import type { ProcessEntry } from '../types';
+import type { ParseStage, ProcessEntry } from '../types';
 import { formatClock } from './time';
 
 /** 状态文案：一行右侧只留最短的一个词。 */
@@ -96,6 +96,61 @@ function ThinkingStep({ step }: { step: ProcessEntry }) {
   );
 }
 
+/** 解析阶段的计量列：不同阶段算的不是同一件事，按语义各给一种。 */
+export function stageMetric(stage: ParseStage): string {
+  if (stage.stage === 'detect') return stage.items ? `${stage.items} 条` : '—';
+  if (stage.stage === 'expand') return stage.after ? `+${stage.after} 字` : '—';
+  if (stage.stage === 'redact') return stage.items ? `${stage.items} 处` : '—';
+  if (stage.before || stage.after) return `${stage.before} → ${stage.after}`;
+  return `${stage.ms}ms`;
+}
+
+/** 输入解析：一行总账 + 折叠的阶段明细，只列真正生效的处理。 */
+function ParseStep({ step }: { step: ProcessEntry }) {
+  const stages = step.parseStages ?? [];
+  // 无改动且没出错的阶段不展示——「没做什么」不该占一行
+  const visible = stages.filter(
+    (stage) => stage.changed || stage.status === 'error' || stage.failed > 0,
+  );
+  const hidden = stages.length - visible.length;
+  return (
+    <details className="parse-step" data-kind="parse" open={step.state === 'running'}>
+      <summary className="step-line parse">
+        <span className="step-chev" aria-hidden="true">
+          ›
+        </span>
+        <span className="step-kind">{step.label}</span>
+        {step.detail && (
+          <>
+            <span className="step-sep" aria-hidden="true">
+              ·
+            </span>
+            <span className="step-detail mono" title={step.detail}>
+              {summarize(step.detail, 72)}
+            </span>
+          </>
+        )}
+        <span className="step-state mono">{STATE_TEXT[step.state]}</span>
+      </summary>
+      <div className="parse-stages">
+        {visible.map((stage) => (
+          <div className="parse-stage" key={stage.stage} data-status={stage.status}>
+            <span className="parse-stage-label">{stage.label}</span>
+            <span className="parse-stage-summary mono" title={stage.detail || stage.summary}>
+              {stage.summary}
+            </span>
+            <span className="parse-stage-metric mono">{stageMetric(stage)}</span>
+          </div>
+        ))}
+        {visible.length === 0 && <p className="parse-stage muted">输入无需处理，原样透传。</p>}
+        {hidden > 0 && (
+          <p className="parse-stage muted">另有 {hidden} 项无改动，完整解析链见运行记录。</p>
+        )}
+      </div>
+    </details>
+  );
+}
+
 /** 正式正文已由 Markdown 渲染，这里只留一个“正文输出”标记，不重复贴全文。 */
 function TextStep({ step }: { step: ProcessEntry }) {
   return (
@@ -124,6 +179,7 @@ function LogStep({ step }: { step: ProcessEntry }) {
 export function StepRow({ step }: { step: ProcessEntry }) {
   if (step.kind === 'lifecycle') return <LogStep step={step} />;
   if (step.kind === 'thinking') return <ThinkingStep step={step} />;
+  if (step.kind === 'parse') return <ParseStep step={step} />;
   if (step.kind === 'text') return <TextStep step={step} />;
   return <ExpandableStep step={step} />;
 }

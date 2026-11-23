@@ -2,8 +2,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchRun, fetchRunHealth, fetchRuns, fetchSpans } from '../api/client';
-import type { ChatMessage, Run, RunHealth, Span } from '../types';
+import { fetchInputStages, fetchRun, fetchRunHealth, fetchRuns, fetchSpans } from '../api/client';
+import type { ChatMessage, InputStage, ParseStage, Run, RunHealth, Span } from '../types';
 import { clearAllHistory, saveMessages } from './history';
 import { RunTrace } from './RunTrace';
 import { resetStore } from './store';
@@ -14,6 +14,7 @@ vi.mock('../api/client', () => ({
   fetchSpans: vi.fn(),
   fetchRunHealth: vi.fn(),
   fetchRuns: vi.fn(),
+  fetchInputStages: vi.fn(),
 }));
 
 function makeRun(id: number, sessionId: string): Run {
@@ -49,6 +50,24 @@ const span: Span = {
   error: null,
 };
 
+const stage = (over: Partial<ParseStage> & { stage: string; label: string }): ParseStage => ({
+  status: 'ok',
+  summary: '',
+  before: 0,
+  after: 0,
+  items: 0,
+  ms: 1,
+  detail: '',
+  changed: false,
+  failed: 0,
+  ...over,
+});
+
+const persisted: InputStage[] = [
+  { seq: 0, stage: 'normalize', label: '归一化', status: 'ok', changed: true, summary: 'CRLF → LF', before: 90, after: 80, items: 0, duration_ms: 1, detail: '', failed: 0 },
+  { seq: 1, stage: 'budget', label: '预算裁剪', status: 'skip', changed: false, summary: '未超预算', before: 80, after: 80, items: 0, duration_ms: 0, detail: '', failed: 0 },
+];
+
 const health: RunHealth = {
   run_id: 7,
   score: 80,
@@ -66,6 +85,7 @@ beforeEach(() => {
   vi.mocked(fetchRun).mockResolvedValue(makeRun(7, 's-one'));
   vi.mocked(fetchSpans).mockResolvedValue([span]);
   vi.mocked(fetchRunHealth).mockResolvedValue(health);
+  vi.mocked(fetchInputStages).mockResolvedValue(persisted);
   vi.mocked(fetchRuns).mockResolvedValue({
     items: [makeRun(7, 's-one'), makeRun(8, 's-two')],
     total: 2,
@@ -82,6 +102,14 @@ describe('RunTrace', () => {
     expect(screen.getByText('总分 80')).toBeTruthy();
     expect(screen.getByText(/模型调用 · chat/)).toBeTruthy();
     expect(screen.getByText('50 ms')).toBeTruthy();
+  });
+
+  it('运行记录页展示落库的完整解析链（含无改动阶段）', async () => {
+    wrap(<RunTrace runId={7} />);
+    expect(await screen.findByText('输入解析链')).toBeTruthy();
+    expect(await screen.findByText('归一化')).toBeTruthy();
+    expect(screen.getByText('预算裁剪')).toBeTruthy();
+    expect(screen.getByText('无改动')).toBeTruthy();
   });
 
   it('run 不存在时显示错误', async () => {
@@ -134,6 +162,49 @@ describe('TraceTab', () => {
     expect(screen.getByText('kubectl describe pod')).toBeTruthy();
     expect(screen.getByText('返回')).toBeTruthy();
     expect(screen.getByText('ImagePullBackOff')).toBeTruthy();
+  });
+
+  it('解析步骤只展示生效的阶段，并说明其余无改动', async () => {
+    const messages: ChatMessage[] = [
+      { id: 'u1', role: 'user', text: '看下 ./README.md', at: '2026-11-23T10:00:00.000Z', steps: [] },
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '读完了。',
+        at: '2026-11-23T10:00:01.000Z',
+        steps: [
+          {
+            id: 'parse:input-parse',
+            kind: 'parse',
+            label: '输入解析',
+            detail: '2/6 阶段生效 · 1 引用',
+            state: 'success',
+            at: '2026-11-23T10:00:01.000Z',
+            parseStages: [
+              stage({ stage: 'normalize', label: '归一化', changed: true, summary: 'CRLF → LF', before: 30, after: 28 }),
+              stage({ stage: 'detect', label: '引用探测', changed: true, items: 1, summary: '本地路径 ×1' }),
+              stage({ stage: 'expand', label: '引用展开', changed: true, summary: '1 条引用已展开', after: 120 }),
+              stage({ stage: 'redact', label: '密钥脱敏', status: 'skip', summary: '未发现凭据' }),
+              stage({ stage: 'budget', label: '预算裁剪', status: 'skip', summary: '未超预算' }),
+              stage({ stage: 'compose', label: '组装', changed: true, summary: '追加 1 份引用材料' }),
+            ],
+          },
+        ],
+        endedAt: '2026-11-23T10:00:03.000Z',
+      },
+    ];
+    saveMessages('s-parse', messages);
+    wrap(<TraceTab session="s-parse" />);
+
+    const row = await screen.findByRole('button', { name: /输入解析/ });
+    fireEvent.click(row);
+    expect(await screen.findByText('引用探测')).toBeTruthy();
+    expect(screen.getByText('本地路径 ×1')).toBeTruthy();
+    // 未生效的阶段不该占位置
+    expect(screen.queryByText('预算裁剪')).toBeNull();
+    expect(screen.getByText(/另有 2 项无改动/)).toBeTruthy();
+    // 轮列表与父行摘要都带引用计数
+    expect(screen.getAllByText(/1 引用/).length).toBeGreaterThan(0);
   });
 
   it('按会话过滤运行记录列表', async () => {

@@ -1,5 +1,5 @@
 /** 把会话消息派生为轨迹轮次：轮列表 + 每轮步骤 + 估算耗时。 */
-import type { ChatMessage, ProcessEntry, TraceStep, TraceTurn } from '../types';
+import type { ChatMessage, ParseStage, ProcessEntry, TraceStep, TraceTurn } from '../types';
 
 function toMs(value?: string | null): number {
   if (!value) return 0;
@@ -15,12 +15,14 @@ function shortQuestion(text: string): string {
 function stepToTrace(step: ProcessEntry): TraceStep | null {
   if (step.kind === 'lifecycle' || step.kind === 'text') return null;
   const kind: TraceStep['kind'] =
-    step.kind === 'error' ? 'error' : step.kind === 'thinking' ? 'text' : 'tool';
-  const title = step.kind === 'thinking'
-    ? '模型思考'
-    : step.kind === 'control'
-      ? step.label
-      : step.label;
+    step.kind === 'error'
+      ? 'error'
+      : step.kind === 'thinking'
+        ? 'text'
+        : step.kind === 'parse'
+          ? 'parse'
+          : 'tool';
+  const title = step.kind === 'thinking' ? '模型思考' : step.label;
   return {
     id: step.id,
     kind,
@@ -33,7 +35,20 @@ function stepToTrace(step: ProcessEntry): TraceStep | null {
     toolName: step.toolName,
     args: step.args,
     result: step.result,
+    stages: step.parseStages,
   };
+}
+
+/** 把解析阶段折成轮级计数：引用条数、脱敏处数、降级处数。 */
+function accumulateParse(turn: TraceTurn, stages: ParseStage[]): void {
+  if (stages.length === 0) return;
+  const refs = stages.find((stage) => stage.stage === 'detect')?.items ?? 0;
+  const redactions = stages.find((stage) => stage.stage === 'redact')?.items ?? 0;
+  const degraded = stages.reduce(
+    (sum, stage) => sum + Math.max(stage.failed, stage.status === 'error' ? 1 : 0),
+    0,
+  );
+  turn.parse = { refs, redactions, degraded };
 }
 
 /** 把一条助手消息并入当前轮：异常、过程步骤与正文。 */
@@ -55,7 +70,9 @@ function appendAssistant(turn: TraceTurn, message: ChatMessage): void {
   for (const step of message.steps) {
     const trace = stepToTrace(step);
     if (!trace) continue;
+    // 解析阶段自己出错不把整轮判失败：材料取不到只降级，不中断对话
     if (trace.kind === 'error') turn.failed = true;
+    if (trace.stages) accumulateParse(turn, trace.stages);
     turn.items.push(trace);
   }
   if (message.text) {

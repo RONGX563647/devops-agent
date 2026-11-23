@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ChatMessage } from '../types';
+import type { ChatMessage, ParseStage } from '../types';
 import { turnsFromMessages } from './trace';
 
 function user(id: string, text: string, at: string): ChatMessage {
@@ -90,5 +90,40 @@ describe('turnsFromMessages', () => {
     expect(turns[0].failed).toBe(true);
     expect(turns[1].failed).toBe(true);
     expect(turns[1].items.some((item) => item.kind === 'error')).toBe(true);
+  });
+
+  it('解析步骤映射为 parse，并汇总引用与降级', () => {
+    const stages: ParseStage[] = [
+      { stage: 'detect', label: '引用探测', status: 'ok', summary: 'URL ×1', before: 0, after: 0, items: 1, ms: 0, detail: '', changed: true, failed: 0 },
+      { stage: 'redact', label: '密钥脱敏', status: 'ok', summary: '1 处', before: 0, after: 0, items: 1, ms: 0, detail: '', changed: true, failed: 0 },
+      { stage: 'expand', label: '引用展开', status: 'ok', summary: '1 条成功 · 1 条降级', before: 0, after: 10, items: 2, ms: 0, detail: '', changed: true, failed: 1 },
+    ];
+    const turns = turnsFromMessages([
+      user('u1', '看下 README', '2026-11-23T10:00:00.000Z'),
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '好的。',
+        at: '2026-11-23T10:00:01.000Z',
+        endedAt: '2026-11-23T10:00:02.000Z',
+        steps: [
+          {
+            id: 'parse:input-parse',
+            kind: 'parse',
+            label: '输入解析',
+            detail: '3/6 阶段生效',
+            state: 'success',
+            at: '2026-11-23T10:00:01.000Z',
+            parseStages: stages,
+          },
+        ],
+      },
+    ]);
+    // 解析不是异常：引用取不到只降级，不把整轮判失败
+    expect(turns[0].failed).toBe(false);
+    expect(turns[0].items.map((item) => item.kind)).toEqual(['parse', 'text']);
+    expect(turns[0].items[0].stages).toHaveLength(3);
+    expect(turns[0].parse).toEqual({ refs: 1, redactions: 1, degraded: 1 });
+    expect(turns[0].tools).toBe(0);
   });
 });

@@ -54,7 +54,13 @@ def test_run_stream_emits_frames_and_persists(
 
     frames = _frames(body)
     types = [f["type"] for f in frames]
-    assert types == ["REPLY_START", "TEXT_BLOCK_DELTA", "REPLY_END", "RUN_DONE"]
+    # 解析事件必须排在模型事件之前：前端据此把「输入被做了什么」画在轮次开头
+    assert types[0] == "INPUT_PARSE_START"
+    assert types[-4:] == ["REPLY_START", "TEXT_BLOCK_DELTA", "REPLY_END", "RUN_DONE"]
+    parse_types = [t for t in types if t.startswith("INPUT_PARSE_")]
+    assert parse_types[0] == "INPUT_PARSE_START"
+    assert parse_types[-1] == "INPUT_PARSE_END"
+    assert parse_types.count("INPUT_PARSE_STAGE") == 6
     done = frames[-1]
     assert done["text"] == "[s1] hi"
     assert done["status"] == "success"

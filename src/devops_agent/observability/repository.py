@@ -16,7 +16,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from devops_agent.eval.scorer import EvalDimension
-from devops_agent.observability.models import EvalScoreRecord, RunRecord, SpanRecord
+from devops_agent.observability.models import (
+    EvalScoreRecord,
+    InputStageRecord,
+    RunRecord,
+    SpanRecord,
+)
 
 DB_PATH_ENV = "DEVOPS_AGENT_DB_PATH"
 
@@ -60,6 +65,23 @@ CREATE TABLE IF NOT EXISTS spans (
     output_tokens   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_spans_run ON spans(run_id);
+CREATE TABLE IF NOT EXISTS input_stages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL DEFAULT 0,
+    stage       TEXT NOT NULL,
+    label       TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok', 'skip', 'error')),
+    changed     INTEGER NOT NULL DEFAULT 0,
+    summary     TEXT NOT NULL DEFAULT '',
+    before_chars INTEGER NOT NULL DEFAULT 0,
+    after_chars INTEGER NOT NULL DEFAULT 0,
+    items       INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    detail      TEXT NOT NULL DEFAULT '',
+    failed      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_input_stages_run ON input_stages(run_id);
 CREATE TABLE IF NOT EXISTS eval_scores (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -203,6 +225,49 @@ def add_span(conn: sqlite3.Connection, span: SpanRecord) -> int:
     return int(cur.lastrowid)
 
 
+def add_input_stages(conn: sqlite3.Connection, run_id: int, stages: list[InputStageRecord]) -> int:
+    """批量写入一次运行的全部解析阶段，返回写入条数。
+
+    全量落库（包括 skip 的「无改动」阶段）：界面只展示有用的那几条，
+    但审计与复现需要完整的处理链，否则无法回答「当时到底做了什么」。
+    """
+    if not stages:
+        return 0
+    conn.executemany(
+        """INSERT INTO input_stages
+           (run_id, seq, stage, label, status, changed, summary,
+            before_chars, after_chars, items, duration_ms, detail, failed)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            (
+                run_id,
+                stage.seq,
+                stage.stage,
+                stage.label,
+                stage.status,
+                1 if stage.changed else 0,
+                stage.summary,
+                stage.before,
+                stage.after,
+                stage.items,
+                stage.duration_ms,
+                stage.detail,
+                stage.failed,
+            )
+            for stage in stages
+        ],
+    )
+    return len(stages)
+
+
+def list_input_stages(conn: sqlite3.Connection, run_id: int) -> list[InputStageRecord]:
+    """按执行顺序列出一条运行的解析阶段。"""
+    rows = conn.execute(
+        "SELECT * FROM input_stages WHERE run_id=? ORDER BY seq, id", (run_id,)
+    ).fetchall()
+    return [_input_stage_from_row(row) for row in rows]
+
+
 def add_score(conn: sqlite3.Connection, score: EvalScoreRecord) -> int:
     """插入一条质量评分，返回自增 id。"""
     cur = conn.execute(
@@ -258,6 +323,25 @@ def _span_from_row(row: sqlite3.Row) -> SpanRecord:
         error=row["error"],
         input_tokens=row["input_tokens"],
         output_tokens=row["output_tokens"],
+    )
+
+
+def _input_stage_from_row(row: sqlite3.Row) -> InputStageRecord:
+    return InputStageRecord(
+        id=row["id"],
+        run_id=row["run_id"],
+        seq=row["seq"],
+        stage=row["stage"],
+        label=row["label"],
+        status=row["status"],
+        changed=bool(row["changed"]),
+        summary=row["summary"],
+        before=row["before_chars"],
+        after=row["after_chars"],
+        items=row["items"],
+        duration_ms=row["duration_ms"],
+        detail=row["detail"],
+        failed=row["failed"],
     )
 
 

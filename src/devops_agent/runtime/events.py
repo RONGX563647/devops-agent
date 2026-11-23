@@ -93,6 +93,23 @@ def _from_duck_typed(event: object) -> dict[str, Any]:
     return data
 
 
+def _tool_call_names(raw: dict[str, Any]) -> str:
+    """从事件原生的 tool_calls 列表里取工具名（可能多个），拼成一行。
+
+    REQUIRE_USER_CONFIRM 只带 `tool_calls` 数组，投影层原先丢弃它，
+    前端只能显示「等待用户确认」而看不出在等哪个工具。
+    """
+    calls = raw.get("tool_calls")
+    if not isinstance(calls, list):
+        return ""
+    names = [
+        str(call.get("name", "")).strip()
+        for call in calls
+        if isinstance(call, dict) and call.get("name")
+    ]
+    return ", ".join(names)
+
+
 def _project(raw: dict[str, Any]) -> dict[str, Any]:
     """把任意来源的字段字典投影成稳定的输出 key 集合。"""
     data: dict[str, Any] = {"type": str(raw.get("type", "UNKNOWN"))}
@@ -102,6 +119,10 @@ def _project(raw: dict[str, Any]) -> dict[str, Any]:
         value = raw.get(key)
         if value is not None:
             data[key] = value
+    if "tool_call_name" not in data:
+        names = _tool_call_names(raw)
+        if names:
+            data["tool_call_name"] = names
     error = raw.get("error")
     if error is not None:
         data["error"] = _error_type(error)

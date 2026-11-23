@@ -307,14 +307,17 @@ const HANDLERS: Record<string, EventHandler> = {
     };
   },
 
+  // 控制：需要人/外部介入
+  // 服务端是无人值守的：收到确认请求意味着这一轮到此为止，必须让人看得出来，
+  // 否则界面只剩一条「等待用户确认」，run 结束却不报错，像是模型凭空停了。
   REQUIRE_USER_CONFIRM: (s, e) => ({
     ...s,
     steps: upsertStep(s.steps, {
       id: blockStepId(e, 'control'),
       kind: 'control',
-      label: '等待用户确认',
-      detail: '',
-      state: 'running',
+      label: e.tool_call_name ? `需要确认 · ${e.tool_call_name}` : '需要确认',
+      detail: '服务端无人值守，无法代为确认，本轮运行在此结束。',
+      state: 'error',
       at: eventAt(e),
     }),
   }),

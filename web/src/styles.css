@@ -2927,6 +2927,39 @@ a:hover {
   background: var(--surface-hover);
 }
 
+/* ---- 链接：输入框上方的可点芯片 ----
+ * 只做「我认出这些链接了」的提示，点击在新窗口打开原文；
+ * 用交互蓝的弱底区分于附件芯片，GitHub 仓库额外带图标。 */
+.link-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.link-chip {
+  display: inline-flex;
+  gap: var(--sp-2);
+  align-items: center;
+  max-width: 100%;
+  padding: 3px var(--sp-3);
+  font-size: 11px;
+  color: var(--accent-ink);
+  text-decoration: none;
+  background: var(--accent-faint);
+  border: 1px solid var(--accent-soft);
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) ease, border-color var(--dur-fast) ease;
+}
+.link-chip:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+}
+.link-label {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 用户气泡里的附件标签：只读，不可点 */
 .chat-attachments {
   display: flex;

@@ -9,7 +9,8 @@ from agentscope.agent import Agent
 from agentscope.message import Msg, TextBlock
 from agentscope.pipeline import GoalPipeline, TeamMember, TeamPipeline
 
-from devops_agent.config import ModelPolicy, ReactPolicy, RuntimePolicy, load_policy
+from devops_agent.config import ModelPolicy, ReactPolicy, RuntimePolicy
+from devops_agent.governance.profiles import default_profile
 from devops_agent.runtime.agent import (
     WORKDIR_ENV,
     AgentScopeRuntime,
@@ -169,7 +170,7 @@ def test_resolve_workdir_reads_env(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 def test_build_agentscope_runtime_wires_readonly_toolkit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """装配点必须真的把只读工具集与策略权限交给 Agent —— 修复前这里是空的。"""
+    """默认档（workspace）必须挂只读四件套，且权限 mode 与该档位一致。"""
     monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
     monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
@@ -179,4 +180,4 @@ def test_build_agentscope_runtime_wires_readonly_toolkit(
     names = {schema["function"]["name"] for schema in asyncio.run(agent.toolkit.get_tool_schemas())}
     assert {"Bash", "Read", "Glob", "Grep"} <= names
     assert "Write" not in names
-    assert agent.state.permission_context.mode.value == load_policy().permission.mode
+    assert agent.state.permission_context.mode.value == default_profile().mode

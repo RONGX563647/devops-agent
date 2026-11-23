@@ -17,11 +17,12 @@ shell/read/glob/grep 四个只读工具，`Edit` / `Write` 属写入组，不得
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from agentscope.tool import (
     Bash,
+    Edit,
     FunctionTool,
     Glob,
     Grep,
@@ -29,8 +30,51 @@ from agentscope.tool import (
     ToolGroup,
     Toolkit,
     ToolMiddlewareBase,
+    Write,
 )
 from agentscope.tool._base import ToolBase
+
+# 工具名的唯一事实来源：档位（governance/profiles.py）按名字选工具，
+# 两边共用这两个元组，改工具集只改这里。
+READONLY_TOOL_NAMES: tuple[str, ...] = ("bash", "read", "glob", "grep")
+WRITE_TOOL_NAMES: tuple[str, ...] = ("write", "edit")
+
+Middlewares = Sequence[ToolMiddlewareBase] | None
+
+
+def _factories(cwd: str, middlewares: Middlewares) -> dict[str, Callable[[], ToolBase]]:
+    """工具名 → 构造器。用惰性构造避免为没选中的工具白建 backend。
+
+    middlewares 必须逐工具挂 —— 框架把它挂在 ToolBase 上，
+    密钥注入就靠这一层，漏一个就有一条绕过注入的路。
+    """
+    mws = list(middlewares) if middlewares else None
+    return {
+        "bash": lambda: Bash(cwd=cwd, middlewares=mws),
+        "read": lambda: Read(middlewares=mws),
+        "glob": lambda: Glob(middlewares=mws),
+        "grep": lambda: Grep(middlewares=mws),
+        "write": lambda: Write(middlewares=mws),
+        "edit": lambda: Edit(middlewares=mws),
+    }
+
+
+def build_toolkit_for(
+    names: Sequence[str],
+    workdir: str | os.PathLike[str],
+    middlewares: Middlewares = None,
+) -> Toolkit:
+    """按名字装配工具集（档位切换的唯一入口）。
+
+    未知名直接抛 ValueError —— 静默跳过会让「放开档少了写工具」这种问题
+    表现成「权限切了但模型还是不改文件」，很难查。
+    """
+    cwd = str(Path(workdir).resolve())
+    factories = _factories(cwd, middlewares)
+    unknown = [name for name in names if name not in factories]
+    if unknown:
+        raise ValueError(f"未知工具: {', '.join(unknown)}")
+    return Toolkit(tools=[factories[name]() for name in names])
 
 
 def build_toolkit(tools: Sequence[FunctionTool] | None = None) -> Toolkit:
@@ -40,22 +84,13 @@ def build_toolkit(tools: Sequence[FunctionTool] | None = None) -> Toolkit:
 
 def build_readonly_toolkit(
     workdir: str | os.PathLike[str],
-    middlewares: Sequence[ToolMiddlewareBase] | None = None,
+    middlewares: Middlewares = None,
 ) -> Toolkit:
     """装配内置只读工具集：shell + 读文件 + 路径查找 + 文本检索。
 
-    workdir 决定 shell 的默认工作目录，也决定 Read/Glob/Grep 的相对路径基准。
-    middlewares 逐工具挂载（框架把它挂在 ToolBase 上，而不是 Toolkit 上）：
-    密钥注入就靠这一层，所以每个工具都要带上，缺一个就有一条绕过注入的路。
+    只读会话的固定组合；写工具不得进入这里（要写就显式走 build_toolkit_for）。
     """
-    cwd = str(Path(workdir).resolve())
-    tools: list[ToolBase] = [
-        Bash(cwd=cwd, middlewares=list(middlewares) if middlewares else None),
-        Read(middlewares=list(middlewares) if middlewares else None),
-        Glob(middlewares=list(middlewares) if middlewares else None),
-        Grep(middlewares=list(middlewares) if middlewares else None),
-    ]
-    return Toolkit(tools=tools)
+    return build_toolkit_for(READONLY_TOOL_NAMES, workdir, middlewares)
 
 
 def shell_name() -> str:

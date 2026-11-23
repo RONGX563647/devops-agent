@@ -1,14 +1,31 @@
 /** 对话 tab：订阅会话 store 渲染消息与过程时间线，SSE 生命周期由 store 托管。 */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { deleteAttachment, uploadAttachment } from '../api/client';
-import type { Attachment, ChatMessage, PendingAttachment } from '../types';
+import type {
+  Attachment,
+  ChatMessage,
+  ConfirmScope,
+  PendingAttachment,
+  PermissionKey,
+} from '../types';
 import { newId } from './id';
 import { Markdown } from './Markdown';
-import { send, stop, useSession } from './store';
+import { PermissionCard } from './PermissionCard';
+import { PermissionPicker } from './PermissionPicker';
+import { confirm, refreshPending, send, setPermission, stop, useSession } from './store';
 import { StepList } from './StepRow';
 import { formatClock } from './time';
 import { TraceRail } from './TraceRail';
 import { turnsFromMessages } from './trace';
+
+/** 档位在用户气泡上的短标签：事后回看才知道当时放到了哪。 */
+const PERMISSION_TAG: Record<PermissionKey, string> = {
+  readonly: '只读',
+  workspace: '工作区',
+  execute: '可执行',
+  unrestricted: '放开',
+  auto: '无人值守',
+};
 
 interface Props {
   session: string;
@@ -115,15 +132,25 @@ function AssistantMessage({
   message,
   live,
   onRetry,
+  onDecide,
 }: {
   message: ChatMessage;
   live: boolean;
   onRetry: (message: ChatMessage) => void;
+  onDecide: (scope: ConfirmScope | 'reject') => void;
 }) {
   const hasAnswer = Boolean(message.text) || Boolean(message.error);
   return (
     <div className={`chat-msg assistant${message.error ? ' has-error' : ''}`}>
       {message.steps.length > 0 && <StepList steps={message.steps} />}
+      {message.awaiting && message.awaiting.calls.length > 0 && (
+        <PermissionCard
+          calls={message.awaiting.calls}
+          expiresAt={message.awaiting.expiresAt}
+          busy={live}
+          onDecide={onDecide}
+        />
+      )}
       {message.text && (
         <div className="chat-bubble assistant-body">
           <Markdown content={message.text} />
@@ -211,6 +238,12 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, turns.length]);
 
+  // 重新挂载（刷新/切回会话）时把服务端还挂着的确认找回来，
+  // 否则前端丢了卡片、后端还在等，这一轮就永远停住了。
+  useEffect(() => {
+    void refreshPending(session);
+  }, [session]);
+
   // 输入框随内容自动增高，到 200px 后交给内部滚动。
   useEffect(() => {
     const el = textareaRef.current;
@@ -223,14 +256,32 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
   function run(text: string, attachments: Attachment[] = []) {
     const value = text.trim();
     // 只挂附件、不写字也是合法的一轮：这时候问题就是「看看这个文件」
-    if ((!value && attachments.length === 0) || view.running) return;
+    if ((!value && attachments.length === 0) || view.running || view.awaiting) return;
     onFirstSend?.();
-    send(session, value, attachments);
+    send(session, value, attachments, view.permission);
+  }
+
+  /** 确认卡片的三选一：全部待确认调用一起答复。 */
+  function decide(scope: ConfirmScope | 'reject') {
+    const awaiting = view.awaiting;
+    if (!awaiting || awaiting.calls.length === 0) return;
+    confirm(
+      session,
+      awaiting.calls.map((call) => ({
+        tool_call_id: call.tool_call_id,
+        confirmed: scope !== 'reject',
+        scope: scope === 'reject' ? 'once' : scope,
+      })),
+    );
+  }
+
+  function changePermission(key: PermissionKey) {
+    setPermission(session, key);
   }
 
   function submit() {
     const ready = files.filter((item) => item.status === 'ok');
-    if ((!input.trim() && ready.length === 0) || view.running) return;
+    if ((!input.trim() && ready.length === 0) || view.running || view.awaiting) return;
     const text = input;
     setInput('');
     setFiles([]);
@@ -292,7 +343,9 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
 
   const empty = messages.length === 0;
   const readyCount = files.filter((item) => item.status === 'ok').length;
-  const canSend = (Boolean(input.trim()) || readyCount > 0) && !view.running;
+  // 挂起等确认时不让发下一轮：同一会话同时只能有一条未结束的 run
+  const canSend =
+    (Boolean(input.trim()) || readyCount > 0) && !view.running && !view.awaiting;
 
   return (
     <div className="chat-wrap">
@@ -318,6 +371,11 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
                         ))}
                       </span>
                     )}
+                    {m.permission && m.permission !== 'workspace' && (
+                      <span className={`perm-tag mono risk-${m.permission}`}>
+                        {PERMISSION_TAG[m.permission]}
+                      </span>
+                    )}
                   </div>
                 </div>
               );
@@ -328,6 +386,7 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
                 message={m}
                 live={view.running && m.id === last?.id}
                 onRetry={retry}
+                onDecide={decide}
               />
             );
           })}
@@ -407,6 +466,11 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
             rows={1}
           />
           <div className="composer-bar">
+            <PermissionPicker
+              current={view.permission}
+              onChange={changePermission}
+              disabled={view.running}
+            />
             <input
               ref={fileInputRef}
               type="file"
@@ -428,7 +492,11 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
               <PaperclipIcon />
             </button>
             <span className="composer-hint">
-              {view.running ? '生成中，仍可继续输入，停止后可发送' : 'Enter 发送 · Shift+Enter 换行'}
+              {view.awaiting
+                ? '等待你确认上面的操作'
+                : view.running
+                  ? '生成中，仍可继续输入，停止后可发送'
+                  : 'Enter 发送 · Shift+Enter 换行'}
             </span>
             {view.running && (
               <button className="send-btn stop" onClick={() => stop(session)}>

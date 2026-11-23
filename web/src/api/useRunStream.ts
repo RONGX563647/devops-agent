@@ -3,7 +3,13 @@
  * 只保留纯逻辑（可单测），会话生命周期与持久化由 workspace/store 负责。
  */
 
-import type { ParseStage, ProcessEntry, StreamEvent } from '../types';
+import type {
+  AwaitingState,
+  ConfirmDecision,
+  ParseStage,
+  ProcessEntry,
+  StreamEvent,
+} from '../types';
 
 export interface StreamState {
   running: boolean;
@@ -20,6 +26,8 @@ export interface StreamState {
   endedAt: string | null;
   /** 已接收事件数（只计数，不再累积整个事件数组，避免逐 token O(n²) 复制）。 */
   eventCount: number;
+  /** 等待确认的挂起态；非空表示这一轮还没结束，只是停住了。 */
+  awaiting: AwaitingState | null;
 }
 
 export const INITIAL_STATE: StreamState = {
@@ -35,6 +43,7 @@ export const INITIAL_STATE: StreamState = {
   startedAt: null,
   endedAt: null,
   eventCount: 0,
+  awaiting: null,
 };
 
 // 手写 SSE 帧解析而非引入 fetch-event-source：本应用只需 POST + data 帧 + abort，
@@ -427,19 +436,22 @@ const HANDLERS: Record<string, EventHandler> = {
     };
   },
 
-  // 控制：需要人/外部介入
-  // 服务端是无人值守的：收到确认请求意味着这一轮到此为止，必须让人看得出来，
-  // 否则界面只剩一条「等待用户确认」，run 结束却不报错，像是模型凭空停了。
+  // 控制：需要人介入
+  // 确认请求不再等于「这轮结束」——服务端会把 run 挂起（parked），
+  // 用户答完继续跑同一条 run。所以这里标 running 而不是 error。
   REQUIRE_USER_CONFIRM: (s, e) => ({
     ...s,
     steps: upsertStep(s.steps, {
       id: blockStepId(e, 'control'),
       kind: 'control',
-      label: e.tool_call_name ? `需要确认 · ${e.tool_call_name}` : '需要确认',
-      detail: '服务端无人值守，无法代为确认，本轮运行在此结束。',
-      state: 'error',
+      label: e.tool_call_name ? `等待确认 · ${e.tool_call_name}` : '等待确认',
+      detail: '',
+      state: 'running',
       at: eventAt(e),
     }),
+    awaiting: e.tool_calls?.length
+      ? { runId: s.runId, calls: e.tool_calls, expiresAt: null }
+      : s.awaiting,
   }),
   USER_CONFIRM_RESULT: (s, e) => ({
     ...s,
@@ -451,6 +463,32 @@ const HANDLERS: Record<string, EventHandler> = {
       at: eventAt(e),
     }),
   }),
+  // 挂起帧：流到此正常结束（不是 done），run 停在等确认。
+  // 收尾要打在「刚才那条等待确认」上，不能再造一行——否则同一件事出现两行。
+  RUN_PARKED: (s, e) => {
+    const open = [...s.steps]
+      .reverse()
+      .find((step) => step.kind === 'control' && step.state === 'running');
+    const id = open?.id ?? blockStepId(e, 'control');
+    return {
+      ...s,
+      running: false,
+      runId: e.run_id ?? s.runId,
+      endedAt: null,
+      awaiting: {
+        runId: e.run_id ?? s.runId,
+        calls: e.tool_calls ?? s.awaiting?.calls ?? [],
+        expiresAt: e.expires_at ?? null,
+      },
+      steps: patchStep(s.steps, id, { state: 'success' }, {
+        kind: 'control',
+        label: '等待确认',
+        detail: '',
+        state: 'success',
+        at: eventAt(e),
+      }),
+    };
+  },
   REQUIRE_EXTERNAL_EXECUTION: (s, e) => ({
     ...s,
     steps: upsertStep(s.steps, {
@@ -504,6 +542,8 @@ const HANDLERS: Record<string, EventHandler> = {
     outputTokens: e.output_tokens ?? s.outputTokens,
     cacheInputTokens: e.cache_input_tokens ?? s.cacheInputTokens,
     running: false,
+    // 正常收尾必须清掉挂起态：否则确认完仍有残留卡片
+    awaiting: null,
     steps: finishRunningSteps(s.steps),
     endedAt: s.endedAt ?? e.created_at ?? null,
   }),
@@ -564,6 +604,7 @@ export async function streamRun(
   signal: AbortSignal,
   requestId: string,
   attachmentIds: string[] = [],
+  permission?: string,
 ): Promise<void> {
   const resp = await fetch('/run/stream', {
     method: 'POST',
@@ -576,11 +617,33 @@ export async function streamRun(
       session_id: sessionId,
       user_input: userInput,
       attachments: attachmentIds,
+      ...(permission ? { permission } : {}),
     }),
     signal,
   });
   if (!resp.ok || !resp.body) {
     throw new Error(`流式请求失败 ${resp.status}`);
+  }
+  await consumeStream(resp.body, onEvent);
+}
+
+/** 提交确认并接着读同一条 run 的后续事件流。 */
+export async function streamConfirm(
+  runId: number,
+  sessionId: string,
+  decisions: ConfirmDecision[],
+  onEvent: (event: StreamEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const resp = await fetch(`/run/${runId}/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    // 只给 id 与决策：命令原文以服务端挂起态为准，客户端改不了要执行的东西
+    body: JSON.stringify({ session_id: sessionId, results: decisions }),
+    signal,
+  });
+  if (!resp.ok || !resp.body) {
+    throw new Error(`确认失败 ${resp.status}`);
   }
   await consumeStream(resp.body, onEvent);
 }

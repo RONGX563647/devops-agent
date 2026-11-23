@@ -44,6 +44,8 @@ class RunOut(BaseModel):
     health_score: float | None
     input_tokens: int
     output_tokens: int
+    # 本轮权限档位；老记录为空串
+    permission: str = ""
 
 
 class SpanOut(BaseModel):
@@ -286,6 +288,7 @@ def _run_out(run: RunRecord) -> RunOut:
         health_score=run.health_score,
         input_tokens=run.input_tokens,
         output_tokens=run.output_tokens,
+        permission=run.permission,
     )
 
 

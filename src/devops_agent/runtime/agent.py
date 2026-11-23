@@ -12,26 +12,36 @@ agentscope 2.x 真实 API（2.0.12 introspect 已核实）：
 
 from __future__ import annotations
 
+import json
 import os
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from agentscope.agent import Agent, ModelConfig, ReActConfig
 from agentscope.credential import OpenAICredential
-from agentscope.message import Msg, TextBlock
+from agentscope.event import ConfirmResult, UserConfirmResultEvent
+from agentscope.message import Msg, TextBlock, ToolCallBlock
 from agentscope.middleware import MiddlewareBase
 from agentscope.model import ChatModelBase, OpenAIChatModel
-from agentscope.permission import PermissionContext
+from agentscope.permission import PermissionBehavior, PermissionMode, PermissionRule
 from agentscope.state import AgentState
 from agentscope.tool import Toolkit
 from pydantic import SecretStr
 
 from devops_agent.config import RuntimePolicy, load_policy
 from devops_agent.governance.policy import build_permission_context
+from devops_agent.governance.profiles import PermissionProfile, default_profile
+from devops_agent.runtime.confirm import (
+    ConfirmDecision,
+    effective_scope,
+    pending_call,
+    rule_content_for,
+)
 from devops_agent.runtime.events import event_to_dict
 from devops_agent.secrets.middleware import build_secret_middleware
-from devops_agent.tools.catalog import build_readonly_toolkit, shell_name
+from devops_agent.tools.catalog import build_toolkit_for, shell_name
 
 DEFAULT_SYSTEM_PROMPT = "你是 DevOps 助手，帮助处理持续交付、项目排期与 Bug 定位。"
 
@@ -44,14 +54,34 @@ WORKDIR_ENV = "DEVOPS_AGENT_WORKDIR"
 _TOOL_PROMPT = """你可以调用以下工具来获取真实信息，而不是凭记忆回答：
 - shell（工具名 {shell_tool}）：执行命令行，语法为 {shell}，工作目录 {workdir}
 - {read_tool} / {glob_tool} / {grep_tool}：读文件、按模式找文件、按正则搜内容
-
+{write_tool_line}
 硬性要求：
 1. 需要文件内容、目录列表、命令输出时，必须真的发起工具调用；
    不要用「工具调用 xxx」这样的文字描述代替调用。
 2. 不要编造命令输出或文件内容。工具失败就据实说明失败原因，
    并改用其他只读手段（如 {glob_tool} / {grep_tool}）重试。
-3. 只读会话没有写权限：不要尝试 Edit/Write 类操作，被拒绝时如实说明。
+3. {write_rule}
 4. 最终回答用中文，可用 Markdown（标题、列表、表格、代码块）；引用工具输出时保持原样。"""
+
+# 按档位改写的第 3 条：只读档说「没有写权限」，其余档说边界在哪。
+# 这条不同步改的话，切到放开档模型仍然不会写文件，表现为「权限切了但毫无变化」。
+_WRITE_RULES: dict[str, str] = {
+    "readonly": "本会话是只读档：没有写权限，不要尝试 Edit/Write 类操作，被拒绝时如实说明。",
+    "workspace": (
+        "本会话可在工作区内建/删/改文件；工作区外的操作会被拦下并要求确认，"
+        "遇到拒绝就说明原因、换方案。"
+    ),
+    "execute": (
+        "本会话可在工作区内建/删/改文件，并可执行白名单内的构建/测试命令；"
+        "越界操作会要求确认，遇到拒绝就说明原因。"
+    ),
+    "auto": "本会话是无人值守档：越界操作一律被拒绝，不要反复重试同一条被拒的命令。",
+    "unrestricted": (
+        "本会话可直接改文件；但 .git/ 与 .env 类路径被硬性拒绝，遇到拒绝就换方案，不要绕过。"
+    ),
+}
+
+_WRITE_TOOL_LINE = "- {write_tool} / {edit_tool}：在工作区内新建文件、按片段替换已有内容"
 
 
 def resolve_workdir(workdir: str | os.PathLike[str] | None = None) -> Path:
@@ -61,9 +91,14 @@ def resolve_workdir(workdir: str | os.PathLike[str] | None = None) -> Path:
     return Path(os.environ.get(WORKDIR_ENV) or os.getcwd()).expanduser().resolve()
 
 
-def build_system_prompt(workdir: str | os.PathLike[str] | None = None) -> str:
-    """拼装系统提示：角色描述 + 可用工具契约 + 运行环境。"""
+def build_system_prompt(
+    workdir: str | os.PathLike[str] | None = None,
+    profile: PermissionProfile | None = None,
+) -> str:
+    """拼装系统提示：角色描述 + 可用工具契约 + 运行环境（按档位改写权限段）。"""
     base = resolve_workdir(workdir)
+    resolved = profile if profile is not None else default_profile()
+    writes = "write" in resolved.tools
     return "\n\n".join(
         [
             DEFAULT_SYSTEM_PROMPT,
@@ -74,6 +109,10 @@ def build_system_prompt(workdir: str | os.PathLike[str] | None = None) -> str:
                 read_tool="Read",
                 glob_tool="Glob",
                 grep_tool="Grep",
+                write_tool_line=(
+                    _WRITE_TOOL_LINE.format(write_tool="Write", edit_tool="Edit") if writes else ""
+                ),
+                write_rule=_WRITE_RULES.get(resolved.key, _WRITE_RULES["workspace"]),
             ),
         ]
     )
@@ -148,11 +187,29 @@ def text_from_msg(msg: Msg) -> str:
     return "".join(block.text for block in msg.get_content_blocks("text"))
 
 
+def _state_for(profile: PermissionProfile, state: AgentState | None) -> AgentState:
+    """准备跨轮状态：没有就新建；有但档位变了就重建权限上下文。
+
+    档位切换必须丢弃旧的 allow_rules —— 那些规则是在另一个信任级别下点
+    「本会话允许」攒的，跨档继续生效等于绕过用户这次的选择。
+    """
+    if state is None:
+        return AgentState(permission_context=build_permission_context(profile=profile))
+    if state.permission_context.mode != PermissionMode(profile.mode):
+        state.permission_context = build_permission_context(profile=profile)
+    return state
+
+
 class AgentScopeRuntime:
     """真实 Agent 运行时：把异步 Agent.reply 适配到 AgentRuntime 协议。"""
 
-    def __init__(self, agent: Agent) -> None:
+    def __init__(self, agent: Agent, *, profile: PermissionProfile | None = None) -> None:
         self._agent = agent
+        self._profile = profile if profile is not None else default_profile()
+
+    @property
+    def profile(self) -> PermissionProfile:
+        return self._profile
 
     @staticmethod
     def _make_msg(session_id: str, user_input: str) -> Msg:
@@ -175,30 +232,109 @@ class AgentScopeRuntime:
         async for event in self._agent.reply_stream(self._make_msg(session_id, user_input)):
             yield event_to_dict(event)
 
+    # --- 挂起与恢复 ---------------------------------------------------
+    def snapshot(self) -> str:
+        """把 AgentState 序列化成 JSON：会话隔离、刷新恢复、跨实例续跑都靠它。"""
+        return json.dumps(
+            self._agent.state.model_dump(mode="json"), ensure_ascii=False, default=str
+        )
+
+    def awaiting_blocks(self) -> list[ToolCallBlock]:
+        """当前仍等待用户确认的 tool_call（权威副本，含原始 input）。"""
+        return list(self._agent.state.get_awaiting_tool_calls(self._agent.name))
+
+    def pending_calls(self) -> list[dict[str, Any]]:
+        """给前端展示的精简数组（不含可回传的完整块）。"""
+        return [
+            asdict(pending_call(block.model_dump(mode="json"))) for block in self.awaiting_blocks()
+        ]
+
+    @staticmethod
+    def _rules_for(decision: ConfirmDecision, block: ToolCallBlock) -> list[PermissionRule] | None:
+        """按作用域生成要沉淀的规则；高危命令强制降级为「只这一次」。"""
+        if not decision.confirmed:
+            return None
+        scope = effective_scope(block.name, block.input, decision.scope)
+        content = rule_content_for(scope, block.name, block.input)
+        if content is None:
+            return None
+        return [
+            PermissionRule(
+                tool_name=block.name,
+                rule_content=content,
+                behavior=PermissionBehavior.ALLOW,
+                source="user",
+            )
+        ]
+
+    def confirm_event(self, decisions: Sequence[ConfirmDecision]) -> UserConfirmResultEvent:
+        """把前端的决策组装成框架事件。
+
+        命中的 tool_call 直接从挂起状态里取：客户端只给了 id，
+        命令原文与工具名都以服务端这份为准，改不了。
+        """
+        blocks = {block.id: block for block in self.awaiting_blocks()}
+        results = [
+            ConfirmResult(
+                confirmed=decision.confirmed,
+                tool_call=blocks[decision.tool_call_id],
+                rules=self._rules_for(decision, blocks[decision.tool_call_id]),
+            )
+            for decision in decisions
+            if decision.tool_call_id in blocks
+        ]
+        if not results:
+            raise ValueError("没有匹配的待确认调用")
+        reply = self._agent.state.get_reply_message(self._agent.name)
+        return UserConfirmResultEvent(
+            reply_id=reply.id if reply is not None else "",
+            confirm_results=results,
+        )
+
+    async def resume(self, decisions: Sequence[ConfirmDecision]) -> AsyncIterator[dict[str, Any]]:
+        """带着用户决策从挂起点继续，照常往外吐事件 dict。"""
+        async for event in self._agent.reply_stream(self.confirm_event(decisions)):
+            yield event_to_dict(event)
+
 
 def build_agentscope_runtime(
     system_prompt: str | None = None,
     workdir: str | os.PathLike[str] | None = None,
-    permission_context: PermissionContext | None = None,
+    profile: PermissionProfile | None = None,
+    state: AgentState | None = None,
 ) -> AgentScopeRuntime:
     """装配真实运行时（env 提供模型凭据）。
 
-    - 工具：内置只读工具集（shell/read/glob/grep），不装配写工具；
+    - 工具：按档位装配（只读档四件套，放开档追加 Write/Edit）；
     - 密钥：挂 SecretInjectionMiddleware —— 占位符在工具边界换成真值，
       返回里的真值再抹回占位符，模型全程看不到明文；
-    - 权限：注入 policy.yaml 的权限上下文。模式缺省为 `dont_ask` ——
-      服务端没有人工确认通道，ASK 只会发出一个确认事件然后结束这一轮。
+    - 权限：注入档位对应的权限上下文（mode + 白名单 + deny_rules）。
     """
+    resolved = profile if profile is not None else default_profile()
     base = resolve_workdir(workdir)
     agent = build_agent(
         name="devops",
-        system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),
+        system_prompt=system_prompt
+        if system_prompt is not None
+        else build_system_prompt(base, resolved),
         model=build_chat_model(),
-        toolkit=build_readonly_toolkit(base, middlewares=[build_secret_middleware()]),
-        state=AgentState(
-            permission_context=(
-                permission_context if permission_context is not None else build_permission_context()
-            )
-        ),
+        toolkit=build_toolkit_for(resolved.tools, base, middlewares=[build_secret_middleware()]),
+        state=_state_for(resolved, state),
     )
-    return AgentScopeRuntime(agent)
+    return AgentScopeRuntime(agent, profile=resolved)
+
+
+def session_runtime_factory(base: object) -> Callable[[str, Any, str | None], Any]:
+    """会话工厂：真实运行时按档位重建，Echo / 测试替身直接复用同一实例。
+
+    Echo 是无状态的，复用没有副作用；真实运行时则必须每会话一份，
+    否则消息历史与权限规则会在会话之间互相污染。
+    """
+
+    def make(session_id: str, profile: Any, state_json: str | None) -> Any:
+        if not isinstance(base, AgentScopeRuntime):
+            return base
+        state = AgentState.model_validate_json(state_json) if state_json else None
+        return build_agentscope_runtime(profile=profile, state=state)
+
+    return make

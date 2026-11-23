@@ -1,5 +1,58 @@
 /** 与后端 Pydantic 响应对齐的前端类型。 */
 
+/** 权限档位标识：与 governance/profiles.py 的 key 一一对应。 */
+export type PermissionKey = 'readonly' | 'workspace' | 'execute' | 'unrestricted' | 'auto';
+
+/** 越界兜底动作：直接拒 / 弹确认 / deny_rules 硬拦。 */
+export type PermissionFallback = 'deny' | 'ask' | 'hard_deny';
+
+/** 一个可选档位的展示信息（GET /api/permissions）。 */
+export interface PermissionMeta {
+  key: PermissionKey;
+  label: string;
+  note: string;
+  fallback: PermissionFallback;
+  /** 是否挂了 Write/Edit —— 界面据此显示「可写」标记。 */
+  write: boolean;
+}
+
+export interface PermissionCatalog {
+  default: PermissionKey;
+  available: PermissionMeta[];
+}
+
+/** 一条等待确认的调用。input 是服务端给的展示文本，不是可回传的命令。 */
+export interface PendingCall {
+  tool_call_id: string;
+  name: string;
+  input: string;
+  risk: 'read' | 'exec' | 'write' | 'danger';
+}
+
+/** 确认作用域：只这次 / 精确这条 / 这个命令前缀。 */
+export type ConfirmScope = 'once' | 'exact' | 'prefix';
+
+export interface ConfirmDecision {
+  tool_call_id: string;
+  confirmed: boolean;
+  scope: ConfirmScope;
+}
+
+/** 挂起信息：GET /run/{id}/pending 的返回。 */
+export interface PendingState {
+  run_id: number;
+  status: 'parked';
+  expires_at: string | null;
+  tool_calls: PendingCall[];
+}
+
+/** 前端内存里的挂起态：挂在助手消息上，刷新后仍能重建卡片。 */
+export interface AwaitingState {
+  runId: number | null;
+  calls: PendingCall[];
+  expiresAt: string | null;
+}
+
 export interface Run {
   id: number;
   session_id: string;
@@ -15,6 +68,8 @@ export interface Run {
   health_score: number | null;
   input_tokens: number;
   output_tokens: number;
+  /** 本轮权限档位；老记录为空串。 */
+  permission?: string;
 }
 
 export interface RunList {
@@ -112,6 +167,10 @@ export interface StreamEvent {
   failed?: number;
   detail?: string;
   degraded?: number;
+  /** 待确认调用（REQUIRE_USER_CONFIRM）/ 挂起帧携带 */
+  tool_calls?: PendingCall[];
+  /** 挂起有效期（RUN_PARKED）；后端未给时为空 */
+  expires_at?: string | null;
 }
 
 /** 过程步骤的类别——每类在 UI 上有不同视觉标注。 */
@@ -200,6 +259,10 @@ export interface ChatMessage {
   steps: ProcessEntry[];
   /** 该条用户消息附带的文件（仅 user 消息）。 */
   attachments?: Attachment[];
+  /** 这一轮用的权限档位（仅 user 消息），事后回看才知道当时放到了哪。 */
+  permission?: PermissionKey;
+  /** 等待用户确认的挂起态（仅 assistant 消息）。 */
+  awaiting?: AwaitingState;
   error?: string;
   pending?: boolean;
   /** 用户主动停止且没有任何产出时置位，界面显示「已停止」。 */

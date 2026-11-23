@@ -2873,3 +2873,259 @@ a:hover {
   font-size: 12px;
   color: var(--danger-ink);
 }
+
+/* ---- 权限档位选择器 ---- */
+.perm-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.perm-btn {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  height: var(--control-md);
+  padding: 0 var(--sp-3);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  transition: color var(--dur-fast) ease, background var(--dur-fast) ease;
+}
+.perm-btn:hover:not(:disabled),
+.perm-btn.is-open {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+.perm-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.perm-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+.perm-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  width: 296px;
+  padding: var(--sp-2);
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 12%);
+}
+.perm-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: var(--sp-3);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+.perm-item:hover {
+  background: var(--surface-hover);
+}
+.perm-item.is-active {
+  background: var(--accent-faint);
+}
+.perm-item-head {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.perm-item-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.perm-item-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+.perm-item-fallback {
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+.perm-check {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--accent-ink);
+}
+.perm-write-tag {
+  padding: 0 4px;
+  font-size: 9.5px;
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+  border-radius: var(--radius-xs);
+}
+.perm-confirm {
+  padding: var(--sp-3);
+}
+.perm-confirm-text {
+  margin: 0 0 var(--sp-3);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+.perm-confirm-actions {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+}
+.perm-tag {
+  display: inline-block;
+  margin-top: var(--sp-2);
+  padding: 0 var(--sp-2);
+  font-size: 10px;
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  border-radius: var(--radius-xs);
+}
+
+/* 风险色：点、标签、档位标签共用一套语义 */
+.perm-dot.risk-deny,
+.risk-tag.risk-read {
+  background: var(--ev-log);
+}
+.perm-dot.risk-ask,
+.perm-dot.risk-exec,
+.risk-tag.risk-exec {
+  background: var(--accent);
+}
+.risk-tag.risk-write,
+.perm-tag.risk-execute {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+.perm-dot.risk-hard_deny,
+.risk-tag.risk-danger,
+.perm-tag.risk-unrestricted {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+}
+.perm-tag.risk-readonly {
+  background: var(--surface-muted);
+  color: var(--ink-muted);
+}
+.perm-tag.risk-auto {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+
+/* ---- 确认卡片 ---- */
+.confirm-card {
+  padding: var(--sp-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--warn-soft);
+  border-radius: var(--radius-md);
+}
+.confirm-head {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  margin-bottom: var(--sp-3);
+}
+.confirm-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.confirm-deadline {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+.confirm-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.confirm-item {
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--code-bg);
+  border-radius: var(--radius-sm);
+}
+.confirm-item-head {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  margin-bottom: 2px;
+}
+.confirm-tool {
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+.risk-tag {
+  padding: 0 5px;
+  font-size: 9.5px;
+  color: var(--ink-inverse);
+  border-radius: var(--radius-xs);
+}
+.confirm-command {
+  margin: 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.confirm-more {
+  margin-top: 2px;
+  padding: 0;
+  font-size: 10.5px;
+  color: var(--accent-ink);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+.confirm-actions {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+  margin-top: var(--sp-3);
+}
+.primary-btn {
+  padding: 3px var(--sp-4);
+  font-size: 11px;
+  color: var(--ink-inverse);
+  cursor: pointer;
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+}
+.primary-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.primary-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.danger-btn {
+  padding: 3px var(--sp-4);
+  font-size: 11px;
+  color: var(--ink-inverse);
+  cursor: pointer;
+  background: var(--danger);
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+}
+.danger-btn:hover {
+  background: var(--danger-ink);
+}

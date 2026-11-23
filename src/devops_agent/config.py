@@ -61,7 +61,14 @@ class WorkingDirSpec(BaseModel):
 class PermissionPolicy(BaseModel):
     """policy.yaml 的 permission 段。"""
 
+    # 无档位上下文时的回落模式（保留给脚本 / 单测直接建引擎的场景）
     mode: PermissionModeName = "default"
+    # 前端默认选中的档位
+    default_profile: str = "workspace"
+    # 本部署开放的档位；留空表示用内置默认（不含 unrestricted）
+    available: list[str] = Field(default_factory=list)
+    # execute 档放行的命令前缀，写成 "pytest:*" 形式（框架按子命令逐个匹配）
+    command_allowlist: list[str] = Field(default_factory=list)
     working_directories: list[WorkingDirSpec] = Field(default_factory=list)
     allow_rules: list[RuleSpec] = Field(default_factory=list)
     deny_rules: list[RuleSpec] = Field(default_factory=list)

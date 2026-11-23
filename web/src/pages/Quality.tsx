@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import {
   Bar,
   BarChart,
@@ -11,11 +11,15 @@ import {
   YAxis,
 } from 'recharts';
 import { fetchEvalTrends, fetchRuns, postFeedback } from '../api/client';
+import { EvalBatches } from './EvalBatches';
+
+type QualityView = 'feedback' | 'batches';
 
 export function Quality() {
   const queryClient = useQueryClient();
   const trends = useQuery({ queryKey: ['eval-trends'], queryFn: fetchEvalTrends, refetchInterval: 10000 });
   const runs = useQuery({ queryKey: ['runs', 'quality'], queryFn: () => fetchRuns({ limit: 10 }) });
+  const [view, setView] = useState<QualityView>('feedback');
   const [feedbackRun, setFeedbackRun] = useState<number | null>(null);
   const [comment, setComment] = useState('');
   const [message, setMessage] = useState('');
@@ -44,9 +48,32 @@ export function Quality() {
       <h1>质量评估</h1>
       <p className="subtitle">correctness / performance / safety 三维评分 · 人工反馈进入 eval_scores</p>
 
-      {trends.isError && <p className="query-error">质量趋势加载失败，稍后自动重试。</p>}
+      <div className="view-tabs" role="tablist" aria-label="质量视图">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === 'feedback'}
+          className={`view-tab${view === 'feedback' ? ' active' : ''}`}
+          onClick={() => setView('feedback')}
+        >
+          线上反馈
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === 'batches'}
+          className={`view-tab${view === 'batches' ? ' active' : ''}`}
+          onClick={() => setView('batches')}
+        >
+          评测批次
+        </button>
+      </div>
 
-      <div className="panel-grid">
+      {view === 'feedback' && (
+        <Fragment>
+          {trends.isError && <p className="query-error">质量趋势加载失败，稍后自动重试。</p>}
+
+          <div className="panel-grid">
         <section className="panel">
           <h2>各维度平均分</h2>
           {trends.isLoading && avgData.length === 0 && (
@@ -106,7 +133,11 @@ export function Quality() {
           )}
           {message && <p className="hint">{message}</p>}
         </section>
-      </div>
+          </div>
+        </Fragment>
+      )}
+
+      {view === 'batches' && <EvalBatches />}
     </div>
   );
 }

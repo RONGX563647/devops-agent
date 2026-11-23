@@ -132,10 +132,10 @@ describe('Workspace', () => {
     expect(screen.getByText('开始一次会话')).toBeTruthy();
   });
 
-  it('默认标题为新会话，并显示运行统计 chip', async () => {
+  it('默认标题为新会话，并显示会话与运行统计 chip', async () => {
     renderWorkspace();
     expect(screen.getByRole('heading', { name: '新会话' })).toBeTruthy();
-    expect(await screen.findByText('3 次运行 · 1 次失败')).toBeTruthy();
+    expect(await screen.findByText('2 个会话 · 3 次运行 · 1 次失败')).toBeTruthy();
   });
 
   it('从 URL 读取初始 tab，点击切换到指标', async () => {

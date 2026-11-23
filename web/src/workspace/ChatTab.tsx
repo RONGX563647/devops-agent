@@ -1,25 +1,18 @@
-/** 对话 tab：SSE 流式运行 + 消息行（用户软底块 / 助手 Markdown / 过程时间线）。 */
-import { useEffect, useRef, useState } from 'react';
-import { useRunStream } from '../api/useRunStream';
-import type { ProcessEntry } from '../types';
+/** 对话 tab：订阅会话 store 渲染消息与过程时间线，SSE 生命周期由 store 托管。 */
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ChatMessage } from '../types';
 import { Markdown } from './Markdown';
+import { send, stop, useSession } from './store';
 import { StepList } from './StepRow';
-
-interface Message {
-  role: 'user' | 'assistant';
-  text: string;
-  error?: string;
-  pending?: boolean;
-  steps?: ProcessEntry[];
-  modelName?: string;
-  inputTokens?: number;
-  outputTokens?: number;
-  startedAt?: string | null;
-  endedAt?: string | null;
-}
+import { formatClock } from './time';
+import { TraceRail } from './TraceRail';
+import { turnsFromMessages } from './trace';
 
 interface Props {
-  session: string | null;
+  session: string;
+  /** 首次发送时通知外层把「新会话」落到 URL 上。 */
+  onFirstSend?: () => void;
+  onOpenTrace?: () => void;
 }
 
 /** 距底小于该像素值时视为"用户还在底部"，可以继续吸底。 */
@@ -35,13 +28,7 @@ export function shouldStickToBottom(
   return scrollHeight - scrollTop - clientHeight < threshold;
 }
 
-/** ISO 时间戳 → HH:MM，用于消息操作条；缺值或非法值返回空串。 */
-export function formatClock(value?: string | null): string {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-}
+export { formatClock };
 
 /** 空状态的示例问题：点一下直接发起会话。 */
 const SAMPLES = [
@@ -83,20 +70,99 @@ function SparkIcon() {
   );
 }
 
-export function ChatTab({ session }: Props) {
-  const stream = useRunStream();
-  const [messages, setMessages] = useState<Message[]>([]);
+/** 复制正文；非安全上下文没有 clipboard 时静默跳过。 */
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard?.writeText(text);
+  } catch {
+    // 忽略
+  }
+}
+
+/** 助手消息：过程行在上，Markdown 正文在下，操作条在末尾。 */
+function AssistantMessage({
+  message,
+  live,
+  onRetry,
+}: {
+  message: ChatMessage;
+  live: boolean;
+  onRetry: (message: ChatMessage) => void;
+}) {
+  const hasAnswer = Boolean(message.text) || Boolean(message.error);
+  return (
+    <div className={`chat-msg assistant${message.error ? ' has-error' : ''}`}>
+      {message.steps.length > 0 && <StepList steps={message.steps} />}
+      {message.text && (
+        <div className="chat-bubble assistant-body">
+          <Markdown content={message.text} />
+        </div>
+      )}
+      {message.error && (
+        <div className="chat-error-line">
+          <span className="chat-error-tag">中断</span>
+          <span>{message.error}</span>
+        </div>
+      )}
+      {message.pending && !message.text && message.steps.length === 0 && (
+        <div className="chat-pending mono" aria-live="polite">
+          正在处理…
+        </div>
+      )}
+      {hasAnswer && (
+        <div className="chat-actions">
+          <button
+            onClick={() => {
+              void copyText(message.text);
+            }}
+          >
+            复制
+          </button>
+          <button onClick={() => onRetry(message)} disabled={live}>
+            重试
+          </button>
+          <span className="chat-time">{formatClock(message.endedAt ?? message.at)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
+  const view = useSession(session);
   const [input, setInput] = useState('');
-  const activeRef = useRef<number | null>(null);
+  const [activeId, setActiveId] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true);
+  const composingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const messages = view.messages;
+  const turns = useMemo(() => turnsFromMessages(messages), [messages]);
+  const last = messages[messages.length - 1];
+  const lastText = last?.text ?? '';
 
   /** 滚动时记录用户是否仍贴着底部，决定后续 token 是否自动跟随。 */
   function handleScroll() {
     const el = scrollRef.current;
     if (!el) return;
     stickRef.current = shouldStickToBottom(el.scrollHeight, el.scrollTop, el.clientHeight);
+    syncActiveTurn();
+  }
+
+  /** 用可视区顶部反查当前轮次，供右侧刻度条高亮。 */
+  function syncActiveTurn() {
+    const el = scrollRef.current;
+    if (!el || turns.length === 0) return;
+    const anchor = el.getBoundingClientRect().top + 72;
+    let current = turns[0].id;
+    for (const turn of turns) {
+      const node = document.getElementById(`msg-${turn.id}`);
+      if (!node) continue;
+      if (node.getBoundingClientRect().top <= anchor) current = turn.id;
+      else break;
+    }
+    setActiveId(current);
   }
 
   // 新 token 或新消息到达时吸底；用户上翻时 stickRef 为假，不打扰阅读。
@@ -104,7 +170,13 @@ export function ChatTab({ session }: Props) {
     const el = scrollRef.current;
     if (!el || !stickRef.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [stream.text, messages.length]);
+  }, [lastText, messages.length]);
+
+  useEffect(() => {
+    syncActiveTurn();
+    // turns 变化时同步一次高亮，避免切换会话后刻度条无选中项
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, turns.length]);
 
   // 输入框随内容自动增高，到 200px 后交给内部滚动。
   useEffect(() => {
@@ -114,75 +186,38 @@ export function ChatTab({ session }: Props) {
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [input]);
 
-  useEffect(() => {
-    const idx = activeRef.current;
-    if (idx === null) return;
-    setMessages((prev) =>
-      prev.map((m, i) =>
-        i === idx
-          ? {
-              ...m,
-              text: stream.text,
-              error: stream.error ?? undefined,
-              pending: false,
-              steps: stream.steps,
-              modelName: stream.modelName,
-              inputTokens: stream.inputTokens,
-              outputTokens: stream.outputTokens,
-              startedAt: stream.startedAt,
-              endedAt: stream.endedAt,
-            }
-          : m,
-      ),
-    );
-  }, [
-    stream.text,
-    stream.error,
-    stream.steps,
-    stream.modelName,
-    stream.inputTokens,
-    stream.outputTokens,
-    stream.startedAt,
-    stream.endedAt,
-  ]);
-
-  /** 追加一问一答并把新消息设为流的目标；重试复用同一条路径。 */
-  function runFrom(base: Message[], text: string) {
-    const next: Message[] = [
-      ...base,
-      { role: 'user', text },
-      { role: 'assistant', text: '', pending: true },
-    ];
-    activeRef.current = next.length - 1;
-    setMessages(next);
-    void stream.start(session ?? 'live-1', text);
+  /** 发起一轮：首次发送时把草稿会话 id 落到 URL，再交给 store 后台执行。 */
+  function run(text: string) {
+    const value = text.trim();
+    if (!value || view.running) return;
+    onFirstSend?.();
+    send(session, value);
   }
 
   function submit() {
-    const text = input.trim();
-    if (!text || stream.running) return;
+    if (!input.trim() || view.running) return;
+    const text = input;
     setInput('');
-    runFrom(messages, text);
+    run(text);
   }
 
-  /** 重试：丢掉这条回答及其后的消息，用同一条用户输入重跑。 */
-  function retry(index: number) {
-    if (stream.running) return;
+  /** 重试：用同一条用户输入再发一轮（保留历史，不重写已发生的内容）。 */
+  function retry(message: ChatMessage) {
+    if (view.running) return;
+    const index = messages.findIndex((item) => item.id === message.id);
     const asked = messages[index - 1];
     if (!asked || asked.role !== 'user') return;
-    runFrom(messages.slice(0, index - 1), asked.text);
+    run(asked.text);
   }
 
-  async function copy(text: string) {
-    try {
-      await navigator.clipboard?.writeText(text);
-    } catch {
-      // http 非 localhost 等非安全上下文拿不到 clipboard，静默跳过
-    }
+  function locate(turnId: string) {
+    const node = document.getElementById(`msg-${turnId}`);
+    node?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    setActiveId(turnId);
   }
 
   const empty = messages.length === 0;
-  const canSend = Boolean(input.trim()) && !stream.running;
+  const canSend = Boolean(input.trim()) && !view.running;
 
   return (
     <div className="chat-wrap">
@@ -192,42 +227,25 @@ export function ChatTab({ session }: Props) {
         onScroll={handleScroll}
       >
         <div className="chat-thread">
-          {messages.map((m, i) => {
+          {view.loading && <div className="chat-loading mono">正在载入会话历史…</div>}
+          {messages.map((m) => {
             if (m.role === 'user') {
               return (
-                <div className="chat-msg user" key={i}>
+                <div className="chat-msg user" id={`msg-${m.id}`} key={m.id}>
                   <div className="chat-bubble">{m.text}</div>
                 </div>
               );
             }
-            const hasAnswer = Boolean(m.text) || Boolean(m.error);
             return (
-              <div className={`chat-msg assistant${m.error ? ' has-error' : ''}`} key={i}>
-                {m.steps && <StepList steps={m.steps} />}
-                {m.text && (
-                  <div className="chat-bubble assistant-body">
-                    <Markdown content={m.text} />
-                  </div>
-                )}
-                {m.error && (
-                  <div className="chat-error-line">
-                    <span className="chat-error-tag">中断</span>
-                    <span>{m.error}</span>
-                  </div>
-                )}
-                {hasAnswer && (
-                  <div className="chat-actions">
-                    <button onClick={() => void copy(m.text)}>复制</button>
-                    <button onClick={() => retry(i)} disabled={stream.running}>
-                      重试
-                    </button>
-                    <span className="chat-time">{formatClock(m.endedAt)}</span>
-                  </div>
-                )}
-              </div>
+              <AssistantMessage
+                key={m.id}
+                message={m}
+                live={view.running && m.id === last?.id}
+                onRetry={retry}
+              />
             );
           })}
-          {empty && (
+          {empty && !view.loading && (
             <div className="chat-empty">
               <span className="chat-empty-icon">
                 <SparkIcon />
@@ -239,7 +257,7 @@ export function ChatTab({ session }: Props) {
               </p>
               <div className="chat-samples">
                 {SAMPLES.map((q) => (
-                  <button key={q} className="chat-sample" onClick={() => runFrom(messages, q)}>
+                  <button key={q} className="chat-sample" onClick={() => run(q)}>
                     <span>{q}</span>
                     <span className="chat-sample-arrow" aria-hidden="true">
                       →
@@ -251,6 +269,13 @@ export function ChatTab({ session }: Props) {
           )}
         </div>
       </div>
+      <TraceRail
+        turns={turns}
+        activeId={activeId}
+        streaming={view.running}
+        onLocate={(turn) => locate(turn.id)}
+        onOpenTrace={onOpenTrace}
+      />
       <div className="chat-composer">
         <div className="chat-compose">
           <textarea
@@ -258,20 +283,28 @@ export function ChatTab({ session }: Props) {
             aria-label="用户输入"
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onCompositionStart={() => {
+              composingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              composingRef.current = false;
+            }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              // 中文输入法选词时的 Enter 不能当发送；同时兼容 isComposing 标记。
+              if (e.key === 'Enter' && !e.shiftKey && !composingRef.current && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 submit();
               }
             }}
-            disabled={stream.running}
             placeholder="给 DevOps Agent 发消息…"
             rows={1}
           />
           <div className="composer-bar">
-            <span className="composer-hint">Enter 发送 · Shift+Enter 换行</span>
-            {stream.running && (
-              <button className="send-btn stop" onClick={stream.stop}>
+            <span className="composer-hint">
+              {view.running ? '生成中，仍可继续输入，停止后可发送' : 'Enter 发送 · Shift+Enter 换行'}
+            </span>
+            {view.running && (
+              <button className="send-btn stop" onClick={() => stop(session)}>
                 停止
               </button>
             )}
@@ -286,11 +319,12 @@ export function ChatTab({ session }: Props) {
           </div>
         </div>
         <div className="chat-meta">
-          <span>{stream.events.length} 帧事件</span>
+          <span>{view.eventCount} 帧事件</span>
           <span>
-            {stream.inputTokens} in / {stream.outputTokens} out
+            {view.inputTokens} in / {view.outputTokens} out
           </span>
-          {stream.runId !== null && <span>run #{stream.runId}</span>}
+          {view.modelName && <span className="mono">{view.modelName}</span>}
+          {view.runId !== null && <span>run #{view.runId}</span>}
         </div>
       </div>
     </div>

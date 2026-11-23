@@ -1,6 +1,7 @@
 /** 过程时间线：每种事件一行，工具/异常可点开看完整入参与返回。 */
 import { useState } from 'react';
 import type { ProcessEntry } from '../types';
+import { formatClock } from './time';
 
 /** 状态文案：一行右侧只留最短的一个词。 */
 const STATE_TEXT: Record<ProcessEntry['state'], string> = {
@@ -18,8 +19,13 @@ export function summarize(detail: string, max: number = 64): string {
 /** 工具 / 控制 / 异常：› 类型 · 摘要 …… 状态，点开在下方贴返回。 */
 function ExpandableStep({ step }: { step: ProcessEntry }) {
   const [open, setOpen] = useState(step.kind === 'error');
-  const detail = step.detail.trim();
-  const hasDetail = detail.length > 0;
+  const args = (step.args ?? '').trim();
+  const result = (step.result ?? '').trim();
+  const legacy = step.detail.trim();
+  // 入参与返回分字段存放；旧数据只有 detail，保持原样兼容。
+  const summarySource = args || legacy || result;
+  const hasDetail = Boolean(args || result || legacy);
+  const clock = formatClock(step.at);
   const tone =
     step.kind === 'error'
       ? 'error'
@@ -41,19 +47,36 @@ function ExpandableStep({ step }: { step: ProcessEntry }) {
           ›
         </span>
         <span className="step-kind">{step.label}</span>
-        {hasDetail && (
+        {summarySource && (
           <>
             <span className="step-sep" aria-hidden="true">
               ·
             </span>
-            <span className="step-detail mono" title={detail}>
-              {summarize(detail)}
+            <span className="step-detail mono" title={summarySource}>
+              {summarize(summarySource)}
             </span>
           </>
         )}
+        {clock && <span className="step-time mono">{clock}</span>}
         <span className="step-state mono">{STATE_TEXT[step.state]}</span>
       </button>
-      {open && hasDetail && <pre className="step-result">{detail}</pre>}
+      {open && hasDetail && (
+        <div className="step-blocks">
+          {args && (
+            <div className="step-block">
+              <span className="step-block-label">入参</span>
+              <pre className="step-result">{step.args}</pre>
+            </div>
+          )}
+          {!args && legacy && <pre className="step-result">{legacy}</pre>}
+          {result && (
+            <div className="step-block">
+              <span className="step-block-label">返回</span>
+              <pre className="step-result">{step.result}</pre>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

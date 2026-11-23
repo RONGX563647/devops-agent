@@ -1,40 +1,20 @@
-/** 左侧会话栏：从 runs 聚合出会话标题、分组与计数，不改后端。 */
+/** 左侧会话栏：合并后端 runs 聚合与本地缓存的会话，负责分组、搜索与选择。 */
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchRuns } from '../api/client';
 import type { Run } from '../types';
+import {
+  GROUP_ORDER,
+  groupOf,
+  toSessionTitle,
+  type SessionGroup,
+  type SessionItem,
+} from './sidebar-utils';
+import { listSessions, useStoreVersion } from './store';
+import type { StoredSession } from './history';
 
-export interface SessionItem {
-  id: string;
-  /** 会话标题：取该会话最早一条用户输入，超长截断。 */
-  title: string;
-  lastAt: string;
-  runCount: number;
-  failedCount: number;
-}
-
-export type SessionGroup = '今天' | '昨天' | '更早';
-
-const GROUP_ORDER: SessionGroup[] = ['今天', '昨天', '更早'];
-const TITLE_MAX = 20;
-
-/** 用户输入压成单行并截断，空输入给兜底标题。 */
-export function toSessionTitle(input: string, max: number = TITLE_MAX): string {
-  const clean = input.replace(/\s+/g, ' ').trim();
-  if (!clean) return '未命名会话';
-  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
-}
-
-/** 按本地日界分组：今天 / 昨天 / 更早。 */
-export function groupOf(iso: string, now: Date = new Date()): SessionGroup {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '更早';
-  const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const diffDays = Math.round((dayStart(now) - dayStart(date)) / 86_400_000);
-  if (diffDays <= 0) return '今天';
-  if (diffDays === 1) return '昨天';
-  return '更早';
-}
+export { GROUP_ORDER, groupOf, toSessionTitle };
+export type { SessionGroup, SessionItem };
 
 export function aggregateSessions(runs: Run[]): SessionItem[] {
   const map = new Map<string, SessionItem & { firstAt: string }>();
@@ -71,6 +51,28 @@ export function aggregateSessions(runs: Run[]): SessionItem[] {
     }));
 }
 
+/** 合并远端会话与本地缓存：本地新会话（后端还没有运行记录）也要出现在侧栏。 */
+export function mergeSessions(remote: SessionItem[], local: StoredSession[]): SessionItem[] {
+  const merged = new Map(remote.map((item) => [item.id, { ...item }]));
+  for (const item of local) {
+    const existing = merged.get(item.id);
+    if (existing) {
+      existing.messageCount = item.messageCount;
+      if (existing.runCount === 0) existing.lastAt = item.lastAt;
+      continue;
+    }
+    merged.set(item.id, {
+      id: item.id,
+      title: item.title,
+      lastAt: item.lastAt,
+      runCount: 0,
+      failedCount: 0,
+      messageCount: item.messageCount,
+    });
+  }
+  return [...merged.values()].sort((a, b) => b.lastAt.localeCompare(a.lastAt));
+}
+
 /** 会话列表数据源：侧栏与顶部统计共用同一个 queryKey，缓存自动复用。 */
 export function useSessionRuns() {
   return useQuery({
@@ -78,6 +80,13 @@ export function useSessionRuns() {
     queryFn: () => fetchRuns({ limit: 200 }),
     refetchInterval: 10000,
   });
+}
+
+/** 合并后的会话列表；订阅 store 版本号，本地新会话创建后立即出现。 */
+export function useSessionList(): SessionItem[] {
+  const runs = useSessionRuns();
+  useStoreVersion();
+  return mergeSessions(aggregateSessions(runs.data?.items ?? []), listSessions());
 }
 
 interface Props {
@@ -111,8 +120,8 @@ function PlusIcon() {
 
 export function SessionSidebar({ selected, onSelect, onNew }: Props) {
   const runs = useSessionRuns();
+  const sessions = useSessionList();
   const [query, setQuery] = useState('');
-  const sessions = useMemo(() => aggregateSessions(runs.data?.items ?? []), [runs.data]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -161,24 +170,27 @@ export function SessionSidebar({ selected, onSelect, onNew }: Props) {
         onClick={() => onSelect(null)}
       >
         <span className="session-name">全部会话</span>
-        <span className="session-count">{runs.data?.total ?? 0}</span>
+        <span className="session-count">{sessions.length}</span>
       </button>
       {grouped.map(([group, items]) => (
         <div key={group}>
           <div className="session-group-label">{group}</div>
-          {items.map((s) => (
-            <button
-              key={s.id}
-              className={`session-item ${selected === s.id ? 'active' : ''}`}
-              onClick={() => onSelect(s.id)}
-              title={`${s.id} · ${s.runCount} 次运行${s.failedCount ? ` · ${s.failedCount} 失败` : ''}`}
-            >
-              <span className="session-name">{s.title}</span>
-              <span className={`session-count ${s.failedCount ? 'has-failed' : ''}`}>
-                {s.runCount}
-              </span>
-            </button>
-          ))}
+          {items.map((s) => {
+            const count = s.runCount || s.messageCount || 0;
+            return (
+              <button
+                key={s.id}
+                className={`session-item ${selected === s.id ? 'active' : ''}`}
+                onClick={() => onSelect(s.id)}
+                title={`${s.id} · ${s.runCount} 次运行 · ${s.messageCount ?? 0} 轮对话${
+                  s.failedCount ? ` · ${s.failedCount} 失败` : ''
+                }`}
+              >
+                <span className="session-name">{s.title}</span>
+                <span className={`session-count ${s.failedCount ? 'has-failed' : ''}`}>{count}</span>
+              </button>
+            );
+          })}
         </div>
       ))}
       {filtered.length === 0 && !runs.isLoading && query && (

@@ -33,10 +33,12 @@ describe('parseFrame', () => {
 });
 
 describe('applyEvent', () => {
-  it('累积文本 delta', () => {
+  it('累积文本 delta，并只计数不累积事件数组', () => {
     const next = applyEvent(INITIAL, { type: 'TEXT_BLOCK_DELTA', delta: 'hi' });
     expect(next.text).toBe('hi');
-    expect(next.events).toHaveLength(1);
+    expect(next.eventCount).toBe(1);
+    // 正文不再额外写一条 text 步骤，避免双份
+    expect(next.steps).toHaveLength(0);
   });
 
   it('RUN_DONE 收尾并填充统计', () => {
@@ -107,7 +109,7 @@ describe('applyEvent', () => {
     expect(s.steps[0].state).toBe('success');
   });
 
-  it('TOOL_CALL 多工具按 tool_call_id 配对，RESULT_END 标记成败', () => {
+  it('TOOL_CALL 多工具按 tool_call_id 配对，入参与返回分开累积', () => {
     let s = applyEvent(INITIAL, {
       type: 'TOOL_CALL_START',
       tool_call_id: 't1',
@@ -119,17 +121,29 @@ describe('applyEvent', () => {
       tool_call_name: 'read_file',
     });
     s = applyEvent(s, { type: 'TOOL_CALL_DELTA', tool_call_id: 't1', delta: 'ls -la' });
+    s = applyEvent(s, { type: 'TOOL_RESULT_TEXT_DELTA', tool_call_id: 't1', delta: 'a.txt' });
     s = applyEvent(s, { type: 'TOOL_RESULT_END', tool_call_id: 't1', state: 'success' });
     s = applyEvent(s, { type: 'TOOL_RESULT_END', tool_call_id: 't2', state: 'failed' });
     expect(s.steps).toHaveLength(2);
     expect(s.steps[0]).toMatchObject({
       kind: 'tool',
       label: '调用工具 · bash',
-      detail: 'ls -la',
+      args: 'ls -la',
+      result: 'a.txt',
       state: 'success',
       toolCallId: 't1',
     });
     expect(s.steps[1].state).toBe('error');
+  });
+
+  it('工具增量缺少 tool_call_id 时回落到最近一个执行中的工具', () => {
+    let s = applyEvent(INITIAL, {
+      type: 'TOOL_CALL_START',
+      tool_call_id: 't9',
+      tool_call_name: 'bash',
+    });
+    s = applyEvent(s, { type: 'TOOL_CALL_DELTA', delta: 'pwd' });
+    expect(s.steps[0].args).toBe('pwd');
   });
 
   it('MODEL_CALL 收集模型名与 token，EXCEED_MAX_ITERS 标注为 error', () => {
@@ -160,13 +174,13 @@ describe('applyEvent', () => {
       hint: '<system-reminder>current time ...</system-reminder>',
     });
     expect(next.steps).toHaveLength(0);
-    expect(next.events).toHaveLength(1);
+    expect(next.eventCount).toBe(1);
   });
 
-  it('未知事件类型不改步骤、只入 events', () => {
+  it('未知事件类型不改步骤、只计数', () => {
     const next = applyEvent(INITIAL, { type: 'CUSTOM' });
     expect(next.steps).toHaveLength(0);
-    expect(next.events).toHaveLength(1);
+    expect(next.eventCount).toBe(1);
   });
 });
 
@@ -191,5 +205,33 @@ describe('consumeStream', () => {
       'TEXT_BLOCK_DELTA',
       'RUN_DONE',
     ]);
+  });
+
+  it('流结束时 flush 未闭合的尾帧', async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"RUN_DONE","text":"tail"}'));
+        controller.close();
+      },
+    });
+    const events: StreamEvent[] = [];
+    await consumeStream(body, (event) => events.push(event));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'RUN_DONE', text: 'tail' });
+  });
+
+  it('注释心跳帧被忽略', async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(': ping\n\n'));
+        controller.enqueue(encoder.encode('data: {"type":"RUN_DONE"}\n\n'));
+        controller.close();
+      },
+    });
+    const events: StreamEvent[] = [];
+    await consumeStream(body, (event) => events.push(event));
+    expect(events.map((event) => event.type)).toEqual(['RUN_DONE']);
   });
 });

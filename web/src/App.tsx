@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Cost } from './pages/Cost';
 import { Dashboard } from './pages/Dashboard';
 import { Quality } from './pages/Quality';
@@ -15,14 +16,16 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Workspace />} />
-          <Route path="/runs" element={<Runs />} />
-          <Route path="/runs/:id" element={<RunDetail />} />
-          <Route path="/quality" element={<Quality />} />
-          <Route path="/cost" element={<Cost />} />
-          <Route path="/dashboard" element={<Dashboard />} />
-        </Routes>
+        <ErrorBoundary>
+          <Routes>
+            <Route path="/" element={<Workspace />} />
+            <Route path="/runs" element={<Runs />} />
+            <Route path="/runs/:id" element={<RunDetail />} />
+            <Route path="/quality" element={<Quality />} />
+            <Route path="/cost" element={<Cost />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+          </Routes>
+        </ErrorBoundary>
       </BrowserRouter>
     </QueryClientProvider>
   );

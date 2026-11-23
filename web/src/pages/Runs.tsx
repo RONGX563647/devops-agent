@@ -3,10 +3,11 @@ import { Link } from 'react-router-dom';
 import { useState } from 'react';
 import { fetchRuns } from '../api/client';
 import { StatusBadge } from '../components/StatusBadge';
+import { formatDateTime, formatDuration } from '../workspace/time';
 
 function formatMs(ms: number | null): string {
   if (ms === null) return '—';
-  return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms}ms`;
+  return formatDuration(ms);
 }
 
 export function Runs() {
@@ -73,7 +74,7 @@ export function Runs() {
               <td>{run.health_score ?? '—'}</td>
               <td>{formatMs(run.duration_ms)}</td>
               <td>{run.total_tokens}</td>
-              <td className="muted">{run.started_at.slice(0, 19)}</td>
+              <td className="muted">{formatDateTime(run.started_at)}</td>
               <td><Link to={`/runs/${run.id}`}>Trace →</Link></td>
             </tr>
           ))}

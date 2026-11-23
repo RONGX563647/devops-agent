@@ -8,7 +8,8 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import AsyncIterator
+from typing import Any, Protocol
 
 
 class AgentRuntime(Protocol):
@@ -16,6 +17,10 @@ class AgentRuntime(Protocol):
 
     async def run(self, session_id: str, user_input: str) -> str:
         """执行一次 Agent 调用，返回结果文本。"""
+        ...
+
+    def stream(self, session_id: str, user_input: str) -> AsyncIterator[dict[str, Any]]:
+        """流式执行，逐个吐出可观测事件 dict（普通数据，框架无关）。"""
         ...
 
 
@@ -27,3 +32,9 @@ class EchoRuntime:
 
     async def run(self, session_id: str, user_input: str) -> str:
         return f"[{session_id}] {user_input}"
+
+    async def stream(self, session_id: str, user_input: str) -> AsyncIterator[dict[str, Any]]:
+        """占位流式实现：吐出最小事件序列，供网关与前端自检。"""
+        yield {"type": "REPLY_START", "session_id": session_id}
+        yield {"type": "TEXT_BLOCK_DELTA", "delta": f"[{session_id}] {user_input}"}
+        yield {"type": "REPLY_END", "finished_reason": "completed"}

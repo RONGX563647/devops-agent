@@ -4,7 +4,7 @@
 
 > 技术栈：Python 3.11+ / AgentScope 2.x / FastAPI / Docker 沙箱
 >
-> **当前状态**：已完成框架接线与异步网关（可跑通真实模型），三个能力域的业务逻辑尚未填充。见文末「Roadmap」。
+> **当前状态**：已完成框架接线、异步网关（可跑通真实模型）、SSE 流式输出与端到端可观测性（埋点 → SQLite → 观测 API → React 前端）。三个能力域的业务逻辑尚未填充。见文末「Roadmap」。
 
 ---
 
@@ -32,17 +32,28 @@ devops-agent/
 │   └── check_gates.py       # 从 gates.yaml 读取阈值并执行 CI 门禁
 ├── src/devops_agent/
 │   ├── config.py            # config/*.yaml 的唯一加载入口（强类型）
-│   ├── main.py              # FastAPI 入口（/health + /run）
+│   ├── main.py              # FastAPI 入口（/health + /run + /run/stream + /api/*）
 │   ├── runtime/             # 编排层
 │   │   ├── agent.py         #   build_agent()：唯一 import agentscope
+│   │   ├── events.py        #   事件 → 普通 dict（原生序列化 + duck typing 边界）
 │   │   ├── supervisor.py    #   TeamPipeline / GoalPipeline 编排
 │   │   └── runtime.py       #   AgentRuntime 协议（框架隔离接口）
+│   ├── observability/       # 可观测性（框架无关）
+│   │   ├── models.py        #   Run / Span / EvalScore 三模型
+│   │   ├── repository.py    #   SQLite 唯一读写入口
+│   │   ├── recorder.py      #   事件流 → run + spans 落库
+│   │   ├── health.py        #   健康分与聚合统计
+│   │   └── api.py           #   观测 API 路由
 │   ├── tools/catalog.py     # FunctionTool / Toolkit / ToolGroup
 │   ├── executor/boundary.py # LocalWorkspace / DockerWorkspace 沙箱
 │   ├── governance/policy.py # PermissionEngine 权限引擎
 │   ├── memory/ledger.py     # Mem0Middleware 长期记忆
-│   ├── eval/scorer.py       # 评测维度枚举（打分逻辑待实现）
-│   └── gateway/             # 预留：SSE 网关（Roadmap）
+│   └── eval/scorer.py       # 评测维度枚举（打分逻辑待实现）
+├── config/
+│   ├── policy.yaml          # 运行时策略
+│   ├── gates.yaml           # 质量门禁阈值
+│   └── health.yaml          # 健康分权重与延迟基准
+├── web/                     # React 18 + TS + Vite 可观测性前端
 ├── tests/                   # unit / integration
 ├── skills/                  # 预留：可复用技能（Roadmap）
 └── workspace/               # 运行态工作区（不提交）
@@ -138,6 +149,34 @@ curl -X POST http://127.0.0.1:8000/run \
 
 ---
 
+## 可观测性与前端
+
+后端在 `reply_stream()` 事件流上同步落库（runs / spans / eval_scores 三表），前端展示运行好坏的量化画像。设计见 `docs/adr/0001-agent-observability-frontend.md`。
+
+**流式端点** `POST /run/stream`：逐帧返回 `data: {...}\n\n`（SSE），结束帧 `event: done` 带 run_id 与 token 汇总；`X-Request-ID` 幂等防重试重复落库。
+
+**观测 API**（FastAPI，前缀 `/api`）：
+
+| 端点 | 用途 |
+|---|---|
+| `GET /api/runs` | 运行列表（domain/status/时间筛选 + 分页） |
+| `GET /api/runs/{id}` / `/spans` / `/health` | 详情 / 步骤时间线 / 健康分拆解 |
+| `GET /api/metrics/summary` | 成功率 / 平均健康分 / P95 / token / 工具失败率 |
+| `GET /api/metrics/timeseries` | 按天趋势 |
+| `POST /api/feedback/{id}` | 人工 👍/👎 写入 eval_scores |
+| `GET /api/eval/trends` | 各维度评分均值与来源分布 |
+
+健康分（0-100）由执行健康 / 效率成本 / 效果质量 / 安全合规四类加权，权重在 `config/health.yaml`；缺失维度剔除后重归一化。
+
+**前端**（`web/`，React 18 + TypeScript + Vite + Recharts + TanStack Query）：总览 Dashboard（含实时 SSE 运行）、运行列表、Trace 瀑布详情、质量评估/反馈、成本性能五个页面，全部读真实 API。开发期 Vite 把 `/api` `/run` 代理到 `:8000`。
+
+```bash
+cd web && npm ci && npm run dev        # 前端开发服务器（配合后端 :8000）
+npm run build                          # 类型检查 + 生产构建（CI 亦执行）
+```
+
+数据库路径默认 `workspace/observability.db`（已 gitignore），可用 `DEVOPS_AGENT_DB_PATH` 覆盖。
+
 ## Roadmap（尚未实现）
 
 以下是骨架已铺好、但代码尚未填充的部分，按建议顺序：
@@ -145,5 +184,6 @@ curl -X POST http://127.0.0.1:8000/run \
 1. **首个能力域闭环**：选 `debug` 域，写真实 `FunctionTool` + system_prompt + 评测逻辑，跑通「提 bug → 定位 → 打分」；
 2. **评测打分**：在 `eval/scorer.py` 实现 correctness 等维度，接入 recall@k / faithfulness / LLM-as-judge；
 3. **结果台账**：实现跨 Agent 的 append-only 结果共享；
-4. **网关流化**：`gateway/` 的 SSE 流式输出（当前 `/run` 为非流式）；
-5. **技能沉淀**：`skills/`、`config/agents/` 的能力配置化。
+4. **技能沉淀**：`skills/`、`config/agents/` 的能力配置化。
+
+> 已完成：网关流化（SSE）、端到端可观测性与前端（见上一节）。

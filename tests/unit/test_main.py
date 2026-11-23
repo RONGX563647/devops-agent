@@ -2,7 +2,9 @@
 
 from fastapi.testclient import TestClient
 
+from devops_agent import main
 from devops_agent.main import app
+from devops_agent.runtime.runtime import AgentRuntime
 
 client = TestClient(app)
 
@@ -22,3 +24,20 @@ def test_run_echo() -> None:
 def test_run_requires_fields() -> None:
     resp = client.post("/run", json={"session_id": "s1"})
     assert resp.status_code == 422
+
+
+def test_run_uses_injected_runtime(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """替换 app.state.runtime 即可改变 /run 行为，无需改 env 或重启。"""
+
+    class StubRuntime:
+        async def run(self, session_id: str, user_input: str) -> str:
+            return f"stub:{session_id}:{user_input}"
+
+    stub: AgentRuntime = StubRuntime()
+    monkeypatch.setattr(app.state, "runtime", stub)
+    resp = client.post("/run", json={"session_id": "s9", "user_input": "hi"})
+    assert resp.json() == {"result": "stub:s9:hi"}
+
+
+def test_select_runtime_is_exposed() -> None:
+    assert callable(main.select_runtime)

@@ -34,6 +34,14 @@ export function shouldStickToBottom(
   return scrollHeight - scrollTop - clientHeight < threshold;
 }
 
+/** ISO 时间戳 → HH:MM，用于消息操作条；缺值或非法值返回空串。 */
+export function formatClock(value?: string | null): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
 export function ChatTab({ session }: Props) {
   const stream = useRunStream();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -88,18 +96,39 @@ export function ChatTab({ session }: Props) {
     stream.endedAt,
   ]);
 
+  /** 追加一问一答并把新消息设为流的目标；重试复用同一条路径。 */
+  function runFrom(base: Message[], text: string) {
+    const next: Message[] = [
+      ...base,
+      { role: 'user', text },
+      { role: 'assistant', text: '', pending: true },
+    ];
+    activeRef.current = next.length - 1;
+    setMessages(next);
+    void stream.start(session ?? 'live-1', text);
+  }
+
   function submit() {
     const text = input.trim();
     if (!text || stream.running) return;
-    const idx = messages.length + 1;
-    activeRef.current = idx;
-    setMessages((prev) => [
-      ...prev,
-      { role: 'user', text },
-      { role: 'assistant', text: '', pending: true },
-    ]);
     setInput('');
-    void stream.start(session ?? 'live-1', text);
+    runFrom(messages, text);
+  }
+
+  /** 重试：丢掉这条回答及其后的消息，用同一条用户输入重跑。 */
+  function retry(index: number) {
+    if (stream.running) return;
+    const asked = messages[index - 1];
+    if (!asked || asked.role !== 'user') return;
+    runFrom(messages.slice(0, index - 1), asked.text);
+  }
+
+  async function copy(text: string) {
+    try {
+      await navigator.clipboard?.writeText(text);
+    } catch {
+      // http 非 localhost 等非安全上下文拿不到 clipboard，静默跳过
+    }
   }
 
   return (
@@ -108,7 +137,6 @@ export function ChatTab({ session }: Props) {
         <div className="chat-thread">
           {messages.map((m, i) => (
             <div className={`chat-msg ${m.role}`} key={i}>
-              <span className="chat-role">{m.role === 'user' ? '我' : 'Agent'}</span>
               {m.role === 'assistant' && m.steps && m.steps.length > 0 && (
                 <ProcessBlock
                   steps={m.steps}
@@ -124,6 +152,15 @@ export function ChatTab({ session }: Props) {
                 <div className={`chat-bubble ${m.error ? 'has-error' : ''}`}>{m.text}</div>
               )}
               {m.error && <div className="error">错误：{m.error}</div>}
+              {m.role === 'assistant' && m.text && (
+                <div className="chat-actions">
+                  <button onClick={() => void copy(m.text)}>复制</button>
+                  <button onClick={() => retry(i)} disabled={stream.running}>
+                    重试
+                  </button>
+                  <span className="chat-time">{formatClock(m.endedAt)}</span>
+                </div>
+              )}
             </div>
           ))}
           {messages.length === 0 && (

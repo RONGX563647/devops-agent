@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChatTab, shouldStickToBottom } from './ChatTab';
+import { ChatTab, formatClock, shouldStickToBottom } from './ChatTab';
 
 const start = vi.fn();
 const stop = vi.fn();
@@ -66,6 +66,15 @@ describe('shouldStickToBottom', () => {
   });
 });
 
+describe('formatClock', () => {
+  it('取本地时分，非法或缺值返回空串', () => {
+    const local = new Date(2026, 10, 23, 9, 5);
+    expect(formatClock(local.toISOString())).toBe('09:05');
+    expect(formatClock(null)).toBe('');
+    expect(formatClock('bad')).toBe('');
+  });
+});
+
 describe('ChatTab', () => {
   it('渲染空态与输入框', () => {
     render(<ChatTab session={null} />);
@@ -114,6 +123,22 @@ describe('ChatTab', () => {
     stream.running = false;
     rerender(<ChatTab session="s-1" />);
     expect(screen.getByText('流水线失败常见于测试阶段')).toBeTruthy();
+  });
+
+  it('助手消息带复制与重试操作条，重试复用原问题', async () => {
+    const { rerender } = render(<ChatTab session="s-1" />);
+    submit('hi');
+    stream.text = '这是答案';
+    stream.endedAt = new Date(2026, 10, 23, 9, 5).toISOString();
+    rerender(<ChatTab session="s-1" />);
+
+    expect(await screen.findByText('这是答案')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '复制' })).toBeTruthy();
+    expect(screen.getByText('09:05')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenLastCalledWith('s-1', 'hi');
   });
 });
 

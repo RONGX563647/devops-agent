@@ -57,38 +57,47 @@ export function ProcessBlock({
   startedAt,
   endedAt,
 }: Props) {
-  const [collapsed, setCollapsed] = useState(false);
+  // 默认折叠成一行胶囊：过程再详细也不该比答案更占地方。
+  const [collapsed, setCollapsed] = useState(true);
   if (steps.length === 0) return null;
 
   const duration = formatDuration(startedAt, endedAt);
-  const meta = [modelName, duration && `用时 ${duration}`].filter(Boolean).join(' · ');
+  const summary = [`${steps.length} 步`, duration].filter(Boolean).join(' · ');
 
   return (
-    <div className={`process-block${collapsed ? ' collapsed' : ''}`}>
-      <button className="process-head" onClick={() => setCollapsed((c) => !c)} aria-expanded={!collapsed}>
+    <div className={`process-block ${collapsed ? 'collapsed' : 'expanded'}`}>
+      <button
+        className="process-head"
+        onClick={() => setCollapsed((c) => !c)}
+        aria-expanded={!collapsed}
+      >
         <StateIcon state={running ? 'running' : 'success'} />
         <span className="process-title">{running ? '执行中…' : '已完成'}</span>
-        {meta && <span className="process-meta">{meta}</span>}
-        <span className="process-toggle">{collapsed ? '展开 ▾' : '收起 ▴'}</span>
+        <span className="process-meta">{summary}</span>
+        <span className="process-toggle">{collapsed ? '展开' : '收起'}</span>
       </button>
       {!collapsed && (
-        <ol className="process-steps">
-          {steps.map((step) => {
-            const tag = KIND_META[step.kind];
-            return (
-              <li className={`process-step tone-${tag.tone}`} key={step.id} data-kind={step.kind}>
-                <StateIcon state={step.state} />
-                <span className="process-tag">{tag.tag}</span>
-                <span className="process-label">{step.label}</span>
-                {step.detail && <span className="process-detail">{step.detail}</span>}
-              </li>
-            );
-          })}
-        </ol>
+        <>
+          <ol className="process-steps">
+            {steps.map((step) => {
+              const tag = KIND_META[step.kind];
+              return (
+                <li className={`process-step tone-${tag.tone}`} key={step.id} data-kind={step.kind}>
+                  <StateIcon state={step.state} />
+                  <span className="process-tag">{tag.tag}</span>
+                  <span className="process-label">{step.label}</span>
+                  {step.detail && <span className="process-detail">{step.detail}</span>}
+                </li>
+              );
+            })}
+          </ol>
+          <div className="process-foot">
+            {[modelName, `输入 token ${inputTokens} / 输出 token ${outputTokens}`]
+              .filter(Boolean)
+              .join(' · ')}
+          </div>
+        </>
       )}
-      <div className="process-foot">
-        输入 token {inputTokens} / 输出 token {outputTokens} · {steps.length} 个过程步骤
-      </div>
     </div>
   );
 }

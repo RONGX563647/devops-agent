@@ -40,25 +40,35 @@ describe('formatDuration', () => {
 });
 
 describe('ProcessBlock', () => {
-  it('每类步骤渲染不同标注标签', () => {
+  it('默认折叠为一行胶囊，只显示状态、步骤数与用时', () => {
+    const { container } = renderBlock();
+    expect(container.querySelectorAll('.process-step').length).toBe(0);
+    expect(screen.getByText('已完成')).toBeTruthy();
+    expect(screen.getByText('7 步 · 4.0s')).toBeTruthy();
+    expect(container.querySelector('.process-block.collapsed')).not.toBeNull();
+  });
+
+  it('展开后每类步骤渲染不同标注标签', () => {
     renderBlock();
+    fireEvent.click(screen.getByRole('button', { name: /展开/ }));
     for (const tag of ['系统', '思考', '工具', '控制', '异常', '正文']) {
       expect(screen.getAllByText(tag).length).toBeGreaterThan(0);
     }
   });
 
-  it('每类步骤带 data-kind 便于样式区分', () => {
+  it('展开后步骤带 data-kind 便于样式区分', () => {
     const { container } = renderBlock();
+    fireEvent.click(screen.getByRole('button', { name: /展开/ }));
     const kinds = Array.from(container.querySelectorAll('.process-step')).map((el) =>
       el.getAttribute('data-kind'),
     );
     expect(kinds).toEqual(['lifecycle', 'lifecycle', 'thinking', 'tool', 'control', 'error', 'text']);
   });
 
-  it('显示模型、用时、token 汇总', () => {
+  it('展开后显示模型与 token 汇总', () => {
     renderBlock();
+    fireEvent.click(screen.getByRole('button', { name: /展开/ }));
     expect(screen.getByText(/qwen3\.8-flash/)).toBeTruthy();
-    expect(screen.getByText(/用时 4\.0s/)).toBeTruthy();
     expect(screen.getByText(/输入 token 10 \/ 输出 token 20/)).toBeTruthy();
   });
 
@@ -67,13 +77,12 @@ describe('ProcessBlock', () => {
     expect(screen.getByText('执行中…')).toBeTruthy();
   });
 
-  it('折叠后隐藏步骤、展开后恢复', () => {
+  it('再次点击可收起重置为胶囊', () => {
     const { container } = renderBlock();
+    fireEvent.click(screen.getByRole('button', { name: /展开/ }));
     expect(container.querySelectorAll('.process-step').length).toBe(7);
     fireEvent.click(screen.getByRole('button', { name: /收起/ }));
     expect(container.querySelectorAll('.process-step').length).toBe(0);
-    fireEvent.click(screen.getByRole('button', { name: /展开/ }));
-    expect(container.querySelectorAll('.process-step').length).toBe(7);
   });
 
   it('无步骤时不渲染', () => {

@@ -278,13 +278,6 @@ def list_permissions() -> dict[str, Any]:
     }
 
 
-@app.post("/run")
-async def run(req: RunRequest, request: Request) -> dict[str, str]:
-    runtime: AgentRuntime = request.app.state.runtime
-    result = await runtime.run(req.session_id, req.user_input)
-    return {"result": result}
-
-
 @app.post("/run/stream")
 async def run_stream(
     req: RunRequest,

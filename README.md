@@ -33,7 +33,7 @@ devops-agent/
 │   └── check_gates.py       # 从 gates.yaml 读取阈值并执行 CI 门禁
 ├── src/devops_agent/
 │   ├── config.py            # config/*.yaml 的唯一加载入口（强类型）
-│   ├── main.py              # FastAPI 入口（/health + /run + /run/stream + /api/*）
+│   ├── main.py              # FastAPI 入口（/health + /run/stream + /run/{id}/* + /api/*）
 │   ├── runtime/             # 编排层
 │   │   ├── agent.py         #   build_agent()：Agent/模型装配（框架隔离边界之一）
 │   │   ├── events.py        #   事件 → 普通 dict（原生序列化 + duck typing 边界）
@@ -68,18 +68,18 @@ source .venv/bin/activate
 # 2. 安装（含开发依赖）
 pip install -e ".[dev]"
 
-# 3. 启动（未配模型凭据时 /run 走 EchoRuntime，便于自检）
+# 3. 启动（未配模型凭据时 /run/stream 走 EchoRuntime，便于自检）
 uvicorn devops_agent.main:app --port 8000
 # GET http://127.0.0.1:8000/health → {"status":"ok"}
-# POST http://127.0.0.1:8000/run  {"session_id":"s1","user_input":"hello"}
-#   → {"result":"[s1] hello"}      （Echo 模式回显）
+# POST http://127.0.0.1:8000/run/stream  {"session_id":"s1","user_input":"hello"}
+#   → SSE 事件流，Echo 模式回显 "[s1] hello"
 ```
 
 > 未安装包时可临时用 `PYTHONPATH=src uvicorn devops_agent.main:app` 运行。
 
 ### 接入真实模型（OpenAI 兼容接口）
 
-设置三个环境变量后，`/run` 自动切换到真实模型运行时；**不要把密钥写进代码或提交到仓库**。
+设置三个环境变量后，`/run/stream` 自动切换到真实模型运行时；**不要把密钥写进代码或提交到仓库**。
 
 推荐本地用 `.env` 文件：把 `.env.example` 复制为 `.env` 并填入真实值，启动时代码自动加载（`.env` 已被 gitignore，不会进版本库）。已存在的环境变量优先于 `.env`，所以 CI / 容器注入的值不会被本地文件覆盖。
 
@@ -92,7 +92,7 @@ export DEVOPS_AGENT_API_KEY='<your-api-key>'
 export DEVOPS_AGENT_BASE_URL='https://<your-endpoint>/compatible-mode/v1'
 export DEVOPS_AGENT_MODEL='<model-name>'
 
-curl -X POST http://127.0.0.1:8000/run \
+curl -N -X POST http://127.0.0.1:8000/run/stream \
   -H 'Content-Type: application/json' \
   -d '{"session_id":"s1","user_input":"用一句话说明什么是 CI"}'
 ```

@@ -76,10 +76,17 @@ describe('formatClock', () => {
 });
 
 describe('ChatTab', () => {
-  it('渲染空态与输入框', () => {
+  it('渲染空态引导卡与输入框', () => {
     render(<ChatTab session={null} />);
-    expect(screen.getByText(/输入问题开始对话/)).toBeTruthy();
+    expect(screen.getByText('开始一次会话')).toBeTruthy();
     expect(screen.getByRole('button', { name: /发送/ })).toBeTruthy();
+  });
+
+  it('点击示例问题直接发起会话', () => {
+    render(<ChatTab session="s-1" />);
+    fireEvent.click(screen.getByRole('button', { name: /CI 流程是怎么跑的/ }));
+    expect(start).toHaveBeenCalledWith('s-1', '这个仓库的 CI 流程是怎么跑的？');
+    expect(screen.getByText('这个仓库的 CI 流程是怎么跑的？')).toBeTruthy();
   });
 
   it('提交后追加用户消息并调用 start', () => {

@@ -42,13 +42,21 @@ export function formatClock(value?: string | null): string {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
+/** 空状态的示例问题：点一下直接发起会话。 */
+const SAMPLES = [
+  '这个仓库的 CI 流程是怎么跑的？',
+  '解释一下 deployment 阶段的失败原因',
+  '帮我给流水线加一个 lint 关卡',
+];
+
 export function ChatTab({ session }: Props) {
   const stream = useRunStream();
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('用一句话说明什么是 CI');
+  const [input, setInput] = useState('');
   const activeRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   /** 滚动时记录用户是否仍贴着底部，决定后续 token 是否自动跟随。 */
   function handleScroll() {
@@ -63,6 +71,14 @@ export function ChatTab({ session }: Props) {
     if (!el || !stickRef.current) return;
     el.scrollTop = el.scrollHeight;
   }, [stream.text, messages.length]);
+
+  // 输入框随内容自动增高，到 200px 后交给内部滚动。
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [input]);
 
   useEffect(() => {
     const idx = activeRef.current;
@@ -164,13 +180,26 @@ export function ChatTab({ session }: Props) {
             </div>
           ))}
           {messages.length === 0 && (
-            <p className="muted">输入问题开始对话。当前未配模型凭据时走 EchoRuntime 回显。</p>
+            <div className="chat-empty">
+              <p className="chat-empty-title">开始一次会话</p>
+              <p className="chat-empty-hint">
+                描述你的问题，Agent 会边思考边执行，过程收在上方胶囊里，点开可看每一步。
+              </p>
+              <div className="chat-samples">
+                {SAMPLES.map((q) => (
+                  <button key={q} className="chat-sample" onClick={() => runFrom(messages, q)}>
+                    {q}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       </div>
       <div className="chat-composer">
         <div className="chat-compose">
           <textarea
+            ref={textareaRef}
             aria-label="用户输入"
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -181,12 +210,17 @@ export function ChatTab({ session }: Props) {
               }
             }}
             disabled={stream.running}
-            placeholder="发送消息…"
+            placeholder="给 DevOps Agent 发消息…（Enter 发送，Shift+Enter 换行）"
+            rows={1}
           />
           <button onClick={submit} disabled={stream.running || !input.trim()}>
-            {stream.running ? '运行中…' : '发送 ↗'}
+            {stream.running ? '运行中…' : '发送'}
           </button>
-          {stream.running && <button onClick={stream.stop}>停止</button>}
+          {stream.running && (
+            <button className="ghost" onClick={stream.stop}>
+              停止
+            </button>
+          )}
         </div>
         <div className="chat-meta">
           事件 {stream.events.length} 帧 · 输入 token {stream.inputTokens} / 输出 token {stream.outputTokens}

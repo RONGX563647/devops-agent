@@ -221,6 +221,13 @@ a:hover { text-decoration: underline; }
   cursor: pointer; text-align: left; margin-bottom: 6px;
 }
 .session-new:hover { background: var(--surface-hover); border-color: var(--text-3); }
+.session-search {
+  width: 100%; margin: 0 0 6px; padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-muted); font-size: var(--fs-sm); color: var(--text-1);
+  font-family: inherit; outline: none;
+}
+.session-search:focus { border-color: var(--accent); background: var(--surface); }
 .session-group-label {
   font-size: var(--fs-xs); color: var(--text-3);
   padding: 14px 8px 6px; letter-spacing: 0.02em;
@@ -248,6 +255,11 @@ a:hover { text-decoration: underline; }
   font-size: 17px; font-weight: 600; color: var(--text-1);
   margin: 0 0 12px; letter-spacing: -0.01em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.workspace-chip {
+  margin-left: auto; margin-bottom: 12px; flex-shrink: 0;
+  font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap;
+  background: var(--surface-hover); border-radius: var(--radius-pill); padding: 3px 10px;
 }
 .workspace-tabs {
   display: flex; gap: 24px; background: var(--surface);
@@ -279,6 +291,23 @@ a:hover { text-decoration: underline; }
 .chat-thread {
   display: flex; flex-direction: column; gap: 20px; max-width: 860px; margin: 0 auto;
 }
+/* ---- 空状态：居中的引导卡与示例问题 ---- */
+.chat-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 64px 0 48px; text-align: center;
+}
+.chat-empty-title { margin: 0; font-size: 16px; font-weight: 600; color: var(--text-1); }
+.chat-empty-hint {
+  margin: 0; max-width: 420px; font-size: var(--fs-md);
+  line-height: 1.7; color: var(--text-3);
+}
+.chat-samples { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 8px; }
+.chat-sample {
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+  border-radius: var(--radius-pill); padding: 7px 14px;
+  font-size: var(--fs-md); font-family: inherit; cursor: pointer;
+}
+.chat-sample:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-weak); }
 /* ---- 消息模型：用户右对齐气泡，助手铺满不套框 ---- */
 .chat-msg { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .chat-msg.user { align-items: flex-end; }
@@ -309,17 +338,25 @@ a:hover { text-decoration: underline; }
 .chat-time { margin-left: auto; }
 .chat-compose {
   display: flex; gap: 8px; align-items: flex-end; max-width: 860px; margin: 0 auto;
-  background: #fff; border: 1px solid #d1d5db; border-radius: 12px; padding: 10px 12px;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md); padding: 10px 12px;
 }
+.chat-compose:focus-within { border-color: var(--accent); }
 .chat-compose textarea {
-  flex: 1; resize: vertical; min-height: 44px; max-height: 160px;
-  border: 0; outline: 0; font-size: 13px; font-family: inherit; line-height: 1.6;
+  flex: 1; resize: none; min-height: 24px; max-height: 200px; overflow-y: auto;
+  border: 0; outline: 0; padding: 6px 2px;
+  font-size: var(--fs-base); font-family: inherit; line-height: 1.6; color: var(--text-1);
 }
 .chat-compose button {
-  padding: 8px 18px; border: 0; border-radius: 8px; background: #2563eb;
-  color: #fff; font-size: 13px; cursor: pointer; flex-shrink: 0;
+  padding: 8px 18px; border: 0; border-radius: var(--radius-sm); background: var(--accent);
+  color: #fff; font-size: var(--fs-md); cursor: pointer; flex-shrink: 0;
 }
 .chat-compose button:disabled { background: #93c5fd; cursor: not-allowed; }
+/* 停止是次要动作：描边而非实心，避免和发送抢注意力 */
+.chat-compose button.ghost {
+  background: transparent; border: 1px solid var(--border-strong); color: var(--text-2);
+}
+.chat-compose button.ghost:hover { background: var(--surface-hover); }
 .chat-compose select {
   border: 1px solid #e5e7eb; border-radius: 8px; padding: 7px 8px;
   font-size: 12px; color: #475569; background: #fff;

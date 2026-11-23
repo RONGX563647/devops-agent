@@ -18,9 +18,5 @@ jobs:
         run: ruff check .
       - name: type check
         run: mypy src
-      - name: dead code
-        run: vulture src --min-confidence 80
-      - name: complexity
-        run: radon cc src -a
-      - name: tests + coverage (ratchet)
-        run: pytest --cov=devops_agent --cov-report=term --cov-fail-under=80
+      - name: quality gates (config/gates.yaml)
+        run: python scripts/check_gates.py

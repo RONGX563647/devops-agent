@@ -19,6 +19,8 @@ from agentscope.middleware import MiddlewareBase
 from agentscope.model import ChatModelBase
 from agentscope.tool import Toolkit
 
+from devops_agent.config import RuntimePolicy, load_policy
+
 
 def build_agent(
     name: str,
@@ -26,16 +28,32 @@ def build_agent(
     model: ChatModelBase,
     toolkit: Toolkit | None = None,
     middlewares: Sequence[MiddlewareBase] | None = None,
-    max_iters: int = 12,
-    max_retries: int = 3,
+    max_iters: int | None = None,
+    max_retries: int | None = None,
+    fallback_model: ChatModelBase | None = None,
+    policy: RuntimePolicy | None = None,
 ) -> Agent:
-    """按域装配一个 Agent（交付 / 排期 / 定位共用此工厂）。"""
+    """按域装配一个 Agent（交付 / 排期 / 定位共用此工厂）。
+
+    max_iters / max_retries 省略时读 config/policy.yaml；
+    max_iters 按域取 react.max_iters.<name>，未命中回退 default。
+    """
+    resolved = policy if policy is not None else load_policy()
+    if fallback_model is None and resolved.model.fallback_model is not None:
+        raise ValueError(
+            "policy.yaml 已配置 model.fallback_model，请显式传入 fallback_model 模型对象"
+        )
     return Agent(
         name=name,
         system_prompt=system_prompt,
         model=model,
         toolkit=toolkit,
         middlewares=list(middlewares) if middlewares else None,
-        react_config=ReActConfig(max_iters=max_iters),
-        model_config=ModelConfig(max_retries=max_retries),
+        react_config=ReActConfig(
+            max_iters=max_iters if max_iters is not None else resolved.react.max_iters_for(name)
+        ),
+        model_config=ModelConfig(
+            max_retries=max_retries if max_retries is not None else resolved.model.max_retries,
+            fallback_model=fallback_model,
+        ),
     )

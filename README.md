@@ -25,8 +25,11 @@ devops-agent/
 ├── .gitignore
 ├── config/
 │   ├── policy.yaml          # 运行时策略：权限矩阵 / max_iters / 模型降级
-│   └── gates.yaml           # 质量门禁阈值（CI 读取）
+│   └── gates.yaml           # 质量门禁阈值（check_gates.py 读取）
+├── scripts/
+│   └── check_gates.py       # 从 gates.yaml 读取阈值并执行 CI 门禁
 ├── src/devops_agent/
+│   ├── config.py            # config/*.yaml 的唯一加载入口（强类型）
 │   ├── main.py              # FastAPI 入口（/health）
 │   ├── runtime/             # 编排层
 │   │   ├── agent.py         #   build_agent()：唯一 import agentscope
@@ -89,20 +92,30 @@ uvicorn devops_agent.main:app --port 8000
 | 项目排期 | schedule | 需求拆解、依赖排期、资源/人力、风险预警、进度同步 |
 | Bug 测试定位 | debug | 测试生成、失败定位（证据 `file:line`）、修复建议 |
 
-每个域通过 `build_agent(name, system_prompt, model, toolkit, max_iters)` 装配，三个域由 `TeamPipeline` 编排。
+每个域通过 `build_agent(name, system_prompt, model, toolkit, max_iters, max_retries, fallback_model, policy)` 装配；`max_iters` / `max_retries` 省略时读 `config/policy.yaml`（按域取 `react.max_iters.<name>`，未命中回退 `default`），三个域由 `TeamPipeline` 编排。
 
 ---
 
 ## 治理
 
 - **边界**：权限矩阵 `PermissionContext(mode, allow_rules, deny_rules, ask_rules)` + Docker 沙箱隔离；
-- **git/PR**：每任务一个 worktree + 独立分支 + 一个 PR，主分支永不禁直推；
+- **git/PR**：每任务一个 worktree + 独立分支 + 一个 PR，主分支受保护、禁止直推，改动只能经 PR 合入；
 - **记忆**：`Mem0Middleware` 长期记忆，任务状态用 `agentscope.state.AgentState`；
 - **评测**：`recall@k`、faithfulness、变异测试（`mutmut`）、LLM-as-judge 回归。
 
 ## 质量门禁（CI）
 
-`config/gates.yaml` 定义阈值：覆盖率 ≥ 80%、重复代码 ≤ 5%、圈复杂度 ≤ 10、变异测试 ≥ 70%。
+`config/gates.yaml` 定义阈值：覆盖率 ≥ 80%、重复代码 ≤ 5%、圈复杂度 ≤ 10、变异测试 ≥ 70%、死代码置信度 80。
+
+阈值由 `scripts/check_gates.py` 从 yaml 读取并实际执行（CI 调用该脚本）：
+
+| 阈值 | 执行方式 |
+|---|---|
+| `coverage_fail_under` | 注入 `pytest --cov-fail-under` 并解析 `coverage.xml` |
+| `dead_code_min_confidence` | 注入 `vulture --min-confidence` |
+| `complexity_threshold` | 解析 `radon cc -j` 的最大圈复杂度并判定 |
+| `mutation_score` | `mutmut`，用 `--with-mutation` 启用（默认跳过以免拖慢 CI） |
+| `duplicate_code_threshold` | 阈值已读取，尚未配置重复代码检测器（当前 SKIP） |
 
 工具链：`ruff`（风格）+ `mypy`（类型）+ `vulture`（死代码）+ `radon`（复杂度）+ `pytest-cov`（覆盖率）+ `mutmut`（测试效果）。
 

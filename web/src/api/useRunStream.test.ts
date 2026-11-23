@@ -436,6 +436,8 @@ describe('streamRun', () => {
     expect(body.attachments).toEqual([]);
     // 没选档位就不发字段：让服务端用默认档，前端不猜
     expect('permission' in body).toBe(false);
+    // 没开联网也不发字段：避免误触发供应商检索计费
+    expect('web_search' in body).toBe(false);
   });
 
   it('选过档位才把 permission 写进请求体', async () => {
@@ -446,6 +448,25 @@ describe('streamRun', () => {
     await streamRun('s-1', 'hi', () => {}, new AbortController().signal, 'req-4', [], 'readonly');
 
     expect(JSON.parse(String(spy.mock.calls[0][1]?.body)).permission).toBe('readonly');
+  });
+
+  it('开启联网时才把 web_search 写进请求体', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(okStream(), { status: 200 }));
+
+    await streamRun(
+      's-1',
+      'hi',
+      () => {},
+      new AbortController().signal,
+      'req-5',
+      [],
+      'workspace',
+      true,
+    );
+
+    expect(JSON.parse(String(spy.mock.calls[0][1]?.body)).web_search).toBe(true);
   });
 
   it('非 2xx 抛错，交给 store 记成中断', async () => {

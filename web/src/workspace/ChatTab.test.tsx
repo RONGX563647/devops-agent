@@ -53,8 +53,14 @@ const snapshot = {
 
 vi.mock('./store', () => ({
   useSession: () => snapshot,
-  send: (session: string, text: string, attachments: Attachment[] = [], permission?: string) => {
-    send(session, text, attachments, permission);
+  send: (
+    session: string,
+    text: string,
+    attachments: Attachment[] = [],
+    permission?: string,
+    webSearch = false,
+  ) => {
+    send(session, text, attachments, permission, webSearch);
     const now = new Date().toISOString();
     snapshot.messages = [
       ...snapshot.messages,
@@ -202,7 +208,7 @@ describe('ChatTab', () => {
   it('点击示例问题直接发起会话', () => {
     render(tab());
     fireEvent.click(screen.getByRole('button', { name: /CI 流程是怎么跑的/ }));
-    expect(send).toHaveBeenCalledWith('s-1', '这个仓库的 CI 流程是怎么跑的？', [], 'workspace');
+    expect(send).toHaveBeenCalledWith('s-1', '这个仓库的 CI 流程是怎么跑的？', [], 'workspace', false);
     expect(screen.getByText('这个仓库的 CI 流程是怎么跑的？')).toBeTruthy();
   });
 
@@ -210,14 +216,14 @@ describe('ChatTab', () => {
     render(tab());
     submit('你好');
     expect(screen.getByText('你好')).toBeTruthy();
-    expect(send).toHaveBeenCalledWith('s-1', '你好', [], 'workspace');
+    expect(send).toHaveBeenCalledWith('s-1', '你好', [], 'workspace', false);
   });
 
   it('草稿会话首次发送时通知外层落到 URL，不再固定 live-1', () => {
     render(tab({ session: 'draft-1', onFirstSend }));
     submit('hi');
     expect(onFirstSend).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenCalledWith('draft-1', 'hi', [], 'workspace');
+    expect(send).toHaveBeenCalledWith('draft-1', 'hi', [], 'workspace', false);
   });
 
   it('首 token 未到时不留空气泡', () => {
@@ -263,7 +269,7 @@ describe('ChatTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '重试' }));
     expect(send).toHaveBeenCalledTimes(2);
-    expect(send).toHaveBeenLastCalledWith('s-1', 'hi', [], 'workspace');
+    expect(send).toHaveBeenLastCalledWith('s-1', 'hi', [], 'workspace', false);
   });
 
   it('回答按 Markdown 渲染，而不是整段纯文本', async () => {
@@ -322,7 +328,7 @@ describe('ChatTab', () => {
     expect(send).not.toHaveBeenCalled();
 
     fireEvent.keyDown(box, { key: 'Enter', isComposing: false });
-    expect(send).toHaveBeenCalledWith('s-1', '你好', [], 'workspace');
+    expect(send).toHaveBeenCalledWith('s-1', '你好', [], 'workspace', false);
   });
 
   it('生成中仍可输入，但发送按钮禁用、显示停止按钮', () => {
@@ -447,7 +453,7 @@ describe('ChatTab 附件', () => {
       target: { value: '看下这个' },
     });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
-    expect(send).toHaveBeenCalledWith('s-1', '看下这个', [], 'workspace');
+    expect(send).toHaveBeenCalledWith('s-1', '看下这个', [], 'workspace', false);
   });
 
   it('移除芯片同时删掉服务端那份附件', async () => {
@@ -487,7 +493,7 @@ describe('ChatTab 附件', () => {
 
     expect(screen.getByText('上传中…')).toBeTruthy();
     submit('先问一句');
-    expect(send).toHaveBeenCalledWith('s-1', '先问一句', [], 'workspace');
+    expect(send).toHaveBeenCalledWith('s-1', '先问一句', [], 'workspace', false);
   });
 });
 
@@ -519,6 +525,34 @@ describe('输入区链接芯片', () => {
 
     fireEvent.change(box, { target: { value: '没有链接了' } });
     expect(document.querySelector('.link-row')).toBeNull();
+  });
+});
+
+describe('联网搜索开关', () => {
+  it('默认关闭，点开后随本轮请求带上 web_search', () => {
+    render(tab());
+    const toggle = screen.getByRole('button', { name: '联网搜索' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.change(screen.getByRole('textbox', { name: '用户输入' }), {
+      target: { value: '查下最新版本' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    expect(send).toHaveBeenCalledWith('s-1', '查下最新版本', [], 'workspace', true);
+  });
+
+  it('默认发送时不带搜索开关', () => {
+    render(tab());
+    fireEvent.change(screen.getByRole('textbox', { name: '用户输入' }), {
+      target: { value: '解释下这段代码' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    expect(send).toHaveBeenCalledWith('s-1', '解释下这段代码', [], 'workspace', false);
   });
 });
 

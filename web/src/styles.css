@@ -2927,6 +2927,39 @@ a:hover {
   background: var(--surface-hover);
 }
 
+/* ---- 联网搜索开关 ----
+ * 参考 DeepSeek 的图标开关：默认只有灰边框，开启后用交互蓝弱底标出来。
+ * 逐轮生效，不写进会话配置，避免「开过一次以后每轮都在计费」。 */
+.search-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: var(--sp-2);
+  align-items: center;
+  height: var(--control-md);
+  padding: 0 var(--sp-3);
+  font-size: 11px;
+  color: var(--ink-muted);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  transition: color var(--dur-fast) ease, background var(--dur-fast) ease,
+    border-color var(--dur-fast) ease;
+}
+.search-toggle:hover {
+  color: var(--accent-ink);
+  background: var(--surface-hover);
+}
+.search-toggle.is-on {
+  color: var(--accent-ink);
+  background: var(--accent-faint);
+  border-color: var(--accent-soft);
+}
+.search-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 /* ---- 链接：输入框上方的可点芯片 ----
  * 只做「我认出这些链接了」的提示，点击在新窗口打开原文；
  * 用交互蓝的弱底区分于附件芯片，GitHub 仓库额外带图标。 */

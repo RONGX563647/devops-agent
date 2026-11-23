@@ -44,7 +44,9 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _registry(calls: list[tuple[str, str, str | None]], **kwargs: Any) -> SessionRegistry:
-    def factory(session_id: str, profile: Any, state_json: str | None) -> FakeRuntime:
+    def factory(
+        session_id: str, profile: Any, state_json: str | None, web_search: bool = False
+    ) -> FakeRuntime:
         calls.append((session_id, profile.key, state_json))
         saved = json.loads(state_json)["state"] if state_json else ""
         return FakeRuntime(saved)
@@ -79,6 +81,28 @@ def test_switching_profile_rebuilds_and_persists_state(db: Path) -> None:
     # 状态先落库，再用新档位重建：切档不该丢历史
     assert calls[-1][1] == "unrestricted"
     assert json.loads(str(calls[-1][2]))["state"] == "前半段"
+
+
+def test_switching_web_search_rebuilds_but_confirm_reuses(db: Path) -> None:
+    """联网开关变了要重建；确认请求不带开关（None）时必须沿用现有实例。"""
+    seen: list[bool] = []
+
+    def factory(
+        session_id: str, profile: Any, state_json: str | None, web_search: bool = False
+    ) -> FakeRuntime:
+        seen.append(web_search)
+        return FakeRuntime("")
+
+    registry = SessionRegistry(factory, db_path=db)
+    off = registry.acquire("s1", PROFILES["workspace"], False)
+    assert registry.acquire("s1", PROFILES["workspace"], False) is off
+
+    on = registry.acquire("s1", PROFILES["workspace"], True)
+    assert on is not off
+    assert seen == [False, True]
+
+    # 续跑/确认没带 web_search：沿用挂起中的实例，绝不重建
+    assert registry.acquire("s1", PROFILES["workspace"]) is on
 
 
 def test_acquire_restores_snapshot_from_db(db: Path) -> None:

@@ -98,6 +98,17 @@ def test_build_chat_model_search_enabled(monkeypatch: pytest.MonkeyPatch) -> Non
     assert build_chat_model().extra_body == {"enable_search": True}
 
 
+def test_build_chat_model_request_flag_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """逐请求开关优先于环境变量：前端「联网」按钮不必重启进程。"""
+    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
+    monkeypatch.delenv("DEVOPS_AGENT_ENABLE_SEARCH", raising=False)
+
+    assert build_chat_model(enable_search=True).extra_body == {"enable_search": True}
+    assert build_chat_model(enable_search=False).extra_body is None
+
+
 def test_build_agent_reads_policy_defaults() -> None:
     policy = RuntimePolicy(
         react=ReactPolicy(default=7, delivery=9),

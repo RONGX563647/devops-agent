@@ -211,6 +211,8 @@ function AssistantMessage({
 export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
   const view = useSession(session);
   const [input, setInput] = useState('');
+  // 联网搜索：跟 DeepSeek 一样做成输入框下方的显式开关，默认关，逐轮生效
+  const [webSearch, setWebSearch] = useState(false);
   const [files, setFiles] = useState<PendingAttachment[]>([]);
   const [activeId, setActiveId] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -282,7 +284,7 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
     // 只挂附件、不写字也是合法的一轮：这时候问题就是「看看这个文件」
     if ((!value && attachments.length === 0) || view.running || view.awaiting) return;
     onFirstSend?.();
-    send(session, value, attachments, view.permission);
+    send(session, value, attachments, view.permission, webSearch);
   }
 
   /** 确认卡片的三选一：全部待确认调用一起答复。 */
@@ -512,6 +514,18 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
               onChange={changePermission}
               disabled={view.running}
             />
+            <button
+              type="button"
+              className={`search-toggle${webSearch ? ' is-on' : ''}`}
+              aria-pressed={webSearch}
+              aria-label="联网搜索"
+              title="联网搜索：由模型判断是否需要检索；开启后可能产生额外费用"
+              onClick={() => setWebSearch((value) => !value)}
+              disabled={view.running}
+            >
+              <GlobeIcon />
+              <span>联网</span>
+            </button>
             <input
               ref={fileInputRef}
               type="file"

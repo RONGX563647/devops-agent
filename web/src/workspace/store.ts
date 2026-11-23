@@ -264,6 +264,7 @@ export function send(
   text: string,
   attachments: Attachment[] = [],
   permission?: PermissionKey,
+  webSearch = false,
 ): void {
   if (!sessionId) return;
   const entry = ensureEntry(sessionId);
@@ -333,6 +334,7 @@ export function send(
     newId('req'),
     files.map((item) => item.id),
     entry.permission,
+    webSearch,
   )
     .then(() => {
       if (generation !== entry.generation) return;

@@ -72,6 +72,19 @@ describe('StepRow', () => {
     expect(screen.getByText('执行中')).toBeTruthy();
   });
 
+  it('控制类运行中按「等人」语义呈现，结束后退回成功态', () => {
+    const { container, rerender } = render(
+      <StepRow step={step({ kind: 'control', label: '等待用户确认', detail: '', state: 'running' })} />,
+    );
+    expect(container.querySelector('.step-line.warn')).not.toBeNull();
+
+    rerender(
+      <StepRow step={step({ kind: 'control', label: '用户已确认', detail: '', state: 'success' })} />,
+    );
+    expect(container.querySelector('.step-line.warn')).toBeNull();
+    expect(container.querySelector('.step-line.success')).not.toBeNull();
+  });
+
   it('正文步骤只标记，不重复贴全文', () => {
     const { container } = render(
       <StepRow step={step({ kind: 'text', label: '正文输出', detail: '这是一整段正文' })} />,

@@ -491,4 +491,35 @@ describe('ChatTab 附件', () => {
   });
 });
 
+describe('输入区链接芯片', () => {
+  it('输入里的链接实时渲染成可点芯片，GitHub 仓库带图标', () => {
+    render(tab());
+    fireEvent.change(screen.getByRole('textbox', { name: '用户输入' }), {
+      target: {
+        value: '看看 https://github.com/RONGX563647/devops-agent 和 https://example.com/docs?x=1。',
+      },
+    });
+
+    const github = screen.getByRole('link', { name: 'RONGX563647/devops-agent' });
+    expect(github.getAttribute('href')).toBe('https://github.com/RONGX563647/devops-agent');
+    expect(github.getAttribute('target')).toBe('_blank');
+    expect(github.getAttribute('rel')).toBe('noreferrer noopener');
+    expect(github.className).toContain('is-github');
+
+    const web = screen.getByRole('link', { name: 'example.com/docs' });
+    expect(web.getAttribute('href')).toBe('https://example.com/docs?x=1');
+    expect(web.className).not.toContain('is-github');
+  });
+
+  it('清空输入后芯片随之消失', () => {
+    render(tab());
+    const box = screen.getByRole('textbox', { name: '用户输入' });
+    fireEvent.change(box, { target: { value: 'https://example.com' } });
+    expect(screen.getByRole('link', { name: 'example.com' })).toBeTruthy();
+
+    fireEvent.change(box, { target: { value: '没有链接了' } });
+    expect(document.querySelector('.link-row')).toBeNull();
+  });
+});
+
 afterEach(cleanup);

@@ -76,10 +76,11 @@ const TWO_TURNS = conversation([
 function renderList(overrides: Partial<React.ComponentProps<typeof TraceList>> = {}) {
   const props = {
     turns: turnsFromMessages(TWO_TURNS),
-    mode: 'time' as const,
+    mode: 'turn' as const,
     query: '',
     activeStepId: null,
     activeTurnId: null,
+    context: null,
     onSelectStep: vi.fn(),
     onSelectTurn: vi.fn(),
     ...overrides,
@@ -107,11 +108,11 @@ describe('TraceList', () => {
     expect(container.querySelector('mark')?.textContent).toBe('FAIL');
   });
 
-  it('轮次模式默认折叠除最后一轮之外的轮次，点开才展开', () => {
+  it('轮次默认展开，点标题收起整轮', () => {
     renderList({ mode: 'turn' });
-    expect(screen.queryByText(/command: ls -la/)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /第 1 轮/ }));
     expect(screen.getByText(/command: ls -la/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /第 1 轮/ }));
+    expect(screen.queryByText(/command: ls -la/)).toBeNull();
   });
 
   it('调用模式按工具聚合次数与总耗时', () => {
@@ -140,26 +141,77 @@ describe('TraceList', () => {
     expect(screen.getAllByText(/问题 1/).length).toBeGreaterThan(0);
   });
 
-  it('每一步都能就地展开原文，再点收起', () => {
+  it('每一步默认展开原文，点整行收起', () => {
     const { container } = renderList();
-    // 默认收起：只有行内摘要，没有原文块
-    expect(container.querySelector('.trace-detail')).toBeNull();
+    const details = container.querySelectorAll('.trace-detail');
+    expect(details.length).toBeGreaterThan(0);
+    expect(container.textContent).toContain('"command": "ls -la"');
 
-    const toggles = screen.getAllByRole('button', { name: /展开 Bash 原文/ });
-    fireEvent.click(toggles[0]);
-    const detail = container.querySelector('.trace-detail');
-    expect(detail?.textContent).toContain('"command": "ls -la"');
-    expect(detail?.textContent).toContain('a.txt');
-
-    fireEvent.click(screen.getByRole('button', { name: /收起 Bash 原文/ }));
-    expect(container.querySelector('.trace-detail')).toBeNull();
+    // 点整行：收起这一步的原文
+    fireEvent.click(screen.getByText(/command: ls -la/));
+    expect(container.querySelectorAll('.trace-detail').length).toBe(details.length - 1);
   });
 
-  it('展开不改变选中，选中也不抢展开', () => {
+  it('点整行同时选中并收起', () => {
     const { props } = renderList();
-    fireEvent.click(screen.getAllByRole('button', { name: /展开 Edit 原文/ })[0]);
-    expect(props.onSelectStep).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText(/command: ls -la/));
     expect(props.onSelectStep).toHaveBeenCalledTimes(1);
+  });
+
+  it('轮次头部标出缓存命中率，没有缓存字段就不显示', () => {
+    const withCache: ChatMessage[] = [
+      { id: 'u1', role: 'user', text: '跑一下', at: '2026-11-23T10:00:00.000Z', steps: [] },
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '好了。',
+        at: '2026-11-23T10:00:00.000Z',
+        endedAt: '2026-11-23T10:00:10.000Z',
+        inputTokens: 1_000,
+        outputTokens: 100,
+        cacheInputTokens: 790,
+        steps: [tool({ id: 't9', toolName: 'Bash', at: '2026-11-23T10:00:01.000Z' })],
+      },
+    ];
+    renderList({ turns: turnsFromMessages(withCache) });
+    expect(screen.getByText('· 缓存 79%')).toBeTruthy();
+
+    cleanup();
+    renderList({
+      turns: turnsFromMessages(
+        conversation([
+          { question: '再跑一下', at: '2026-11-23T10:01:00.000Z', steps: [tool({ id: 't10' })] },
+        ]),
+      ),
+    });
+    expect(screen.queryByText(/缓存 \d+%/)).toBeNull();
+  });
+
+  it('时长视图按耗时降序，并标出每一步属于第几轮', () => {
+    const { container } = renderList({ mode: 'time' });
+    const rows = Array.from(container.querySelectorAll('.trace-step'));
+    const durations = rows.map((row) => row.querySelector('.trace-dur')?.textContent ?? '');
+    // 2.0s 的 Bash 在 1.0s 的 Edit / npm test 之前
+    expect(durations[0]).toBe('2.0s');
+    expect(container.textContent).toContain('第 2 轮');
+    expect(container.textContent).toContain('按耗时降序');
+  });
+
+  it('每轮第 0 步给出上下文：默认收起，点开看系统提示词与工具', () => {
+    const { container } = renderList({
+      context: {
+        system_prompt: '你是 DevOps 助手。',
+        system_prompt_chars: 10,
+        tools: [{ name: 'Bash', description: '执行命令' }],
+        workdir: '/workspace',
+      },
+    });
+    const ctx = container.querySelector('.trace-step[data-kind="context"]');
+    expect(ctx?.textContent).toContain('上下文');
+    expect(ctx?.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(ctx!);
+    expect(container.textContent).toContain('你是 DevOps 助手。');
+    expect(container.textContent).toContain('系统提示词');
   });
 });

@@ -2209,15 +2209,15 @@ a:hover {
 
 /* ---- 步骤行：一行读完「谁、做什么、拿到什么、多久」 ---- */
 .trace-steps {
-  padding: 2px 0;
+  padding: 4px 0 6px;
 }
 .trace-step {
   display: grid;
   width: 100%;
-  grid-template-columns: 20px 32px minmax(0, 1fr) 52px 8px;
-  gap: 6px;
+  grid-template-columns: 20px 32px minmax(0, 1fr) auto 52px 8px 12px;
+  gap: 8px;
   align-items: center;
-  padding: 5px 10px;
+  padding: 8px 12px;
   border: 0;
   border-left: 2px solid transparent;
   background: transparent;
@@ -2235,41 +2235,38 @@ a:hover {
 .trace-step-wrap {
   position: relative;
 }
-.trace-step-wrap > .trace-step {
-  padding-right: 26px;
-}
-.trace-expand {
-  position: absolute;
-  top: 50%;
-  right: 4px;
-  display: grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  transform: translateY(-50%);
-  border: 0;
-  border-radius: var(--radius-xs);
-  background: transparent;
-  color: var(--ink-muted);
-  cursor: pointer;
-  transition: background 120ms ease, color 120ms ease;
-}
-.trace-expand:hover {
-  background: var(--surface-active);
-  color: var(--ink);
-}
-.trace-expand[aria-expanded='true'] {
-  color: var(--ink);
+.trace-step[aria-expanded='true'] .trace-caret {
+  color: var(--ink-soft);
 }
 .trace-caret {
   display: inline-block;
-  font-size: 13px;
+  color: var(--ink-faint);
+  font-size: 12px;
   line-height: 1;
+  text-align: center;
+}
+/* 平铺视图里标出这一步属于第几轮 */
+.trace-turn-tag {
+  flex: none;
+  padding: 0 4px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-active);
+  color: var(--ink-muted);
+  font-size: 10px;
+}
+/* 模型步骤的缓存命中率：有数字才出现，不占没有缓存的行 */
+.trace-cache {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--ok-soft);
+  color: var(--ok-ink, #2f6b4f);
+  font-size: 10px;
+  white-space: nowrap;
 }
 .trace-detail {
-  margin: 0 10px 6px 42px;
-  padding: 6px 8px;
+  margin: 2px 12px 8px 46px;
+  padding: 8px 10px;
   border-left: 2px solid var(--line);
   border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
   background: var(--surface-muted);
@@ -2297,6 +2294,32 @@ a:hover {
   margin: 0;
   color: var(--ink-faint);
   font-size: var(--text-2xs);
+}
+/* 当前维度的一句话说明：按钮点了到底换了什么，写在这里 */
+.trace-caption {
+  margin: 4px 12px 8px;
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+.trace-badge[data-kind='context'] {
+  background: var(--surface-active);
+  color: var(--ink-muted);
+}
+.trace-context-body {
+  border-left-color: var(--line-soft);
+}
+.trace-context-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.trace-context-tools code {
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
 }
 .trace-idx {
   color: var(--ink-faint);

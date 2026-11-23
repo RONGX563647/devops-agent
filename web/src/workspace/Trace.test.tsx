@@ -2,7 +2,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchInputStages, fetchRun, fetchRunHealth, fetchRuns, fetchSpans } from '../api/client';
+import {
+  fetchContext,
+  fetchInputStages,
+  fetchRun,
+  fetchRunHealth,
+  fetchRuns,
+  fetchSpans,
+  fetchToolSchemas,
+} from '../api/client';
 import type { Attachment, ChatMessage, InputStage, ParseStage, Run, RunHealth, Span } from '../types';
 import { clearAllHistory, saveMessages } from './history';
 import { RunTrace } from './RunTrace';
@@ -15,6 +23,8 @@ vi.mock('../api/client', () => ({
   fetchRunHealth: vi.fn(),
   fetchRuns: vi.fn(),
   fetchInputStages: vi.fn(),
+  fetchContext: vi.fn(),
+  fetchToolSchemas: vi.fn(),
 }));
 
 function makeRun(id: number, sessionId: string): Run {
@@ -97,6 +107,13 @@ beforeEach(() => {
   vi.mocked(fetchSpans).mockResolvedValue([span]);
   vi.mocked(fetchRunHealth).mockResolvedValue(health);
   vi.mocked(fetchInputStages).mockResolvedValue(persisted);
+  vi.mocked(fetchToolSchemas).mockResolvedValue([]);
+  vi.mocked(fetchContext).mockResolvedValue({
+    system_prompt: '你是 DevOps 助手。',
+    system_prompt_chars: 12,
+    tools: [{ name: 'Bash', description: '执行命令' }],
+    workdir: '/workspace',
+  });
   vi.mocked(fetchRuns).mockResolvedValue({
     items: [makeRun(7, 's-one'), makeRun(8, 's-two')],
     total: 2,
@@ -178,6 +195,8 @@ describe('TraceTab', () => {
     wrap(<TraceTab session="s-two" />);
 
     expect(await screen.findByRole('heading', { name: '会话轨迹' })).toBeTruthy();
+    // 轮次视图里才有「第 N 轮 · 用户问题」这一行
+    fireEvent.click(screen.getByRole('tab', { name: '轮次' }));
     // 轮次分隔 + 步骤行：入参摘要直接出现在行里，不用点开
     expect(screen.getAllByText(/为什么部署失败/).length).toBeGreaterThan(0);
     const rows = await screen.findAllByRole('button', { name: /bash/ });
@@ -279,6 +298,8 @@ describe('TraceTab', () => {
     ]);
     wrap(<TraceTab session="s-attach" />);
 
+    // 附件数标在轮次头部，只有轮次视图才有
+    fireEvent.click(await screen.findByRole('tab', { name: '轮次' }));
     expect(await screen.findByText(/1 附件/)).toBeTruthy();
   });
 });

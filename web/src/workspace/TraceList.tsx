@@ -3,6 +3,7 @@
  * 三种排布对应顶部切换：按时长（按发生顺序）、按轮次（可折叠）、按调用（工具聚合）。
  */
 import { useState } from 'react';
+import type { AgentContext } from '../api/client';
 import type { TraceStep, TraceTurn } from '../types';
 import { formatDuration } from './time';
 
@@ -14,9 +15,16 @@ interface Props {
   query: string;
   activeStepId: string | null;
   activeTurnId: string | null;
+  context: AgentContext | null;
   onSelectStep: (step: TraceStep) => void;
   onSelectTurn: (turn: TraceTurn) => void;
 }
+
+const CAPTIONS: Record<TraceMode, string> = {
+  time: '按耗时降序：全局最慢的步骤排最前，右侧标出它属于第几轮',
+  turn: '按对话轮次分组：点轮次标题折叠整轮，点任一步骤行收起或展开原文',
+  call: '按工具聚合：被调用几次、合计多久、最慢一条',
+};
 
 const BADGE: Record<TraceStep['kind'], string> = {
   tool: '工具',
@@ -123,11 +131,79 @@ function expandable(step: TraceStep): boolean {
   return step.kind === 'text' && (step.text ?? '').length > 100;
 }
 
+/** 模型这一步的缓存命中率：缓存令牌 ÷ 入参令牌。没有字段时返回 null，不编数。 */
+function cacheRate(step: TraceStep): number | null {
+  if (!step.cacheTokens || !step.tokensIn) return null;
+  return Math.round((step.cacheTokens / step.tokensIn) * 100);
+}
+
+/** 每轮第 0 步：模型动手前手里有什么——系统提示词、工具清单、用户这条输入。 */
+function ContextRow({ turn, context }: { turn: TraceTurn; context: AgentContext | null }) {
+  const [open, setOpen] = useState(false);
+  const files = turn.attachments ?? turn.parse?.attachments ?? 0;
+  const tools = context?.tools ?? [];
+  const prompt = context?.system_prompt ?? '';
+  const chars = context?.system_prompt_chars ?? prompt.length;
+  return (
+    <>
+      <div className="trace-step-wrap">
+        <button
+          type="button"
+          className="trace-step"
+          data-kind="context"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <span className="trace-idx mono">00</span>
+          <span className="trace-badge" data-kind="context">上下文</span>
+          <span className="trace-main">
+            <span className="trace-summary mono">
+              系统提示 {chars} 字 · 工具 {tools.length || turn.tools} 个 · 输入{' '}
+              {(turn.userText ?? '').length} 字{files ? ` · 附件 ${files}` : ''}
+            </span>
+          </span>
+          <span className="trace-dur mono">—</span>
+          <span className="trace-dot" aria-hidden="true" />
+          <span className="trace-caret" aria-hidden="true">{open ? '⌄' : '›'}</span>
+        </button>
+      </div>
+      {open && (
+        <div className="trace-detail trace-context-body">
+          <div className="trace-detail-block">
+            <span className="trace-detail-label">用户输入</span>
+            <pre className="trace-detail-code mono">
+              {turn.userText || '（空输入）'}
+              {files ? `\n\n附件 ${files} 个` : ''}
+            </pre>
+          </div>
+          <div className="trace-detail-block">
+            <span className="trace-detail-label">系统提示词</span>
+            <pre className="trace-detail-code mono">{prompt || '上下文接口不可用，读不到系统提示词。'}</pre>
+          </div>
+          <div className="trace-detail-block">
+            <span className="trace-detail-label">工具</span>
+            {tools.length > 0 ? (
+              <div className="trace-context-tools">
+                {tools.map((tool) => (
+                  <code key={tool.name} title={tool.description}>{tool.name}</code>
+                ))}
+              </div>
+            ) : (
+              <p className="trace-detail-empty">没有读到工具注册表。</p>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function StepRow({
   step,
   query,
   active,
   expanded,
+  turnIndex,
   onSelect,
   onToggle,
 }: {
@@ -135,6 +211,8 @@ function StepRow({
   query: string;
   active: boolean;
   expanded: boolean;
+  /** 平铺视图里标出这一步属于第几轮；分组视图里用不着。 */
+  turnIndex?: number;
   onSelect: (step: TraceStep) => void;
   onToggle: () => void;
 }) {
@@ -144,7 +222,7 @@ function StepRow({
       : '—';
   const summary = step.argsSummary || step.resultSummary || step.text;
   const canExpand = expandable(step);
-  const label = step.toolName || (GENERIC_TITLES.has(step.title) ? BADGE[step.kind] : step.title);
+  const cache = cacheRate(step);
   return (
     <>
       <div className={`trace-step-wrap${active ? ' active' : ''}`}>
@@ -153,13 +231,21 @@ function StepRow({
           className={`trace-step${active ? ' active' : ''}`}
           data-kind={step.kind}
           aria-current={active ? 'true' : undefined}
-          onClick={() => onSelect(step)}
+          aria-expanded={canExpand ? expanded : undefined}
+          title={canExpand ? (expanded ? '点击收起原文' : '点击展开原文') : undefined}
+          onClick={() => {
+            onSelect(step);
+            if (canExpand) onToggle();
+          }}
         >
           <span className="trace-idx mono">{String(step.index).padStart(2, '0')}</span>
           <span className="trace-badge" data-kind={step.kind}>
             {step.title === '模型输出' ? '输出' : BADGE[step.kind]}
           </span>
           <span className="trace-main">
+            {turnIndex !== undefined && (
+              <span className="trace-turn-tag mono">第 {turnIndex} 轮</span>
+            )}
             {!GENERIC_TITLES.has(step.title) && (
               <span className="trace-title mono">{step.toolName || step.title}</span>
             )}
@@ -175,26 +261,22 @@ function StepRow({
               </span>
             )}
           </span>
+          {cache !== null && (
+            <span className="trace-cache" title="缓存命中：缓存令牌 ÷ 入参令牌">
+              缓存 {cache}%
+            </span>
+          )}
           <span className="trace-dur mono" title={step.measured ? '事件时间戳' : '按相邻步骤估算'}>
             {duration}
           </span>
           <span className={`trace-dot ${step.status ?? 'success'}`} aria-hidden="true" />
+          <span className="trace-caret" aria-hidden="true">
+            {canExpand ? (expanded ? '⌄' : '›') : ''}
+          </span>
         </button>
-        {canExpand && (
-          <button
-            type="button"
-            className="trace-expand"
-            aria-expanded={expanded}
-            aria-label={`${expanded ? '收起' : '展开'} ${label} 原文`}
-            title={expanded ? '收起原文' : '展开原文'}
-            onClick={onToggle}
-          >
-            <span className="trace-caret" aria-hidden="true">{expanded ? '⌄' : '›'}</span>
-          </button>
-        )}
       </div>
       {step.diff && <Diff step={step} />}
-      {expanded && <StepDetail step={step} />}
+      {canExpand && expanded && <StepDetail step={step} />}
     </>
   );
 }
@@ -215,6 +297,11 @@ function TurnHeader({
   const duration = formatDuration(turn.endedAt - turn.startedAt);
   // 附件数取用户实际挂上的文件数；历史回放没有消息级附件时回落到解析阶段读到的份数
   const files = turn.attachments ?? turn.parse?.attachments ?? 0;
+  // 这一轮模型的缓存命中率：缓存令牌 ÷ 入参令牌，没有字段就不显示
+  const cachePct =
+    turn.tokens.in > 0 && turn.tokens.cache > 0
+      ? Math.round((turn.tokens.cache / turn.tokens.in) * 100)
+      : null;
   return (
     <div className={`trace-turn-head${active ? ' active' : ''}`}>
       <button type="button" className="trace-turn-toggle" aria-expanded={!collapsed} onClick={onToggle}>
@@ -229,6 +316,7 @@ function TurnHeader({
       <button type="button" className="trace-turn-meta mono" onClick={onSelect}>
         {turn.steps} 步 · {turn.tools} 工具 · {duration}
         {turn.errorCount > 0 && <span className="trace-turn-fail"> · {turn.errorCount} 异常</span>}
+        {cachePct !== null && <span className="trace-turn-cache"> · 缓存 {cachePct}%</span>}
         {files ? <span> · {files} 附件</span> : null}
         {turn.parse?.refs ? <span> · {turn.parse.refs} 引用</span> : null}
         {turn.repeatOf && <span className="trace-turn-repeat"> · 同第 {turn.repeatOf} 轮</span>}
@@ -302,6 +390,7 @@ export function TraceList({
   query,
   activeStepId,
   activeTurnId,
+  context,
   onSelectStep,
   onSelectTurn,
 }: Props) {
@@ -309,14 +398,60 @@ export function TraceList({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [visibleTurns, setVisibleTurns] = useState(5);
 
+  /** 默认展开：进来就能读到参数与返回，点整行收起。 */
+  const isOpen = (id: string) => expanded[id] ?? true;
+  const toggle = (id: string) =>
+    setExpanded((prev) => ({ ...prev, [id]: !(prev[id] ?? true) }));
+
+  if (turns.length === 0) {
+    return <p className="trace-empty">该会话还没有可展示的轨迹，去对话里发一条消息。</p>;
+  }
+
   if (mode === 'call') {
     return (
-      <CallRows
-        turns={turns}
-        query={query}
-        activeStepId={activeStepId}
-        onSelect={onSelectStep}
-      />
+      <>
+        <p className="trace-caption">{CAPTIONS.call}</p>
+        <CallRows
+          turns={turns}
+          query={query}
+          activeStepId={activeStepId}
+          onSelect={onSelectStep}
+        />
+      </>
+    );
+  }
+
+  // 时长视图：全局按耗时降序，回答「最慢的是哪一步」，不再按轮分组
+  if (mode === 'time') {
+    const rows = turns
+      .flatMap((turn) =>
+        turn.items
+          .filter((step) => matchesStep(step, query))
+          .map((step) => ({ step, turnIndex: turn.index })),
+      )
+      .sort((a, b) => b.step.durationMs - a.step.durationMs);
+    return (
+      <div className="trace-list">
+        <p className="trace-caption">{CAPTIONS.time}</p>
+        {rows.length === 0 ? (
+          <p className="trace-empty">没有匹配「{query}」的步骤。</p>
+        ) : (
+          <div className="trace-steps">
+            {rows.map(({ step, turnIndex }) => (
+              <StepRow
+                key={step.id}
+                step={step}
+                turnIndex={turnIndex}
+                query={query}
+                active={step.id === activeStepId}
+                expanded={isOpen(step.id)}
+                onSelect={onSelectStep}
+                onToggle={() => toggle(step.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     );
   }
 
@@ -324,12 +459,9 @@ export function TraceList({
   const shown = searching ? turns : turns.slice(-visibleTurns);
   const hidden = turns.length - shown.length;
 
-  if (turns.length === 0) {
-    return <p className="trace-empty">该会话还没有可展示的轨迹，去对话里发一条消息。</p>;
-  }
-
   return (
     <div className="trace-list">
+      <p className="trace-caption">{CAPTIONS.turn}</p>
       {hidden > 0 && (
         <button
           type="button"
@@ -340,7 +472,7 @@ export function TraceList({
         </button>
       )}
       {shown.map((turn) => {
-        const collapsed = overrides[turn.id] ?? (mode === 'turn' && turn.index !== turns.length);
+        const collapsed = overrides[turn.id] ?? false;
         const items = turn.items.filter((step) => matchesStep(step, query));
         return (
           <section className="trace-turn" key={turn.id} data-turn={turn.index}>
@@ -351,28 +483,28 @@ export function TraceList({
               onToggle={() => setOverrides((prev) => ({ ...prev, [turn.id]: !collapsed }))}
               onSelect={() => onSelectTurn(turn)}
             />
-            {!collapsed &&
-              (items.length === 0 ? (
-                <p className="trace-empty">
-                  {turn.items.length === 0 ? '这一轮还没有过程步骤。' : `没有匹配「${query}」的步骤。`}
-                </p>
-              ) : (
-                <div className="trace-steps">
-                  {items.map((step) => (
+            {!collapsed && (
+              <div className="trace-steps">
+                <ContextRow turn={turn} context={context} />
+                {items.length === 0 ? (
+                  <p className="trace-empty">
+                    {turn.items.length === 0 ? '这一轮还没有过程步骤。' : `没有匹配「${query}」的步骤。`}
+                  </p>
+                ) : (
+                  items.map((step) => (
                     <StepRow
                       key={step.id}
                       step={step}
                       query={query}
                       active={step.id === activeStepId}
-                      expanded={Boolean(expanded[step.id])}
+                      expanded={isOpen(step.id)}
                       onSelect={onSelectStep}
-                      onToggle={() =>
-                        setExpanded((prev) => ({ ...prev, [step.id]: !prev[step.id] }))
-                      }
+                      onToggle={() => toggle(step.id)}
                     />
-                  ))}
-                </div>
-              ))}
+                  ))
+                )}
+              </div>
+            )}
           </section>
         );
       })}

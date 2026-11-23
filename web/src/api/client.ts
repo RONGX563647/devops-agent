@@ -106,6 +106,18 @@ export function fetchToolSchemas(): Promise<ToolSchema[]> {
   return getJson<ToolSchema[]>('/api/tools/schema');
 }
 
+/** 本轮对话动手前手里有的东西：系统提示词、工具清单、工作目录。 */
+export interface AgentContext {
+  system_prompt: string;
+  system_prompt_chars: number;
+  tools: { name: string; description: string }[];
+  workdir: string;
+}
+
+export function fetchContext(): Promise<AgentContext> {
+  return getJson<AgentContext>('/api/context');
+}
+
 export async function postFeedback(
   runId: number,
   score: number,

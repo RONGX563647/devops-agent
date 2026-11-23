@@ -5,7 +5,7 @@
  */
 import { useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { fetchRuns } from '../api/client';
+import { fetchContext, fetchRuns } from '../api/client';
 import { StatusBadge } from '../components/StatusBadge';
 import type { Run, TraceStep, TraceTurn } from '../types';
 import { RunTrace } from './RunTrace';
@@ -22,9 +22,16 @@ interface Props {
   onAsk?: (text: string) => void;
 }
 
+const MODE_HINTS: Record<TraceMode, string> = {
+  time: '按耗时降序，最慢的排最前',
+  turn: '按轮次分组，点标题折叠整轮',
+  call: '按工具聚合，看谁被喊得最多',
+};
+
+// 轮次视图是默认入口：能一眼看到每轮装了什么上下文、跑了哪些步
 const MODES: { key: TraceMode; label: string }[] = [
-  { key: 'time', label: '时长' },
   { key: 'turn', label: '轮次' },
+  { key: 'time', label: '时长' },
   { key: 'call', label: '调用' },
 ];
 
@@ -123,13 +130,20 @@ function SessionTrace({
 }) {
   const view = useSession(session);
   const [mode, setMode] = useState<'trace' | 'runs'>('trace');
-  const [layout, setLayout] = useState<TraceMode>('time');
+  const [layout, setLayout] = useState<TraceMode>('turn');
   const [query, setQuery] = useState('');
   const [ask, setAsk] = useState('');
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
+  // 第 0 步要展示的系统提示词与工具清单来自后端装配区，读不到就显示为空而不编造
+  const context = useQuery({
+    queryKey: ['agent-context'],
+    queryFn: fetchContext,
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
   const turns = useMemo(() => turnsFromMessages(view.messages), [view.messages]);
   const lanes = useMemo(() => buildLanes(turns), [turns]);
   const stats = useMemo(() => traceStats(turns, lanes), [turns, lanes]);
@@ -207,6 +221,7 @@ function SessionTrace({
                   role="tab"
                   aria-selected={layout === item.key}
                   className={layout === item.key ? 'active' : ''}
+                  title={MODE_HINTS[item.key]}
                   onClick={() => setLayout(item.key)}
                 >
                   {item.label}
@@ -238,6 +253,7 @@ function SessionTrace({
                 query={query}
                 activeStepId={activeStepId}
                 activeTurnId={activeTurn?.id ?? null}
+                context={context.data ?? null}
                 onSelectStep={(step) => setSelectedStepId(step.id)}
                 onSelectTurn={(turn) => setSelectedTurnId(turn.id)}
               />

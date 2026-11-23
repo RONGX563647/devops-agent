@@ -77,6 +77,9 @@ async def run_stream(
     recorder = RunRecorder(domain=domain, model=model, request_id=x_request_id or "")
 
     async def generate() -> AsyncIterator[str]:
+        # 首帧注释心跳：模型首 token 常需 2~3 秒，先让代理与浏览器确认流已建立，
+        # 避免这段推理空窗被当成空闲连接断开（SSE 注释帧前端会忽略）。
+        yield ": ping\n\n"
         recorder.start(req.session_id, req.user_input)
         try:
             async for event in runtime.stream(req.session_id, req.user_input):
@@ -98,4 +101,17 @@ async def run_stream(
         }
         yield f"event: done\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    # 三个响应头都是流式能被"真的是流"看到的前提：
+    # - no-cache：避免中间层缓存整段响应
+    # - keep-alive：保持长连接，别在帧间隙被关闭
+    # - X-Accel-Buffering: no：关闭 nginx 等反向代理的响应缓冲，
+    #   否则代理会把整段流攒到结束才下发，前端又变回一次性渲染
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

@@ -85,8 +85,10 @@ def build_chat_model() -> OpenAIChatModel:
         raise RuntimeError(f"缺少环境变量: {', '.join(missing)}")
     assert api_key is not None and base_url is not None and model_name is not None
     credential = OpenAICredential(api_key=SecretStr(api_key), base_url=base_url)
-    # stream=False：网关一次性拿完整回复，简化异常与文本提取路径
-    return OpenAIChatModel(credential=credential, model=model_name, stream=False)
+    # stream=True（框架默认值，显式写出以固定契约）：模型边生成边返回 chunk，
+    # AgentScope 才会逐块发出 TEXT_BLOCK_DELTA。若关闭，整段文本会作为单个 delta
+    # 在回复结束时瞬间补发 —— 前端表现为「一次性渲染」，实测 SET 到 DELTA 仅差 0.07ms。
+    return OpenAIChatModel(credential=credential, model=model_name, stream=True)
 
 
 def text_from_msg(msg: Msg) -> str:

@@ -2,6 +2,7 @@
 
 import type {
   EvalTrends,
+  InputStage,
   Run,
   RunHealth,
   RunList,
@@ -41,6 +42,10 @@ export function fetchRun(id: number): Promise<Run> {
 
 export function fetchSpans(id: number): Promise<Span[]> {
   return getJson<Span[]>(`/api/runs/${id}/spans`);
+}
+
+export function fetchInputStages(id: number): Promise<InputStage[]> {
+  return getJson<InputStage[]>(`/api/runs/${id}/input-stages`);
 }
 
 export function fetchRunHealth(id: number): Promise<RunHealth> {

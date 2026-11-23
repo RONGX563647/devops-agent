@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from devops_agent.observability import repository as repo
-from devops_agent.observability.models import RunRecord, SpanRecord
+from devops_agent.observability.models import InputStageRecord, RunRecord, SpanRecord
 
 
 def utc_now() -> str:
@@ -65,6 +65,8 @@ class RunRecorder:
         self._final_text = ""
         self._finished_reason = ""
         self._pending: dict[str, dict[str, object]] = {}
+        # 输入解析阶段在过程中先缓存，finish 时随 run 一起落库（run_id 此时才齐备）
+        self._input_stages: list[InputStageRecord] = []
         self._conn: sqlite3.Connection | None = None
 
     def start(self, session_id: str, user_input: str) -> int:
@@ -110,6 +112,7 @@ class RunRecorder:
         "TEXT_BLOCK_DELTA": "_on_text_delta",
         "EXCEED_MAX_ITERS": "_on_exceed_iters",
         "REPLY_END": "_on_reply_end",
+        "INPUT_PARSE_STAGE": "_on_input_stage",
     }
 
     def consume(self, event: dict[str, object]) -> None:
@@ -182,6 +185,27 @@ class RunRecorder:
     def _on_reply_end(self, event: dict[str, object]) -> None:
         self._finished_reason = str(event.get("finished_reason", "")) or "completed"
 
+    def _on_input_stage(self, event: dict[str, object]) -> None:
+        """缓存一条输入解析阶段；全量保留（含 skip），供事后审计与复现。"""
+        self._input_stages.append(
+            InputStageRecord(
+                id=None,
+                run_id=self._run_id or 0,
+                seq=len(self._input_stages),
+                stage=str(event.get("stage", "")),
+                label=str(event.get("stage_label", "")),
+                status=str(event.get("state", "ok")),
+                changed=bool(event.get("changed", False)),
+                summary=str(event.get("summary", "")),
+                before=_as_int(event.get("before", 0)),
+                after=_as_int(event.get("after", 0)),
+                items=_as_int(event.get("items", 0)),
+                duration_ms=_as_int(event.get("ms", 0)),
+                detail=str(event.get("detail", "")),
+                failed=_as_int(event.get("failed", 0)),
+            )
+        )
+
     def _close_span(
         self,
         key: str,
@@ -231,6 +255,7 @@ class RunRecorder:
             final_status = (
                 "failed" if self._finished_reason in ("error", "exceed_max_iters") else "success"
             )
+        repo.add_input_stages(self._conn, self._run_id, self._input_stages)
         repo.finish_run(
             self._conn,
             self._run_id,

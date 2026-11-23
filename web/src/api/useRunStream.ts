@@ -3,7 +3,7 @@
  * 只保留纯逻辑（可单测），会话生命周期与持久化由 workspace/store 负责。
  */
 
-import type { ProcessEntry, StreamEvent } from '../types';
+import type { ParseStage, ProcessEntry, StreamEvent } from '../types';
 
 export interface StreamState {
   running: boolean;
@@ -57,6 +57,50 @@ function eventAt(event: StreamEvent): string {
 /** 工具步骤以 tool_call_id 为稳定键；缺省才回落到 block_id / reply_id。 */
 function toolStepId(event: StreamEvent): string {
   return `tool:${event.tool_call_id ?? event.block_id ?? event.reply_id ?? 'x'}`;
+}
+
+/** 输入解析按 block_id 归并成一条父步骤，各阶段挂在 parseStages 上。 */
+function parseStepId(event: StreamEvent): string {
+  return `parse:${event.block_id ?? 'input'}`;
+}
+
+/** 事件里的 state 只有 error / skip 需要区分，其余一律按成功处理。 */
+const PARSE_STATUS: Record<string, ParseStage['status']> = { error: 'error', skip: 'skip' };
+/** 阶段里的计数字段，缺省一律 0——统一处理免得逐字段写 ??。 */
+const STAGE_NUMBERS = ['before', 'after', 'items', 'ms', 'failed'] as const;
+
+function toParseStage(event: StreamEvent): ParseStage {
+  const stage = event.stage || 'stage';
+  const parsed: ParseStage = {
+    stage,
+    label: event.stage_label ?? stage,
+    status: PARSE_STATUS[event.state ?? ''] ?? 'ok',
+    summary: event.summary ?? '',
+    detail: event.detail ?? '',
+    changed: event.changed ?? false,
+    before: 0,
+    after: 0,
+    items: 0,
+    ms: 0,
+    failed: 0,
+  };
+  for (const key of STAGE_NUMBERS) {
+    parsed[key] = event[key] ?? 0;
+  }
+  return parsed;
+}
+
+/** 父行摘要只统计真正生效的阶段，避免「6 阶段」里 5 个是无需处理。 */
+export function parseSummary(stages: ParseStage[]): string {
+  const useful = stages.filter((stage) => stage.changed || stage.status === 'error' || stage.failed > 0);
+  const parts = [`${useful.length}/${stages.length} 阶段生效`];
+  const refs = stages.find((stage) => stage.stage === 'detect')?.items ?? 0;
+  const redactions = stages.find((stage) => stage.stage === 'redact')?.items ?? 0;
+  const failed = stages.reduce((sum, stage) => sum + stage.failed, 0);
+  if (refs) parts.push(`${refs} 引用`);
+  if (redactions) parts.push(`${redactions} 脱敏`);
+  if (failed) parts.push(`${failed} 处降级`);
+  return parts.join(' · ');
 }
 
 /** 文本/思考等块级步骤按 block_id 归并。 */
@@ -131,6 +175,56 @@ function finishRunningSteps(steps: ProcessEntry[]): ProcessEntry[] {
 type EventHandler = (state: StreamState, event: StreamEvent) => StreamState;
 
 const HANDLERS: Record<string, EventHandler> = {
+  // 输入解析：先建父行，再逐阶段补明细，END 把总账写进 detail。
+  INPUT_PARSE_START: (s, e) => ({
+    ...s,
+    steps: upsertStep(s.steps, {
+      id: parseStepId(e),
+      kind: 'parse',
+      label: '输入解析',
+      detail: '',
+      state: 'running',
+      at: eventAt(e),
+      parseStages: [],
+    }),
+  }),
+  INPUT_PARSE_STAGE: (s, e) => {
+    const id = parseStepId(e);
+    const stage = toParseStage(e);
+    const found = s.steps.find((item) => item.id === id);
+    // 同一阶段重复到达时覆盖而不是追加，保证 stage 在父行里唯一
+    const stages = [...(found?.parseStages ?? []).filter((item) => item.stage !== stage.stage), stage];
+    return {
+      ...s,
+      steps: upsertStep(s.steps, {
+        id,
+        kind: 'parse',
+        label: '输入解析',
+        detail: parseSummary(stages),
+        state: 'running',
+        at: eventAt(e),
+        parseStages: stages,
+      }),
+    };
+  },
+  INPUT_PARSE_END: (s, e) => {
+    const id = parseStepId(e);
+    const found = s.steps.find((item) => item.id === id);
+    return {
+      ...s,
+      steps: patchStep(
+        s.steps,
+        id,
+        {
+          state: 'success',
+          detail: e.summary ?? found?.detail ?? '',
+          endedAt: e.created_at ?? null,
+        },
+        { kind: 'parse', label: '输入解析', detail: e.summary ?? '', state: 'success', at: eventAt(e) },
+      ),
+    };
+  },
+
   REPLY_START: (s, e) => ({
     ...s,
     startedAt: e.created_at ?? s.startedAt,

@@ -1,6 +1,6 @@
 /** 单次运行的轨迹展示（瀑布图 + 健康分 + 输入输出），供路由详情与轨迹 tab 复用。 */
 import { useQuery } from '@tanstack/react-query';
-import { fetchRun, fetchRunHealth, fetchSpans } from '../api/client';
+import { fetchInputStages, fetchRun, fetchRunHealth, fetchSpans } from '../api/client';
 import { StatusBadge } from '../components/StatusBadge';
 import type { Span } from '../types';
 
@@ -19,6 +19,10 @@ export function RunTrace({ runId, onClose }: Props) {
   const run = useQuery({ queryKey: ['run', runId], queryFn: () => fetchRun(runId) });
   const spans = useQuery({ queryKey: ['spans', runId], queryFn: () => fetchSpans(runId) });
   const health = useQuery({ queryKey: ['run-health', runId], queryFn: () => fetchRunHealth(runId) });
+  const inputStages = useQuery({
+    queryKey: ['input-stages', runId],
+    queryFn: () => fetchInputStages(runId),
+  });
 
   if (run.isLoading) return <p className="subtitle">加载中…</p>;
   if (run.isError || !run.data) return <p className="error">加载失败：run #{runId} 不存在</p>;
@@ -50,6 +54,30 @@ export function RunTrace({ runId, onClose }: Props) {
         </div>
         <div className="io-block"><b>输入</b><pre>{r.input}</pre></div>
         <div className="io-block"><b>输出</b><pre>{r.output || '（空）'}</pre></div>
+      </section>
+
+      <section className="panel">
+        <h2>输入解析链</h2>
+        <p className="hint">
+          数据库完整保留每次解析的全部阶段（含无改动的），这里按执行顺序全量列出，
+          会话轨迹里只展示真正生效的那几条。
+        </p>
+        <div className="parse-stages">
+          {(inputStages.data ?? []).map((stage) => (
+            <div className="parse-stage" data-status={stage.status} key={stage.seq}>
+              <span className="parse-stage-label">{stage.label}</span>
+              <span className="parse-stage-summary mono" title={stage.detail || stage.summary}>
+                {stage.summary}
+              </span>
+              <span className="parse-stage-metric mono">
+                {stage.changed ? `${stage.before} → ${stage.after}` : '无改动'}
+              </span>
+            </div>
+          ))}
+          {(inputStages.data ?? []).length === 0 && (
+            <p className="muted">该运行没有解析记录（可能来自非流式 /run）。</p>
+          )}
+        </div>
       </section>
 
       <section className="panel">

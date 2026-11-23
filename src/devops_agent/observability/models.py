@@ -53,6 +53,30 @@ class SpanRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class InputStageRecord:
+    """输入解析的一个阶段。
+
+    与 SpanRecord 分开存：解析发生在调用 Agent 之前，不是 run 内的一个 span，
+    放进 spans 会把「模型/工具/权限」的语义搞混，也会污染健康分口径。
+    """
+
+    id: int | None
+    run_id: int
+    seq: int
+    stage: str
+    label: str
+    status: str  # ok / skip / error
+    changed: bool
+    summary: str
+    before: int
+    after: int
+    items: int
+    duration_ms: int
+    detail: str
+    failed: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class EvalScoreRecord:
     """一次质量评分（人工或自动）。"""
 

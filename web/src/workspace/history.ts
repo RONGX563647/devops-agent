@@ -36,6 +36,11 @@ export function trimMessages(messages: ChatMessage[]): ChatMessage[] {
       ...step,
       result: step.result ? clip(step.result) : step.result,
       args: step.args ? clip(step.args) : step.args,
+      // 解析阶段的 detail 可能是整份引用清单，同样要压住体积
+      parseStages: step.parseStages?.map((stage) => ({
+        ...stage,
+        detail: clip(stage.detail),
+      })),
     })),
   }));
 }

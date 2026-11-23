@@ -21,13 +21,25 @@ from typing import Any
 
 from agentscope.agent import Agent, ModelConfig, ReActConfig
 from agentscope.credential import OpenAICredential
-from agentscope.event import ConfirmResult, UserConfirmResultEvent
-from agentscope.message import Msg, TextBlock, ToolCallBlock
+from agentscope.event import (
+    ConfirmResult,
+    ExternalExecutionResultEvent,
+    UserConfirmResultEvent,
+    UserInterruptEvent,
+)
+from agentscope.message import (
+    Msg,
+    TextBlock,
+    ToolCallBlock,
+    ToolCallState,
+    ToolResultBlock,
+    ToolResultState,
+)
 from agentscope.middleware import MiddlewareBase
 from agentscope.model import ChatModelBase, OpenAIChatModel
-from agentscope.permission import PermissionBehavior, PermissionMode, PermissionRule
-from agentscope.state import AgentState
-from agentscope.tool import Toolkit
+from agentscope.permission import PermissionBehavior, PermissionRule
+from agentscope.state import AgentState, ToolContext
+from agentscope.tool import AskUserAnswer, AskUserMetadata, AskUserParams, Toolkit
 from pydantic import SecretStr
 
 from devops_agent.config import RuntimePolicy, load_policy
@@ -35,14 +47,20 @@ from devops_agent.governance.policy import build_permission_context
 from devops_agent.governance.profiles import PermissionProfile, default_profile
 from devops_agent.runtime.confirm import (
     ConfirmDecision,
+    ExternalAnswer,
     effective_scope,
     pending_call,
     rule_content_for,
+    validate_answers,
 )
 from devops_agent.runtime.events import event_to_dict
 from devops_agent.runtime.profile_note import ProfileNoteMiddleware
 from devops_agent.secrets.middleware import build_secret_middleware
-from devops_agent.tools.catalog import build_toolkit_for, shell_name
+from devops_agent.tools.catalog import (
+    activated_groups,
+    build_full_toolkit,
+    shell_name,
+)
 
 DEFAULT_SYSTEM_PROMPT = "你是 DevOps 助手，帮助处理持续交付、项目排期与 Bug 定位。"
 
@@ -173,15 +191,22 @@ def build_chat_model(enable_search: bool | None = None) -> OpenAIChatModel:
 
 
 def _state_for(profile: PermissionProfile, state: AgentState | None) -> AgentState:
-    """准备跨轮状态：没有就新建；有但档位变了就重建权限上下文。
+    """准备跨轮状态：没有就新建；权限上下文不一致就重建。
+
+    比较整份 PermissionContext 而不是只比 mode：workspace 与 execute 的
+    mode 都是 accept_edits，只比 mode 会让 execute 的命令白名单丢失。
 
     档位切换必须丢弃旧的 allow_rules —— 那些规则是在另一个信任级别下点
     「本会话允许」攒的，跨档继续生效等于绕过用户这次的选择。
     """
+    desired = build_permission_context(profile=profile)
     if state is None:
-        return AgentState(permission_context=build_permission_context(profile=profile))
-    if state.permission_context.mode != PermissionMode(profile.mode):
-        state.permission_context = build_permission_context(profile=profile)
+        return AgentState(
+            permission_context=desired,
+            tool_context=ToolContext(activated_groups=activated_groups()),
+        )
+    if state.permission_context.model_dump() != desired.model_dump():
+        state.permission_context = desired
     return state
 
 
@@ -221,14 +246,47 @@ class AgentScopeRuntime:
         )
 
     def awaiting_blocks(self) -> list[ToolCallBlock]:
-        """当前仍等待用户确认的 tool_call（权威副本，含原始 input）。"""
+        """当前仍等待外部响应的 tool_call（含 ASK 与 external 两种）。"""
         return list(self._agent.state.get_awaiting_tool_calls(self._agent.name))
 
+    def _blocks_in_state(self, state: ToolCallState) -> list[ToolCallBlock]:
+        return [block for block in self.awaiting_blocks() if block.state == state]
+
+    def confirm_blocks(self) -> list[ToolCallBlock]:
+        """等待用户确认的调用（ASKING）。"""
+        return self._blocks_in_state(ToolCallState.ASKING)
+
+    def external_blocks(self) -> list[ToolCallBlock]:
+        """等待外部执行结果的调用（SUBMITTED，目前只有 AskUser）。"""
+        return self._blocks_in_state(ToolCallState.SUBMITTED)
+
+    def pending_kind(self) -> str | None:
+        """挂起类型：question（AskUser）/ confirm（权限）/ None。"""
+        if self.external_blocks():
+            return "question"
+        if self.confirm_blocks():
+            return "confirm"
+        return None
+
     def pending_calls(self) -> list[dict[str, Any]]:
-        """给前端展示的精简数组（不含可回传的完整块）。"""
+        """给前端展示的精简确认项（不含可回传的完整块）。"""
         return [
-            asdict(pending_call(block.model_dump(mode="json"))) for block in self.awaiting_blocks()
+            asdict(pending_call(block.model_dump(mode="json"))) for block in self.confirm_blocks()
         ]
+
+    def pending_questions(self) -> list[dict[str, Any]]:
+        """把 AskUser 的入参解析成普通 dict，越过框架边界。"""
+        items: list[dict[str, Any]] = []
+        for block in self.external_blocks():
+            params = AskUserParams.model_validate_json(block.input)
+            items.append(
+                {
+                    "tool_call_id": block.id,
+                    "name": block.name,
+                    "questions": [q.model_dump(mode="json") for q in params.questions],
+                }
+            )
+        return items
 
     @staticmethod
     def _rules_for(decision: ConfirmDecision, block: ToolCallBlock) -> list[PermissionRule] | None:
@@ -254,7 +312,7 @@ class AgentScopeRuntime:
         命中的 tool_call 直接从挂起状态里取：客户端只给了 id，
         命令原文与工具名都以服务端这份为准，改不了。
         """
-        blocks = {block.id: block for block in self.awaiting_blocks()}
+        blocks = {block.id: block for block in self.confirm_blocks()}
         results = [
             ConfirmResult(
                 confirmed=decision.confirmed,
@@ -277,6 +335,59 @@ class AgentScopeRuntime:
         async for event in self._agent.reply_stream(self.confirm_event(decisions)):
             yield event_to_dict(event)
 
+    def external_event(self, answers: Sequence[ExternalAnswer]) -> ExternalExecutionResultEvent:
+        """把前端答案组装成框架的 external execution 结果。
+
+        问题原文与工具名都以服务端挂起态为准；客户端只回 tool_call_id 与答案。
+        """
+        blocks = {block.id: block for block in self.external_blocks()}
+        results: list[ToolResultBlock] = []
+        for answer in answers:
+            block = blocks.get(answer.tool_call_id)
+            if block is None:
+                raise ValueError(f"未知的工具调用: {answer.tool_call_id}")
+            params = AskUserParams.model_validate_json(block.input)
+            questions = [q.model_dump(mode="json") for q in params.questions]
+            normalized = validate_answers(questions, answer.answers)
+            meta = AskUserMetadata(answers=[AskUserAnswer(**item) for item in normalized])
+            summary = "\n".join(
+                f"Q: {item['question']}\nA: {', '.join(item['selected']) or (item['other'] or '')}"
+                for item in normalized
+            )
+            results.append(
+                ToolResultBlock(
+                    id=block.id,
+                    name=block.name,
+                    output=summary,
+                    state=ToolResultState.SUCCESS,
+                    metadata=meta.model_dump(mode="json"),
+                )
+            )
+        if not results:
+            raise ValueError("没有匹配的待回答调用")
+        reply = self._agent.state.get_reply_message(self._agent.name)
+        return ExternalExecutionResultEvent(
+            reply_id=reply.id if reply is not None else "",
+            execution_results=results,
+        )
+
+    async def resume_external(
+        self, answers: Sequence[ExternalAnswer]
+    ) -> AsyncIterator[dict[str, Any]]:
+        """带着用户答案从挂起点继续。"""
+        async for event in self._agent.reply_stream(self.external_event(answers)):
+            yield event_to_dict(event)
+
+    def interrupt_event(self) -> UserInterruptEvent:
+        """构造框架的中断事件，用一个明确的结束代替前端断流。"""
+        reply = self._agent.state.get_reply_message(self._agent.name)
+        return UserInterruptEvent(reply_id=reply.id if reply is not None else "")
+
+    async def interrupt(self) -> AsyncIterator[dict[str, Any]]:
+        """中止挂起中的 reply，照常吐事件 dict。"""
+        async for event in self._agent.reply_stream(self.interrupt_event()):
+            yield event_to_dict(event)
+
 
 def build_agentscope_runtime(
     system_prompt: str | None = None,
@@ -287,7 +398,7 @@ def build_agentscope_runtime(
 ) -> AgentScopeRuntime:
     """装配真实运行时（env 提供模型凭据）。
 
-    - 工具：按档位装配（只读档四件套，放开档追加 Write/Edit）；
+    - 工具：全量内置工具 + ToolGroup，档位只影响权限上下文；
     - 密钥：挂 SecretInjectionMiddleware —— 占位符在工具边界换成真值，
       返回里的真值再抹回占位符，模型全程看不到明文；
     - 权限：注入档位对应的权限上下文（mode + 白名单 + deny_rules）。
@@ -296,11 +407,9 @@ def build_agentscope_runtime(
     base = resolve_workdir(workdir)
     agent = build_agent(
         name="devops",
-        system_prompt=system_prompt
-        if system_prompt is not None
-        else build_system_prompt(base),
+        system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),
         model=build_chat_model(enable_search=web_search),
-        toolkit=build_toolkit_for(resolved.tools, base, middlewares=[build_secret_middleware()]),
+        toolkit=build_full_toolkit(base, middlewares=[build_secret_middleware()]),
         middlewares=[ProfileNoteMiddleware(resolved)],
         state=_state_for(resolved, state),
     )

@@ -6,9 +6,10 @@
 
 两条硬约束：
 
-1. **按会话档位返回**。放开档实际挂了 Write/Edit，写死只读四件套会让这张表变成错的。
+1. **工具清单与档位无关**。所有档位装配同一个 Toolkit，能不能执行由权限引擎判定；
+   按档位裁剪 schema 会让同一份前缀在不同档位下字节不一致，历史缓存直接失效。
 2. **给出体积与指纹**。工具 schema 的 JSON 有一万字符，是系统提示的二十多倍；
-   只说「工具 4 个」等于把上下文的大头藏起来。指纹用来判断前缀有没有变——
+   只说「工具 12 个」等于把上下文的大头藏起来。指纹用来判断前缀有没有变——
    变了，这一枪必然从缓存里读不到。
 """
 
@@ -73,7 +74,7 @@ def _fingerprint(prompt: str, schemas: list[dict[str, Any]]) -> str:
     """前缀指纹：系统提示 + 工具 schema 的稳定哈希，取前 8 位够人眼比较。
 
     `sort_keys=True` 与真实下发无关（框架按注册顺序序列化），这里只是保证
-    同一份内容算出同一个指纹；顺序本身由档位里的 tuple 钉住。
+    同一份内容算出同一个指纹；顺序本身由 catalog 的注册顺序钉住。
     """
     body = prompt + json.dumps(schemas, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:8]
@@ -102,9 +103,9 @@ async def get_context(
     session: str | None = None,
     profile: str | None = None,
 ) -> dict[str, Any]:
-    """返回系统提示词原文、按档位装配的工具 schema 与前缀指纹。"""
+    """返回系统提示词原文、全量工具 schema 与前缀指纹。"""
     resolved = _profile_for(session, profile)
-    schemas = await tool_schemas(resolved.tools)
+    schemas = await tool_schemas()
     tools = _tool_rows(schemas)
     prompt = build_system_prompt(resolve_workdir())
     note = policy_note(resolved)

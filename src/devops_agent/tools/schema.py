@@ -4,8 +4,8 @@
 schema 的唯一来源是 Toolkit 自己（`get_tool_schemas()`），不在这里手写一份，
 否则注册表改了、界面上的参数说明就会跟着过期。
 
-按档位导出（而不只是只读四件套）：放开档实际挂了 Write/Edit，界面却只显示四个，
-「模型动手前手里有什么」这张表就是错的。
+所有档位共用同一个 Toolkit，因此默认导出全量 schema；传 names 时按指定顺序导出，
+供测试或特定页面裁剪。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import os
 from collections.abc import Sequence
 from typing import Any
 
-from devops_agent.tools.catalog import build_readonly_toolkit, build_toolkit_for
+from devops_agent.tools.catalog import activated_groups, build_full_toolkit, build_toolkit_for
 
 # 工具 schema 与运行时共用同一个工作目录：Bash/Read 的相对路径基准取决于它，
 # 两边不一致会让界面上的默认值看起来对、实际跑起来是另一个目录。
@@ -27,18 +27,14 @@ def schemas_workdir() -> str:
 
 
 async def tool_schemas(names: Sequence[str] | None = None) -> list[dict[str, Any]]:
-    """导出指定工具集的 OpenAI 形状 schema；不传则取只读四件套。
+    """导出 OpenAI 形状 schema；不传 names 时导出全量工具。
 
-    顺序沿用 `names`（档位里写死的 tuple），不做排序：这里导出的顺序必须与
-    运行时真正下发给模型的顺序一致，否则「前缀指纹」对不上，缓存排查就失去意义。
+    顺序沿用装配顺序，不做排序：这里导出的顺序必须与运行时下发给模型的一致，
+    否则「前缀指纹」对不上，缓存排查就失去意义。
     """
     workdir = schemas_workdir()
-    toolkit = (
-        build_readonly_toolkit(workdir) if names is None else build_toolkit_for(names, workdir)
-    )
-    return await toolkit.get_tool_schemas()
-
-
-async def readonly_tool_schemas() -> list[dict[str, Any]]:
-    """导出只读工具集的 schema（保持旧调用点可用）。"""
-    return await tool_schemas()
+    if names is not None:
+        return await build_toolkit_for(names, workdir).get_tool_schemas()
+    toolkit = build_full_toolkit(workdir)
+    # 默认激活的组要和运行时一致，否则界面上的工具清单会少掉写/任务组
+    return await toolkit.get_tool_schemas(groups=list(activated_groups()))

@@ -1,6 +1,7 @@
 """工具目录与执行面的工厂单元测试。"""
 
 import asyncio
+import os
 from pathlib import Path
 
 from agentscope.tool import FunctionTool, ToolGroup, Toolkit
@@ -8,11 +9,13 @@ from agentscope.workspace import DockerWorkspace, LocalWorkspace
 
 from devops_agent.executor.boundary import build_docker_workspace, build_local_workspace
 from devops_agent.tools.catalog import (
+    ALL_TOOL_NAMES,
+    DEFAULT_GROUPS,
+    PLATFORM_TOOL_NAMES,
+    build_full_toolkit,
     build_readonly_toolkit,
     build_toolkit,
-    readonly_group,
     shell_name,
-    write_group,
 )
 
 
@@ -56,16 +59,28 @@ def test_shell_name_is_non_empty() -> None:
     assert shell_name().strip()
 
 
-def test_readonly_group() -> None:
-    g = readonly_group([_tool()])
-    assert isinstance(g, ToolGroup)
-    assert g.name == "readonly"
+def test_full_toolkit_groups(tmp_path: Path) -> None:
+    """全量工具按组注册：write / task 组存在，basic 工具直接注册。"""
+    toolkit = build_full_toolkit(tmp_path)
+    names = {group.name for group in toolkit.tool_groups}
+    assert {"write", "task"} <= names
+    assert "reset_tools" in _names(toolkit)
+    assert isinstance(toolkit.tool_groups[0], ToolGroup)
 
 
-def test_write_group() -> None:
-    g = write_group([])
-    assert isinstance(g, ToolGroup)
-    assert g.name == "write"
+def test_platform_tools_follow_platform(tmp_path: Path) -> None:
+    """PowerShell 没有只读命令解析，只在 Windows 注册。"""
+    groups = {group.name for group in build_full_toolkit(tmp_path).tool_groups}
+    if os.name == "nt":
+        assert PLATFORM_TOOL_NAMES == ("powershell",)
+        assert "platform" in groups
+        assert "platform" in DEFAULT_GROUPS
+        assert "powershell" in ALL_TOOL_NAMES
+    else:
+        assert PLATFORM_TOOL_NAMES == ()
+        assert "platform" not in groups
+        assert "platform" not in DEFAULT_GROUPS
+        assert "powershell" not in ALL_TOOL_NAMES
 
 
 def test_build_local_workspace() -> None:

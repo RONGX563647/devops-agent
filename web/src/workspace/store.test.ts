@@ -2,11 +2,20 @@
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchRuns } from '../api/client';
-import type { ConfirmDecision, PendingCall, Run, StreamEvent } from '../types';
+import type {
+  AnswerItem,
+  ConfirmDecision,
+  PendingCall,
+  PendingQuestion,
+  Run,
+  StreamEvent,
+} from '../types';
 import { clearAllHistory, loadMessages, loadPermission } from './history';
 import {
+  answer,
   confirm,
   ensureHistory,
+  interruptPending,
   listSessions,
   refreshPending,
   resetStore,
@@ -18,11 +27,19 @@ import {
 
 const streamRunMock = vi.hoisted(() => vi.fn());
 const streamConfirmMock = vi.hoisted(() => vi.fn());
+const streamAnswerMock = vi.hoisted(() => vi.fn());
+const streamInterruptMock = vi.hoisted(() => vi.fn());
 const fetchPendingMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../api/useRunStream', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/useRunStream')>();
-  return { ...actual, streamRun: streamRunMock, streamConfirm: streamConfirmMock };
+  return {
+    ...actual,
+    streamRun: streamRunMock,
+    streamConfirm: streamConfirmMock,
+    streamAnswer: streamAnswerMock,
+    streamInterrupt: streamInterruptMock,
+  };
 });
 
 vi.mock('../api/client', () => ({ fetchRuns: vi.fn(), fetchPending: fetchPendingMock }));
@@ -33,6 +50,10 @@ let handler: Handler;
 let resolveRun: () => void;
 let confirmHandler: Handler;
 let resolveConfirm: () => void;
+let answerHandler: Handler;
+let resolveAnswer: () => void;
+let interruptHandler: Handler;
+let resolveInterrupt: () => void;
 
 function mockStream() {
   streamRunMock.mockImplementation(
@@ -60,6 +81,35 @@ function mockStream() {
       confirmHandler = onEvent;
       return new Promise<void>((resolve, reject) => {
         resolveConfirm = resolve;
+        signal.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    },
+  );
+  streamAnswerMock.mockImplementation(
+    (
+      _runId: number,
+      _session: string,
+      _answers: AnswerItem[],
+      onEvent: Handler,
+      signal: AbortSignal,
+    ): Promise<void> => {
+      answerHandler = onEvent;
+      return new Promise<void>((resolve, reject) => {
+        resolveAnswer = resolve;
+        signal.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    },
+  );
+  streamInterruptMock.mockImplementation(
+    (
+      _runId: number,
+      _session: string,
+      onEvent: Handler,
+      signal: AbortSignal,
+    ): Promise<void> => {
+      interruptHandler = onEvent;
+      return new Promise<void>((resolve, reject) => {
+        resolveInterrupt = resolve;
         signal.addEventListener('abort', () => reject(new Error('aborted')));
       });
     },
@@ -95,6 +145,8 @@ beforeEach(() => {
   clearAllHistory();
   streamRunMock.mockReset();
   streamConfirmMock.mockReset();
+  streamAnswerMock.mockReset();
+  streamInterruptMock.mockReset();
   fetchPendingMock.mockReset();
   vi.mocked(fetchRuns).mockReset();
   mockStream();
@@ -288,5 +340,97 @@ describe('挂起与确认', () => {
     });
     expect(result.current.awaiting).toBeNull();
     expect(result.current.messages[1].awaiting).toBeUndefined();
+  });
+
+  /** 挂起一个 AskUser 提问：没有确认项，只有 questions。 */
+  const QUESTIONS: PendingQuestion[] = [
+    {
+      tool_call_id: 'q1',
+      name: 'AskUser',
+      questions: [
+        {
+          question: '用哪个库？',
+          header: 'Library',
+          options: [
+            { label: 'httpx', description: 'async' },
+            { label: 'requests', description: 'sync' },
+          ],
+          multi_select: false,
+        },
+      ],
+    },
+  ];
+
+  async function parkQuestion() {
+    const hook = renderHook(() => useSession('s-q'));
+    act(() => send('s-q', 'hi'));
+    act(() =>
+      handler({
+        type: 'RUN_PARKED',
+        run_id: 42,
+        kind: 'question',
+        questions: QUESTIONS,
+      }),
+    );
+    await act(async () => {
+      resolveRun();
+    });
+    return hook;
+  }
+
+  it('提问挂起后 awaiting 带问题列表，kind 为 question', async () => {
+    const { result } = await parkQuestion();
+    expect(result.current.running).toBe(false);
+    expect(result.current.awaiting).toMatchObject({ kind: 'question', questions: QUESTIONS });
+    expect(result.current.messages[1].awaiting?.kind).toBe('question');
+  });
+
+  it('answer 带着问答结果续跑同一条 run', async () => {
+    const { result } = await parkQuestion();
+    const answers: AnswerItem[] = [
+      {
+        tool_call_id: 'q1',
+        answers: [{ question: '用哪个库？', selected: ['httpx'], other: null }],
+      },
+    ];
+    act(() => answer('s-q', answers));
+
+    expect(streamAnswerMock.mock.calls[0][0]).toBe(42);
+    expect(streamAnswerMock.mock.calls[0][1]).toBe('s-q');
+    expect(streamAnswerMock.mock.calls[0][2]).toEqual(answers);
+    expect(streamConfirmMock).not.toHaveBeenCalled();
+    expect(result.current.running).toBe(true);
+    expect(result.current.awaiting).toBeNull();
+
+    act(() => answerHandler({ type: 'RUN_DONE', text: '按 httpx 做', run_id: 42 }));
+    await act(async () => {
+      resolveAnswer();
+    });
+    expect(result.current.messages[1].text).toBe('按 httpx 做');
+    expect(result.current.awaiting).toBeNull();
+  });
+
+  it('interruptPending 走中断端点收尾同一条 run', async () => {
+    const { result } = await parkQuestion();
+    act(() => interruptPending('s-q'));
+
+    expect(streamInterruptMock.mock.calls[0][0]).toBe(42);
+    expect(streamInterruptMock.mock.calls[0][1]).toBe('s-q');
+    expect(result.current.running).toBe(true);
+
+    act(() => interruptHandler({ type: 'RUN_DONE', text: '已取消', run_id: 42 }));
+    await act(async () => {
+      resolveInterrupt();
+    });
+    expect(result.current.messages[1].text).toBe('已取消');
+    expect(result.current.awaiting).toBeNull();
+  });
+
+  it('没有挂起态时 answer / interruptPending 直接忽略', () => {
+    renderHook(() => useSession('s-idle'));
+    act(() => answer('s-idle', []));
+    act(() => interruptPending('s-idle'));
+    expect(streamAnswerMock).not.toHaveBeenCalled();
+    expect(streamInterruptMock).not.toHaveBeenCalled();
   });
 });

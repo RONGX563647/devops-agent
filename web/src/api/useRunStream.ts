@@ -4,6 +4,7 @@
  */
 
 import type {
+  AnswerItem,
   AwaitingState,
   ConfirmDecision,
   ParseStage,
@@ -201,6 +202,23 @@ function finishRunningSteps(steps: ProcessEntry[]): ProcessEntry[] {
 }
 
 type EventHandler = (state: StreamState, event: StreamEvent) => StreamState;
+
+/** 最近一条仍在执行的控制步骤：挂起帧要收尾在它上面，而不是另起一行。 */
+function lastRunningControl(steps: ProcessEntry[]): ProcessEntry | undefined {
+  return [...steps].reverse().find((step) => step.kind === 'control' && step.state === 'running');
+}
+
+/** 把挂起帧归一成 awaiting：kind / 问题 / 确认项都可能缺省，沿用已有值。 */
+function parkedAwaiting(state: StreamState, event: StreamEvent): AwaitingState {
+  const runId = event.run_id ?? state.runId;
+  return {
+    runId,
+    kind: event.kind ?? 'confirm',
+    calls: event.tool_calls ?? state.awaiting?.calls ?? [],
+    questions: event.questions ?? state.awaiting?.questions ?? [],
+    expiresAt: event.expires_at ?? null,
+  };
+}
 
 const HANDLERS: Record<string, EventHandler> = {
   // 输入解析：先建父行，再逐阶段补明细，END 把总账写进 detail。
@@ -452,7 +470,7 @@ const HANDLERS: Record<string, EventHandler> = {
       at: eventAt(e),
     }),
     awaiting: e.tool_calls?.length
-      ? { runId: s.runId, calls: e.tool_calls, expiresAt: null }
+      ? { runId: s.runId, kind: 'confirm', calls: e.tool_calls, questions: [], expiresAt: null }
       : s.awaiting,
   }),
   USER_CONFIRM_RESULT: (s, e) => ({
@@ -468,23 +486,16 @@ const HANDLERS: Record<string, EventHandler> = {
   // 挂起帧：流到此正常结束（不是 done），run 停在等确认。
   // 收尾要打在「刚才那条等待确认」上，不能再造一行——否则同一件事出现两行。
   RUN_PARKED: (s, e) => {
-    const open = [...s.steps]
-      .reverse()
-      .find((step) => step.kind === 'control' && step.state === 'running');
-    const id = open?.id ?? blockStepId(e, 'control');
+    const id = lastRunningControl(s.steps)?.id ?? blockStepId(e, 'control');
     return {
       ...s,
       running: false,
       runId: e.run_id ?? s.runId,
       endedAt: null,
-      awaiting: {
-        runId: e.run_id ?? s.runId,
-        calls: e.tool_calls ?? s.awaiting?.calls ?? [],
-        expiresAt: e.expires_at ?? null,
-      },
+      awaiting: parkedAwaiting(s, e),
       steps: patchStep(s.steps, id, { state: 'success' }, {
         kind: 'control',
-        label: '等待确认',
+        label: e.kind === 'question' ? '等待你回答' : '等待确认',
         detail: '',
         state: 'success',
         at: eventAt(e),
@@ -649,6 +660,46 @@ export async function streamConfirm(
   });
   if (!resp.ok || !resp.body) {
     throw new Error(`确认失败 ${resp.status}`);
+  }
+  await consumeStream(resp.body, onEvent);
+}
+
+/** 回答 AskUser 的问题并接着读同一条 run。 */
+export async function streamAnswer(
+  runId: number,
+  sessionId: string,
+  answers: AnswerItem[],
+  onEvent: (event: StreamEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const resp = await fetch(`/run/${runId}/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    // 只给 id 与选项：问题原文与合法选项以服务端挂起态为准
+    body: JSON.stringify({ session_id: sessionId, answers }),
+    signal,
+  });
+  if (!resp.ok || !resp.body) {
+    throw new Error(`提交回答失败 ${resp.status}`);
+  }
+  await consumeStream(resp.body, onEvent);
+}
+
+/** 终止挂起中的 run（服务端用内置 UserInterruptEvent 收尾）。 */
+export async function streamInterrupt(
+  runId: number,
+  sessionId: string,
+  onEvent: (event: StreamEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const resp = await fetch(`/run/${runId}/interrupt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId }),
+    signal,
+  });
+  if (!resp.ok || !resp.body) {
+    throw new Error(`取消失败 ${resp.status}`);
   }
   await consumeStream(resp.body, onEvent);
 }

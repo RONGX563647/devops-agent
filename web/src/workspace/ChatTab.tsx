@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { deleteAttachment, uploadAttachment } from '../api/client';
 import type {
+  AnswerItem,
   Attachment,
   ChatMessage,
   ConfirmScope,
@@ -13,7 +14,17 @@ import { extractLinks } from './links';
 import { Markdown } from './Markdown';
 import { PermissionCard } from './PermissionCard';
 import { PermissionPicker } from './PermissionPicker';
-import { confirm, refreshPending, send, setPermission, stop, useSession } from './store';
+import { QuestionCard } from './QuestionCard';
+import {
+  answer,
+  confirm,
+  interruptPending,
+  refreshPending,
+  send,
+  setPermission,
+  stop,
+  useSession,
+} from './store';
 import { StepList } from './StepRow';
 import { formatClock } from './time';
 import { TraceRail } from './TraceRail';
@@ -155,20 +166,34 @@ function AssistantMessage({
   live,
   onRetry,
   onDecide,
+  onAnswer,
+  onCancel,
 }: {
   message: ChatMessage;
   live: boolean;
   onRetry: (message: ChatMessage) => void;
   onDecide: (scope: ConfirmScope | 'reject') => void;
+  onAnswer: (answers: AnswerItem[]) => void;
+  onCancel: () => void;
 }) {
   const hasAnswer = Boolean(message.text) || Boolean(message.error);
+  const awaiting = message.awaiting;
   return (
     <div className={`chat-msg assistant${message.error ? ' has-error' : ''}`}>
       {message.steps.length > 0 && <StepList steps={message.steps} />}
-      {message.awaiting && message.awaiting.calls.length > 0 && (
+      {awaiting?.kind === 'question' && awaiting.questions.length > 0 && (
+        <QuestionCard
+          questions={awaiting.questions}
+          expiresAt={awaiting.expiresAt}
+          busy={live}
+          onSubmit={onAnswer}
+          onCancel={onCancel}
+        />
+      )}
+      {awaiting?.kind !== 'question' && (awaiting?.calls.length ?? 0) > 0 && (
         <PermissionCard
-          calls={message.awaiting.calls}
-          expiresAt={message.awaiting.expiresAt}
+          calls={awaiting?.calls ?? []}
+          expiresAt={awaiting?.expiresAt ?? null}
           busy={live}
           onDecide={onDecide}
         />
@@ -301,6 +326,14 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
     );
   }
 
+  function submitAnswers(answers: AnswerItem[]) {
+    answer(session, answers);
+  }
+
+  function cancelPending() {
+    interruptPending(session);
+  }
+
   function changePermission(key: PermissionKey) {
     setPermission(session, key);
   }
@@ -413,6 +446,8 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
                 live={view.running && m.id === last?.id}
                 onRetry={retry}
                 onDecide={decide}
+                onAnswer={submitAnswers}
+                onCancel={cancelPending}
               />
             );
           })}
@@ -548,7 +583,9 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
             </button>
             <span className="composer-hint">
               {view.awaiting
-                ? '等待你确认上面的操作'
+                ? view.awaiting.kind === 'question'
+                  ? '等待你回答上面的问题'
+                  : '等待你确认上面的操作'
                 : view.running
                   ? '生成中，仍可继续输入，停止后可发送'
                   : 'Enter 发送 · Shift+Enter 换行'}

@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from devops_agent.governance.profiles import UnknownProfile, default_profile, resolve
+from devops_agent.governance.profiles import UnknownProfile, resolve
 from devops_agent.tools.schema import tool_schemas
 
 router = APIRouter(prefix="/api", tags=["tools"])
@@ -18,13 +18,13 @@ router = APIRouter(prefix="/api", tags=["tools"])
 
 @router.get("/tools/schema", response_model=list[dict[str, Any]])
 async def list_tool_schemas(profile: str | None = None) -> list[dict[str, Any]]:
-    """按档位返回 name、description 与 parameters JSON Schema。
+    """返回全量工具的 name、description 与 parameters JSON Schema。
 
-    profile 缺省取只读档：老调用方（Inspector 的 Schema 页签）行为不变；
-    传了档位就必须和会话实际装配一致，否则「这个工具声明了什么」会答错。
+    profile 仍做校验（未开放档位回落到默认档），但所有档位装配的是同一个
+    Toolkit，schema 不再随档位变化。
     """
     try:
-        resolved = resolve(profile or None)
+        resolve(profile or None)
     except UnknownProfile:
-        resolved = default_profile()
-    return await tool_schemas(resolved.tools)
+        pass  # 未知档位不影响 schema：所有档位装配的是同一套工具
+    return await tool_schemas()

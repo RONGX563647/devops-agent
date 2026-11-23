@@ -198,6 +198,36 @@ describe('applyEvent', () => {
     expect(s.steps[0].state).toBe('success');
   });
 
+  it('RUN_PARKED 区分提问与确认，并把问题带进挂起态', () => {
+    const questions = [
+      {
+        tool_call_id: 'q1',
+        name: 'AskUser',
+        questions: [
+          {
+            question: '用哪个库？',
+            header: 'Library',
+            options: [{ label: 'httpx', description: 'async' }],
+          },
+        ],
+      },
+    ];
+    const next = applyEvent(INITIAL, {
+      type: 'RUN_PARKED',
+      run_id: 13,
+      kind: 'question',
+      questions,
+    });
+    expect(next.running).toBe(false);
+    expect(next.awaiting).toMatchObject({ runId: 13, kind: 'question', questions });
+    expect(next.steps[0].label).toBe('等待你回答');
+  });
+
+  it('RUN_PARKED 旧记录没有 kind 时按确认处理', () => {
+    const next = applyEvent(INITIAL, { type: 'RUN_PARKED', run_id: 14, tool_calls: CALLS });
+    expect(next.awaiting).toMatchObject({ kind: 'confirm', questions: [] });
+  });
+
   it('RUN_DONE 清掉挂起态，确认完不留残卡', () => {
     const parked = applyEvent(INITIAL, {
       type: 'RUN_PARKED',

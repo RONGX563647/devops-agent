@@ -38,18 +38,54 @@ export interface ConfirmDecision {
   scope: ConfirmScope;
 }
 
+/** AskUser 的一个选项。 */
+export interface AskOption {
+  label: string;
+  description?: string | null;
+  preview?: string | null;
+}
+
+/** AskUser 的一道题。 */
+export interface AskQuestion {
+  question: string;
+  header?: string;
+  context?: string | null;
+  options: AskOption[];
+  multi_select?: boolean;
+}
+
+/** 一条等待回答的 AskUser 调用。 */
+export interface PendingQuestion {
+  tool_call_id: string;
+  name: string;
+  questions: AskQuestion[];
+}
+
+/** 挂起类型：权限确认 / 提问。 */
+export type ParkedKind = 'confirm' | 'question';
+
+/** 前端提交的一条问答结果。 */
+export interface AnswerItem {
+  tool_call_id: string;
+  answers: Array<{ question: string; selected: string[]; other?: string | null }>;
+}
+
 /** 挂起信息：GET /run/{id}/pending 的返回。 */
 export interface PendingState {
   run_id: number;
   status: 'parked';
+  kind: ParkedKind;
   expires_at: string | null;
   tool_calls: PendingCall[];
+  questions: PendingQuestion[];
 }
 
 /** 前端内存里的挂起态：挂在助手消息上，刷新后仍能重建卡片。 */
 export interface AwaitingState {
   runId: number | null;
+  kind: ParkedKind;
   calls: PendingCall[];
+  questions: PendingQuestion[];
   expiresAt: string | null;
 }
 
@@ -177,6 +213,9 @@ export interface StreamEvent {
   degraded?: number;
   /** 待确认调用（REQUIRE_USER_CONFIRM）/ 挂起帧携带 */
   tool_calls?: PendingCall[];
+  /** 挂起类型与待回答的问题（RUN_PARKED） */
+  kind?: ParkedKind;
+  questions?: PendingQuestion[];
   /** 挂起有效期（RUN_PARKED）；后端未给时为空 */
   expires_at?: string | null;
 }

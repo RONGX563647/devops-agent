@@ -48,7 +48,7 @@ _POLICY_TAIL = """本会话权限：{profile_label}。{write_tool_line}{write_ru
 
 def policy_note(profile: PermissionProfile) -> str:
     """档位约束的一句话说明，由中间件与上下文接口共用同一份文案。"""
-    writes = "write" in profile.tools
+    writes = profile.write
     return _POLICY_TAIL.format(
         profile_label=profile.label,
         write_tool_line=(

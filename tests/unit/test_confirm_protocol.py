@@ -10,11 +10,14 @@ from agentscope.message import ToolCallBlock
 
 from devops_agent.runtime.confirm import (
     ConfirmDecision,
+    ExternalAnswer,
     classify,
     command_of,
     effective_scope,
     parse_decisions,
+    parse_external_answers,
     rule_content_for,
+    validate_answers,
 )
 from devops_agent.runtime.events import event_to_dict
 
@@ -103,3 +106,92 @@ def test_duck_typed_event_keeps_tool_calls() -> None:
     data = event_to_dict(_DuckEvent())
     assert data["tool_calls"][0]["tool_call_id"] == "c9"
     assert data["tool_calls"][0]["risk"] == "exec"
+
+
+# --- AskUser 外部执行 -------------------------------------------------
+
+_QUESTIONS = [
+    {
+        "question": "用哪个库？",
+        "header": "Library",
+        "options": [
+            {"label": "httpx", "description": "async 优先"},
+            {"label": "requests", "description": "同步惯用"},
+        ],
+        "multi_select": False,
+    },
+    {
+        "question": "要开哪些能力？",
+        "header": "Features",
+        "options": [
+            {"label": "缓存", "description": "命中率"},
+            {"label": "重试", "description": "失败重放"},
+        ],
+        "multi_select": True,
+    },
+]
+
+
+def test_parse_external_answers_skips_blank_id_and_non_dict() -> None:
+    parsed = parse_external_answers(
+        [
+            {"tool_call_id": "a", "answers": [{"question": "q", "selected": []}, "junk"]},
+            {"tool_call_id": "", "answers": []},
+            {"tool_call_id": "b", "answers": "not-a-list"},
+        ]
+    )
+    assert parsed == [
+        ExternalAnswer(tool_call_id="a", answers=({"question": "q", "selected": []},)),
+        ExternalAnswer(tool_call_id="b", answers=()),
+    ]
+
+
+def test_validate_answers_keeps_server_authoritative_text() -> None:
+    normalized = validate_answers(
+        _QUESTIONS,
+        (
+            {"question": "用哪个库？", "selected": ["httpx"]},
+            {"question": "要开哪些能力？", "selected": ["缓存", "重试"], "other": "  "},
+        ),
+    )
+    assert normalized == [
+        {"question": "用哪个库？", "selected": ["httpx"], "other": None},
+        {"question": "要开哪些能力？", "selected": ["缓存", "重试"], "other": None},
+    ]
+
+
+def test_validate_answers_accepts_other_only() -> None:
+    normalized = validate_answers(
+        _QUESTIONS[:1],
+        ({"question": "用哪个库？", "selected": [], "other": " aiohttp "},),
+    )
+    assert normalized == [{"question": "用哪个库？", "selected": [], "other": "aiohttp"}]
+
+
+@pytest.mark.parametrize(
+    ("answers", "message"),
+    [
+        (
+            (
+                {"question": "用哪个库？", "selected": ["httpx"]},
+                {"question": "用哪个库？", "selected": ["requests"]},
+            ),
+            "问题重复回答",
+        ),
+        ((), "缺少问题的答案"),
+        (({"question": "用哪个库？", "selected": ["urllib"]},), "不存在的选项"),
+        (({"question": "用哪个库？", "selected": ["httpx", "requests"]},), "单选题只能选一个选项"),
+        (({"question": "用哪个库？", "selected": [], "other": 1},), "other 必须是字符串"),
+        (({"question": "用哪个库？", "selected": []},), "问题未作答"),
+    ],
+)
+def test_validate_answers_rejects_bad_payload(
+    answers: tuple[dict[str, Any], ...], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_answers(_QUESTIONS[:1], answers)
+
+
+def test_validate_answers_rejects_blank_question() -> None:
+    with pytest.raises(ValueError, match="答案缺少 question"):
+        validate_answers(_QUESTIONS[:1], ({"question": "  ", "selected": []},))

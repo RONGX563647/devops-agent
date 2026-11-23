@@ -3,13 +3,21 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Attachment, AwaitingState, ChatMessage, PendingCall } from '../types';
+import type {
+  Attachment,
+  AwaitingState,
+  ChatMessage,
+  PendingCall,
+  PendingQuestion,
+} from '../types';
 import { attachMeta, ChatTab, formatClock, formatSize, shouldStickToBottom } from './ChatTab';
 
 const send = vi.fn();
 const stop = vi.fn();
 const setPermission = vi.fn();
 const confirmByChoice = vi.fn();
+const answerByChoice = vi.fn();
+const interruptPending = vi.fn();
 const refreshPending = vi.fn();
 const onFirstSend = vi.fn();
 const uploadAttachment = vi.fn();
@@ -89,6 +97,8 @@ vi.mock('./store', () => ({
   stop: (session: string) => stop(session),
   setPermission: (session: string, key: string) => setPermission(session, key),
   confirm: (session: string, decisions: unknown[]) => confirmByChoice(session, decisions),
+  answer: (session: string, answers: unknown[]) => answerByChoice(session, answers),
+  interruptPending: (session: string) => interruptPending(session),
   refreshPending: (session: string) => {
     refreshPending(session);
     return Promise.resolve();
@@ -115,6 +125,8 @@ function reset() {
   stop.mockClear();
   setPermission.mockClear();
   confirmByChoice.mockClear();
+  answerByChoice.mockClear();
+  interruptPending.mockClear();
   refreshPending.mockClear();
   onFirstSend.mockClear();
   uploadAttachment.mockReset();
@@ -144,7 +156,46 @@ function submit(text: string) {
 
 /** 造一个挂起态：卡片挂在助手消息上，发送按钮看快照里的 awaiting。 */
 function park(calls: PendingCall[] = CALLS) {
-  const awaiting: AwaitingState = { runId: 12, calls, expiresAt: null };
+  const awaiting: AwaitingState = {
+    runId: 12,
+    kind: 'confirm',
+    calls,
+    questions: [],
+    expiresAt: null,
+  };
+  const last = assistant();
+  if (last) last.awaiting = awaiting;
+  snapshot.awaiting = awaiting;
+  snapshot.running = false;
+}
+
+/** 造一个提挂起态：只有 questions，没有待确认调用。 */
+const QUESTIONS: PendingQuestion[] = [
+  {
+    tool_call_id: 'q1',
+    name: 'AskUser',
+    questions: [
+      {
+        question: '用哪个库？',
+        header: 'Library',
+        options: [
+          { label: 'httpx', description: 'async 优先' },
+          { label: 'requests', description: '同步惯用' },
+        ],
+        multi_select: false,
+      },
+    ],
+  },
+];
+
+function parkQuestion() {
+  const awaiting: AwaitingState = {
+    runId: 12,
+    kind: 'question',
+    calls: [],
+    questions: QUESTIONS,
+    expiresAt: null,
+  };
   const last = assistant();
   if (last) last.awaiting = awaiting;
   snapshot.awaiting = awaiting;
@@ -408,6 +459,37 @@ describe('ChatTab 权限', () => {
     snapshot.messages[0].permission = 'readonly';
     rerender(tab());
     expect(document.querySelector('.perm-tag')?.textContent).toBe('只读');
+  });
+});
+
+describe('ChatTab 提问', () => {
+  it('提问挂起时渲染问答卡，提交把答案交给 store', () => {
+    const { rerender } = render(tab());
+    submit('hi');
+    parkQuestion();
+    rerender(tab());
+
+    expect(screen.getByRole('group', { name: '等待你回答的问题' })).toBeTruthy();
+    expect(screen.getByText('等待你回答上面的问题')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /httpx/ }));
+    fireEvent.click(screen.getByRole('button', { name: '提交回答' }));
+    expect(answerByChoice).toHaveBeenCalledWith('s-1', [
+      {
+        tool_call_id: 'q1',
+        answers: [{ question: '用哪个库？', selected: ['httpx'], other: null }],
+      },
+    ]);
+  });
+
+  it('取消本轮交给 store 中断挂起的 run', () => {
+    const { rerender } = render(tab());
+    submit('hi');
+    parkQuestion();
+    rerender(tab());
+
+    fireEvent.click(screen.getByRole('button', { name: '取消本轮' }));
+    expect(interruptPending).toHaveBeenCalledWith('s-1');
   });
 });
 

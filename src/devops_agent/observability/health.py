@@ -129,6 +129,8 @@ def summarize(runs: list[RunRecord]) -> dict[str, object]:
     health_values = [r.health_score for r in runs if r.health_score is not None]
     input_tokens = sum(r.input_tokens for r in runs)
     output_tokens = sum(r.output_tokens for r in runs)
+    cache_read = sum(r.cache_input_tokens for r in runs)
+    cache_write = sum(r.cache_creation_input_tokens for r in runs)
     return {
         "total_runs": total,
         "success_count": succeeded,
@@ -138,6 +140,10 @@ def summarize(runs: list[RunRecord]) -> dict[str, object]:
         "p95_duration_ms": percentile(durations, 0.95),
         "total_input_tokens": input_tokens,
         "total_output_tokens": output_tokens,
+        # 前缀缓存：读命中越多说明稳定段被复用；写入持续偏高说明前缀在反复重建
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
+        "cache_hit_rate": round(cache_read / input_tokens, 4) if input_tokens else None,
         # 成本代理值：真实单价按模型区分，这里给出 token 总量供前端按价换算
         "token_proxy": input_tokens + output_tokens,
     }

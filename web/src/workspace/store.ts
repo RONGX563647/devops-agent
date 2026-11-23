@@ -7,15 +7,19 @@ import { fetchPending, fetchRuns } from '../api/client';
 import {
   applyEvent,
   INITIAL_STATE,
+  streamAnswer,
   streamConfirm,
+  streamInterrupt,
   streamRun,
   type StreamState,
 } from '../api/useRunStream';
 import type {
+  AnswerItem,
   Attachment,
   AwaitingState,
   ChatMessage,
   ConfirmDecision,
+  PendingState,
   PermissionKey,
   Run,
 } from '../types';
@@ -422,6 +426,114 @@ export function confirm(sessionId: string, decisions: ConfirmDecision[]): void {
     });
 }
 
+/** 回答 AskUser 的问题并接着跑同一条 run。 */
+export function answer(sessionId: string, answers: AnswerItem[]): void {
+  const entry = ensureEntry(sessionId);
+  if (entry.running) return;
+  const awaiting = entry.stream.awaiting ?? entry.messages[entry.messages.length - 1]?.awaiting;
+  if (!awaiting?.runId) return;
+
+  entry.running = true;
+  entry.stream = { ...entry.stream, running: true, error: null, awaiting: null };
+  syncAssistant(entry);
+  entry.generation += 1;
+  const generation = entry.generation;
+  const controller = new AbortController();
+  entry.abort = controller;
+  emit(entry);
+
+  void streamAnswer(
+    awaiting.runId,
+    sessionId,
+    answers,
+    (event) => {
+      if (generation !== entry.generation) return;
+      entry.stream = applyEvent(entry.stream, event);
+      syncAssistant(entry);
+      schedulePersist(entry);
+      emit(entry);
+    },
+    controller.signal,
+  )
+    .then(() => {
+      if (generation !== entry.generation) return;
+      settle(entry, 'done');
+    })
+    .catch((err: unknown) => {
+      if (generation !== entry.generation) return;
+      if (controller.signal.aborted) return;
+      entry.stream = {
+        ...entry.stream,
+        running: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+      syncAssistant(entry);
+      finalize(entry, 'error');
+    });
+}
+
+/** 取消挂起中的 run：服务端用内置中断事件收尾，而不是前端断流。 */
+export function interruptPending(sessionId: string): void {
+  const entry = ensureEntry(sessionId);
+  if (entry.running) return;
+  const awaiting = entry.stream.awaiting ?? entry.messages[entry.messages.length - 1]?.awaiting;
+  if (!awaiting?.runId) return;
+
+  entry.running = true;
+  entry.stream = { ...entry.stream, running: true, error: null, awaiting: null };
+  syncAssistant(entry);
+  entry.generation += 1;
+  const generation = entry.generation;
+  const controller = new AbortController();
+  entry.abort = controller;
+  emit(entry);
+
+  void streamInterrupt(
+    awaiting.runId,
+    sessionId,
+    (event) => {
+      if (generation !== entry.generation) return;
+      entry.stream = applyEvent(entry.stream, event);
+      syncAssistant(entry);
+      schedulePersist(entry);
+      emit(entry);
+    },
+    controller.signal,
+  )
+    .then(() => {
+      if (generation !== entry.generation) return;
+      settle(entry, 'done');
+    })
+    .catch((err: unknown) => {
+      if (generation !== entry.generation) return;
+      if (controller.signal.aborted) return;
+      entry.stream = {
+        ...entry.stream,
+        running: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+      syncAssistant(entry);
+      finalize(entry, 'error');
+    });
+}
+
+/** 服务端挂起态 → 前端 awaiting；kind / questions 缺省时按确认处理。 */
+function pendingAwaiting(pending: PendingState): AwaitingState {
+  return {
+    runId: pending.run_id,
+    kind: pending.kind ?? 'confirm',
+    calls: pending.tool_calls,
+    questions: pending.questions ?? [],
+    expiresAt: pending.expires_at,
+  };
+}
+
+/** 挂起已失效（超时、已确认、换实例）：把快照与消息上的卡片一起清掉。 */
+function dropAwaiting(entry: Entry, last: ChatMessage | undefined): void {
+  entry.stream = { ...entry.stream, awaiting: null };
+  if (last?.role === 'assistant') replaceLastAssistant(entry, { ...last, awaiting: undefined });
+}
+
 /** 刷新后恢复挂起卡片：权威状态在服务端，前端只是把它取回来。 */
 export async function refreshPending(sessionId: string): Promise<void> {
   const entry = ensureEntry(sessionId);
@@ -430,19 +542,10 @@ export async function refreshPending(sessionId: string): Promise<void> {
   if (entry.running || !awaiting?.runId) return;
   try {
     const pending = await fetchPending(awaiting.runId, sessionId);
-    entry.stream = {
-      ...entry.stream,
-      awaiting: {
-        runId: pending.run_id,
-        calls: pending.tool_calls,
-        expiresAt: pending.expires_at,
-      },
-    };
+    entry.stream = { ...entry.stream, awaiting: pendingAwaiting(pending) };
     syncAssistant(entry);
   } catch {
-    // 404 / 403 / 409：挂起已失效（超时、已确认、换实例），把卡片清掉
-    entry.stream = { ...entry.stream, awaiting: null };
-    if (last?.role === 'assistant') replaceLastAssistant(entry, { ...last, awaiting: undefined });
+    dropAwaiting(entry, last);
   }
   emit(entry);
 }

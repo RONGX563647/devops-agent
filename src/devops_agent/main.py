@@ -28,7 +28,11 @@ from devops_agent.observability import repository as repo
 from devops_agent.observability.api import router as observability_router
 from devops_agent.observability.recorder import RunRecorder, utc_now
 from devops_agent.runtime.agent import build_agentscope_runtime, session_runtime_factory
-from devops_agent.runtime.confirm import ConfirmDecision, parse_decisions
+from devops_agent.runtime.confirm import (
+    ConfirmDecision,
+    parse_decisions,
+    parse_external_answers,
+)
 from devops_agent.runtime.runtime import AgentRuntime, EchoRuntime
 from devops_agent.runtime.sessions import SessionEntry, SessionRegistry
 from devops_agent.secrets.api import router as secrets_router
@@ -96,6 +100,22 @@ class ConfirmItem(BaseModel):
 class ConfirmRequest(BaseModel):
     session_id: str
     results: list[ConfirmItem] = Field(default_factory=list)
+
+
+class AnswerItem(BaseModel):
+    """前端对一条 AskUser 调用的回答：只给 id 与选项，问题原文以服务端为准。"""
+
+    tool_call_id: str
+    answers: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AnswerRequest(BaseModel):
+    session_id: str
+    answers: list[AnswerItem] = Field(default_factory=list)
+
+
+class InterruptRequest(BaseModel):
+    session_id: str
 
 
 @app.get("/health")
@@ -180,6 +200,21 @@ def pending_of(runtime: AgentRuntime) -> list[dict[str, Any]]:
     return list(getter()) if callable(getter) else []
 
 
+def pending_questions_of(runtime: AgentRuntime) -> list[dict[str, Any]]:
+    """取当前等待用户回答的 AskUser 调用；Echo 没有这能力。"""
+    getter = getattr(runtime, "pending_questions", None)
+    return list(getter()) if callable(getter) else []
+
+
+def pending_kind_of(runtime: AgentRuntime) -> str | None:
+    """当前挂起类型：question / confirm / None。"""
+    getter = getattr(runtime, "pending_kind", None)
+    if not callable(getter):
+        return None
+    kind = getter()
+    return str(kind) if kind else None
+
+
 def _expires_at() -> str:
     return (datetime.now(UTC) + timedelta(seconds=PARK_TTL_SECONDS)).isoformat()
 
@@ -199,14 +234,26 @@ def _rejections(pending: list[dict[str, Any]]) -> list[ConfirmDecision]:
     ]
 
 
-def _park(runtime: AgentRuntime, recorder: RunRecorder, pending: list[dict[str, Any]]) -> str:
+def _park(
+    runtime: AgentRuntime,
+    recorder: RunRecorder,
+    *,
+    kind: str,
+    tool_calls: list[dict[str, Any]] | None = None,
+    questions: list[dict[str, Any]] | None = None,
+) -> str:
     """落库挂起态并返回 `event: parked` 帧。
 
     关键是「挂起时流是正常结束的，不是中断」：这里不发 `event: done`，
-    前端据此把消息标成等待确认而不是已完成。
+    前端据此把消息标成等待用户处理而不是已完成。kind 区分权限确认与提问。
     """
     expires = _expires_at()
-    payload = {"tool_calls": pending, "expires_at": expires}
+    payload = {
+        "kind": kind,
+        "expires_at": expires,
+        "tool_calls": tool_calls or [],
+        "questions": questions or [],
+    }
     recorder.park(json.dumps(payload, ensure_ascii=False), expires)
     return _named_frame(
         "parked",
@@ -214,8 +261,10 @@ def _park(runtime: AgentRuntime, recorder: RunRecorder, pending: list[dict[str, 
             "type": "RUN_PARKED",
             "run_id": recorder.run_id,
             "session_id": str(getattr(runtime, "session_id", "")),
+            "kind": kind,
             "expires_at": expires,
-            "tool_calls": pending,
+            "tool_calls": tool_calls or [],
+            "questions": questions or [],
         },
     )
 
@@ -231,16 +280,30 @@ async def _stream_entry(
     """
     async for frame in _frames(source, recorder):
         yield frame
-    pending = pending_of(entry.runtime)
+
+    runtime = entry.runtime
+    # AskUser 走 external execution：先处理提问，再处理权限确认。
+    if pending_kind_of(runtime) == "question":
+        questions = pending_questions_of(runtime)
+        if questions:
+            yield _park(runtime, recorder, kind="question", questions=questions)
+            return
+
+    pending = pending_of(runtime)
     if pending and _bump_asks(recorder.run_id) > ASK_LIMIT:
         # 超限：自动拒绝，让模型换思路，别再弹卡片
-        resume = getattr(entry.runtime, "resume", None)
+        resume = getattr(runtime, "resume", None)
         if callable(resume):
             async for frame in _frames(resume(_rejections(pending)), recorder):
                 yield frame
-            pending = pending_of(entry.runtime)
+            if pending_kind_of(runtime) == "question":
+                questions = pending_questions_of(runtime)
+                if questions:
+                    yield _park(runtime, recorder, kind="question", questions=questions)
+                    return
+            pending = pending_of(runtime)
     if pending:
-        yield _park(entry.runtime, recorder, pending)
+        yield _park(runtime, recorder, kind="confirm", tool_calls=pending)
         return
     run_id = recorder.finish()
     in_tok, out_tok = recorder.token_usage
@@ -273,7 +336,7 @@ def list_permissions() -> dict[str, Any]:
                 "label": item.label,
                 "note": item.note,
                 "fallback": item.fallback,
-                "write": "write" in item.tools,
+                "write": item.write,
             }
             for item in available()
         ],
@@ -389,8 +452,10 @@ def get_pending(run_id: int, session_id: str) -> dict[str, Any]:
     return {
         "run_id": run_id,
         "status": "parked",
+        "kind": payload.get("kind", "confirm"),
         "expires_at": row["expires_at"],
         "tool_calls": payload.get("tool_calls", []),
+        "questions": payload.get("questions", []),
     }
 
 
@@ -403,6 +468,8 @@ async def confirm_run(run_id: int, req: ConfirmRequest, request: Request) -> Str
     """
     row = _pending_row(run_id)
     _check_pending(row, req.session_id)
+    if _pending_kind(row) == "question":
+        raise HTTPException(status_code=409, detail="not_a_confirm")
     profile = _profile_for_run(row)
     decisions = parse_decisions([item.model_dump() for item in req.results])
     if not decisions:
@@ -429,6 +496,107 @@ async def confirm_run(run_id: int, req: ConfirmRequest, request: Request) -> Str
         try:
             yield ": ping\n\n"
             source = entry.runtime.resume(decisions)  # type: ignore[attr-defined]
+            async for frame in _stream_entry(entry, recorder, source):
+                yield frame
+        except Exception as exc:
+            recorder.finish(status="failed")
+            yield _sse_frame({"type": "RUN_ERROR", "error": str(exc)})
+        finally:
+            registry.save(req.session_id)
+            entry.lock.release()
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+def _pending_kind(row: dict[str, object]) -> str:
+    """从挂起 JSON 里取类型；老记录默认按权限确认处理。"""
+    try:
+        payload = json.loads(str(row["pending_json"] or "{}"))
+    except (ValueError, TypeError):
+        return "confirm"
+    return str(payload.get("kind") or "confirm")
+
+
+@app.post("/run/{run_id}/answer")
+async def answer_run(run_id: int, req: AnswerRequest, request: Request) -> StreamingResponse:
+    """回答 AskUser 的问题，并从挂起点继续同一个 run。
+
+    与 confirm 同构：归属 / 状态 / 过期三项校验，条件更新保证只恢复一次。
+    """
+    row = _pending_row(run_id)
+    _check_pending(row, req.session_id)
+    if _pending_kind(row) != "question":
+        raise HTTPException(status_code=409, detail="not_a_question")
+    profile = _profile_for_run(row)
+    answers = parse_external_answers([item.model_dump() for item in req.answers])
+    if not answers:
+        raise HTTPException(status_code=400, detail="empty_answers")
+    registry = _registry(request)
+    entry = registry.acquire(req.session_id, profile)
+    if not callable(getattr(entry.runtime, "resume_external", None)):
+        raise HTTPException(status_code=400, detail="runtime_not_resumable")
+    if entry.lock.locked():
+        raise HTTPException(status_code=409, detail="session_busy")
+    try:
+        entry.runtime.external_event(answers)  # type: ignore[attr-defined]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    with repo.connect() as conn:
+        repo.init_db(conn)
+        if not repo.unpark_run(conn, run_id, now=utc_now()):
+            raise HTTPException(status_code=409, detail="already_resolved")
+    recorder = RunRecorder(
+        domain=os.environ.get("DEVOPS_AGENT_DOMAIN", "debug"),
+        model=os.environ.get("DEVOPS_AGENT_MODEL", ""),
+        permission=profile.key,
+    )
+    recorder.attach(run_id, req.session_id)
+    await entry.lock.acquire()
+
+    async def generate() -> AsyncIterator[str]:
+        try:
+            yield ": ping\n\n"
+            source = entry.runtime.resume_external(answers)  # type: ignore[attr-defined]
+            async for frame in _stream_entry(entry, recorder, source):
+                yield frame
+        except Exception as exc:
+            recorder.finish(status="failed")
+            yield _sse_frame({"type": "RUN_ERROR", "error": str(exc)})
+        finally:
+            registry.save(req.session_id)
+            entry.lock.release()
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+@app.post("/run/{run_id}/interrupt")
+async def interrupt_run(run_id: int, req: InterruptRequest, request: Request) -> StreamingResponse:
+    """终止一个挂起中的 run（内置 UserInterruptEvent），而不是让前端断流。"""
+    row = _pending_row(run_id)
+    _check_pending(row, req.session_id)
+    profile = _profile_for_run(row)
+    registry = _registry(request)
+    entry = registry.acquire(req.session_id, profile)
+    if not callable(getattr(entry.runtime, "interrupt", None)):
+        raise HTTPException(status_code=400, detail="runtime_not_interruptible")
+    if entry.lock.locked():
+        raise HTTPException(status_code=409, detail="session_busy")
+    with repo.connect() as conn:
+        repo.init_db(conn)
+        if not repo.unpark_run(conn, run_id, now=utc_now()):
+            raise HTTPException(status_code=409, detail="already_resolved")
+    recorder = RunRecorder(
+        domain=os.environ.get("DEVOPS_AGENT_DOMAIN", "debug"),
+        model=os.environ.get("DEVOPS_AGENT_MODEL", ""),
+        permission=profile.key,
+    )
+    recorder.attach(run_id, req.session_id)
+    await entry.lock.acquire()
+
+    async def generate() -> AsyncIterator[str]:
+        try:
+            yield ": ping\n\n"
+            source = entry.runtime.interrupt()  # type: ignore[attr-defined]
             async for frame in _stream_entry(entry, recorder, source):
                 yield frame
         except Exception as exc:

@@ -146,3 +146,80 @@ def effective_scope(name: str, raw_input: str, scope: str) -> str:
     if classify(name, raw_input) == "danger":
         return "once"
     return scope if scope in RULE_SCOPES else "once"
+
+
+# --- AskUser 外部执行 -------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalAnswer:
+    """前端对一条 AskUser 调用的回答。"""
+
+    tool_call_id: str
+    answers: tuple[dict[str, Any], ...] = ()
+
+
+def parse_external_answers(payload: list[dict[str, Any]]) -> list[ExternalAnswer]:
+    """归一前端提交的问答结果；空 id 直接丢弃。"""
+    parsed: list[ExternalAnswer] = []
+    for item in payload:
+        call_id = str(item.get("tool_call_id", "")).strip()
+        if not call_id:
+            continue
+        raw = item.get("answers")
+        answers = tuple(a for a in raw if isinstance(a, dict)) if isinstance(raw, list) else ()
+        parsed.append(ExternalAnswer(tool_call_id=call_id, answers=answers))
+    return parsed
+
+
+def validate_answers(
+    questions: list[dict[str, Any]],
+    answers: tuple[dict[str, Any], ...],
+) -> list[dict[str, Any]]:
+    """把答案对齐到服务端的问题定义，并拒绝越界值。
+
+    服务端保留问题与选项的权威副本：客户端只能从给定 label 里选，
+    不能改写问题文本或塞入不存在的选项。
+    """
+    by_question: dict[str, dict[str, Any]] = {}
+    for answer_item in answers:
+        text_key = str(answer_item.get("question", "")).strip()
+        if not text_key:
+            raise ValueError("答案缺少 question")
+        if text_key in by_question:
+            raise ValueError(f"问题重复回答: {text_key}")
+        by_question[text_key] = answer_item
+
+    normalized: list[dict[str, Any]] = []
+    for question in questions:
+        text = str(question.get("question", ""))
+        label = str(question.get("header", ""))
+        picked = by_question.get(text)
+        if picked is None:
+            raise ValueError(f"缺少问题的答案: {label or text}")
+
+        options = question.get("options") or []
+        allowed = {str(option.get("label", "")) for option in options}
+        raw_selected = picked.get("selected")
+        selected = [str(value) for value in raw_selected] if isinstance(raw_selected, list) else []
+        unknown = [value for value in selected if value not in allowed]
+        if unknown:
+            raise ValueError(f"不存在的选项: {', '.join(unknown)}")
+        if not question.get("multi_select", False) and len(selected) > 1:
+            raise ValueError("单选题只能选一个选项")
+
+        other = picked.get("other")
+        if other is not None and not isinstance(other, str):
+            raise ValueError("other 必须是字符串")
+        other_text = other.strip() if isinstance(other, str) else ""
+        if not selected and not other_text:
+            raise ValueError(f"问题未作答: {label or text}")
+
+        normalized.append(
+            {
+                "question": text,
+                "selected": selected,
+                "other": other_text or None,
+            }
+        )
+    return normalized

@@ -23,6 +23,7 @@ from devops_agent.runtime.supervisor import (
     build_goal_pipeline,
     build_team_pipeline,
 )
+from devops_agent.tools.catalog import DEFAULT_GROUPS, activated_groups
 
 
 def _agent(name: str) -> Agent:
@@ -202,10 +203,10 @@ def test_resolve_workdir_reads_env(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert resolve_workdir() == tmp_path.resolve()
 
 
-def test_build_agentscope_runtime_wires_readonly_toolkit(
+def test_build_agentscope_runtime_wires_full_toolkit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """默认档（workspace）必须挂只读四件套，且权限 mode 与该档位一致。"""
+    """所有档位共用全量工具；默认激活写/任务组，权限由 mode 控制。"""
     monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
     monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
@@ -213,6 +214,27 @@ def test_build_agentscope_runtime_wires_readonly_toolkit(
     runtime = build_agentscope_runtime(workdir=tmp_path)
     agent = runtime._agent
     names = {schema["function"]["name"] for schema in asyncio.run(agent.toolkit.get_tool_schemas())}
-    assert {"Bash", "Read", "Glob", "Grep"} <= names
-    assert "Write" not in names
+    assert {"Bash", "Read", "Glob", "Grep", "AskUser"} <= names
+    # 写工具已注册，但默认 schema 只列 basic 组；激活后可见
+    assert {group.name for group in agent.toolkit.tool_groups} >= {"write", "task"}
+    assert set(agent.state.tool_context.activated_groups) == set(DEFAULT_GROUPS)
     assert agent.state.permission_context.mode.value == default_profile().mode
+
+
+def test_state_for_switches_permission_context_with_same_mode() -> None:
+    """workspace → execute 的 mode 都是 accept_edits，白名单仍必须重新注入。"""
+    from devops_agent.governance.profiles import PROFILES
+    from devops_agent.runtime.agent import _state_for
+
+    state = _state_for(PROFILES["workspace"], None)
+    assert state.tool_context.activated_groups == activated_groups()
+    assert state.permission_context.allow_rules == {}
+
+    switched = _state_for(PROFILES["execute"], state)
+    rules = switched.permission_context.allow_rules.get("Bash", [])
+    prefixes = [rule.rule_content for rule in rules]
+    assert any(str(prefix).endswith(":*") for prefix in prefixes)
+
+    # 切回 workspace 必须丢掉 execute 的白名单，避免跨档规则继续生效
+    back = _state_for(PROFILES["workspace"], switched)
+    assert back.permission_context.allow_rules == {}

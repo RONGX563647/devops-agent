@@ -233,3 +233,194 @@ def test_ask_limit_auto_rejects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     # 第一次是用户的批准，第二次是服务端自动发出的拒绝
     assert runtime.resumed[0][0].confirmed is True
     assert all(item.confirmed is False for item in runtime.resumed[1])
+
+
+# --- AskUser 问答链路 -------------------------------------------------
+
+
+class AskRuntime(ParkRuntime):
+    """第一次 stream 挂起一个 AskUser 调用；回答后结束。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.asking = False
+        self.answers: list[list[Any]] = []
+        self.interrupted = 0
+
+    @staticmethod
+    def _questions() -> list[dict[str, Any]]:
+        return [
+            {
+                "question": "用哪个库？",
+                "header": "Library",
+                "options": [
+                    {"label": "httpx", "description": "async 优先"},
+                    {"label": "requests", "description": "同步惯用"},
+                ],
+                "multi_select": False,
+            }
+        ]
+
+    async def stream(self, session_id: str, user_input: str) -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "TEXT_BLOCK_DELTA", "delta": "先确认一下选型"}
+        self.asking = True
+
+    def pending_kind(self) -> str | None:
+        if self.asking:
+            return "question"
+        return "confirm" if self.pending else None
+
+    def pending_questions(self) -> list[dict[str, Any]]:
+        if not self.asking:
+            return []
+        return [
+            {
+                "tool_call_id": "q1",
+                "name": "AskUser",
+                "questions": self._questions(),
+            }
+        ]
+
+    def external_event(self, answers: list[Any]) -> object:
+        from devops_agent.runtime.confirm import validate_answers
+
+        if not self.asking:
+            raise ValueError("没有匹配的待回答调用")
+        for answer in answers:
+            validate_answers(self._questions(), answer.answers)
+        return object()
+
+    async def resume_external(self, answers: list[Any]) -> AsyncIterator[dict[str, Any]]:
+        self.answers.append(list(answers))
+        self.asking = False
+        yield {"type": "TEXT_BLOCK_DELTA", "delta": "收到答案"}
+
+    async def interrupt(self) -> AsyncIterator[dict[str, Any]]:
+        self.interrupted += 1
+        self.asking = False
+        yield {"type": "TEXT_BLOCK_DELTA", "delta": "已中断"}
+
+
+@pytest.fixture
+def ask_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[AskRuntime]:
+    original = app.state.runtime
+    runtime = AskRuntime()
+    app.state.runtime = runtime
+    monkeypatch.setenv("DEVOPS_AGENT_DB_PATH", str(tmp_path / "ask.db"))
+    try:
+        yield runtime
+    finally:
+        app.state.runtime = original
+        app.state.sessions = None
+        app.state.sessions_base = None
+
+
+def _answer_payload(selected: list[str]) -> dict[str, Any]:
+    return {
+        "session_id": "s1",
+        "answers": [
+            {
+                "tool_call_id": "q1",
+                "answers": [{"question": "用哪个库？", "selected": selected}],
+            }
+        ],
+    }
+
+
+def test_stream_parks_question_with_questions(ask_runtime: AskRuntime) -> None:
+    body = _post_stream({"session_id": "s1", "user_input": "选个库", "permission": "workspace"})
+    parked = _park(body)
+    assert parked["kind"] == "question"
+    assert parked["questions"][0]["tool_call_id"] == "q1"
+    assert parked["questions"][0]["questions"][0]["header"] == "Library"
+    assert "event: done" not in body
+
+    run_id = int(parked["run_id"])
+    pending = client.get(f"/run/{run_id}/pending", params={"session_id": "s1"})
+    assert pending.status_code == 200
+    assert pending.json()["kind"] == "question"
+    assert pending.json()["questions"][0]["name"] == "AskUser"
+
+
+def test_answer_resumes_same_run(ask_runtime: AskRuntime) -> None:
+    run_id = int(_park(_post_stream({"session_id": "s1", "user_input": "选个库"}))["run_id"])
+    with client.stream("POST", f"/run/{run_id}/answer", json=_answer_payload(["httpx"])) as resp:
+        assert resp.status_code == 200
+        body = "".join(resp.iter_text())
+
+    done = [frame for frame in _frames(body) if frame.get("type") == "RUN_DONE"]
+    assert done and done[0]["run_id"] == run_id
+    assert ask_runtime.answers[0][0].tool_call_id == "q1"
+
+    with repo.connect() as conn:
+        row = repo.get_pending(conn, run_id)
+        record = repo.get_run(conn, run_id)
+    assert row is not None and row["parked"] is False
+    assert record is not None and record.status == "success"
+    assert "收到答案" in record.output
+
+
+def test_answer_validates_session_kind_and_payload(ask_runtime: AskRuntime) -> None:
+    run_id = int(_park(_post_stream({"session_id": "s1", "user_input": "选个库"}))["run_id"])
+
+    wrong_session = client.post(
+        f"/run/{run_id}/answer", json={**_answer_payload(["httpx"]), "session_id": "s2"}
+    )
+    assert wrong_session.status_code == 403
+
+    not_a_question = client.post(
+        f"/run/{run_id}/confirm",
+        json={"session_id": "s1", "results": [{"tool_call_id": "q1", "confirmed": True}]},
+    )
+    assert not_a_question.status_code == 409
+    assert not_a_question.json()["detail"] == "not_a_confirm"
+
+    empty = client.post(f"/run/{run_id}/answer", json={"session_id": "s1", "answers": []})
+    assert empty.status_code == 400
+    assert empty.json()["detail"] == "empty_answers"
+
+    invalid = client.post(f"/run/{run_id}/answer", json=_answer_payload(["urllib"]))
+    assert invalid.status_code == 400
+    assert "不存在的选项" in invalid.json()["detail"]
+
+    # 校验失败不能把 run 从挂起态摘掉，否则用户再答一次会变成 already_resolved
+    with repo.connect() as conn:
+        row = repo.get_pending(conn, run_id)
+    assert row is not None and row["parked"] is True
+    assert not ask_runtime.answers
+
+
+def test_answer_is_idempotent(ask_runtime: AskRuntime) -> None:
+    run_id = int(_park(_post_stream({"session_id": "s1", "user_input": "选个库"}))["run_id"])
+    with client.stream("POST", f"/run/{run_id}/answer", json=_answer_payload(["httpx"])) as resp:
+        assert resp.status_code == 200
+        "".join(resp.iter_text())
+
+    second = client.post(f"/run/{run_id}/answer", json=_answer_payload(["httpx"]))
+    assert second.status_code == 409
+    assert second.json()["detail"] == "already_resolved"
+    assert len(ask_runtime.answers) == 1
+
+
+def test_interrupt_finishes_pending_run(ask_runtime: AskRuntime) -> None:
+    run_id = int(_park(_post_stream({"session_id": "s1", "user_input": "选个库"}))["run_id"])
+    wrong = client.post(f"/run/{run_id}/interrupt", json={"session_id": "s2"})
+    assert wrong.status_code == 403
+
+    with client.stream("POST", f"/run/{run_id}/interrupt", json={"session_id": "s1"}) as resp:
+        assert resp.status_code == 200
+        body = "".join(resp.iter_text())
+    assert "event: done" in body
+    assert ask_runtime.interrupted == 1
+
+    second = client.post(f"/run/{run_id}/interrupt", json={"session_id": "s1"})
+    assert second.status_code == 409
+    assert second.json()["detail"] == "already_resolved"
+
+
+def test_interrupt_requires_capable_runtime(park_runtime: ParkRuntime) -> None:
+    """Echo / 假运行时没有 interrupt 能力时返回 400，而不是静默成功。"""
+    run_id = int(_park(_post_stream({"session_id": "s1", "user_input": "删掉"}))["run_id"])
+    resp = client.post(f"/run/{run_id}/interrupt", json={"session_id": "s1"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "runtime_not_interruptible"

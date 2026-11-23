@@ -20,24 +20,25 @@ from devops_agent.governance.profiles import (
     resolve,
 )
 from devops_agent.tools.catalog import (
-    READONLY_TOOL_NAMES,
+    DEFAULT_GROUPS,
     WRITE_TOOL_NAMES,
+    build_full_toolkit,
     build_toolkit_for,
 )
 
 
-def test_profiles_bind_mode_tools_and_fallback() -> None:
-    """档位是「mode + 工具集 + 兜底动作」的三元组，缺一项就不成档位。"""
+def test_profiles_bind_mode_write_and_fallback() -> None:
+    """档位是「mode + 写权限提示 + 兜底动作」的预设，不再携带工具集。"""
     assert PROFILES["readonly"].mode == "explore"
     assert PROFILES["readonly"].fallback == "deny"
+    assert not PROFILES["readonly"].write
     assert PROFILES["workspace"].mode == "accept_edits"
     assert PROFILES["workspace"].fallback == "ask"
+    assert PROFILES["workspace"].write
     assert PROFILES["auto"].mode == "dont_ask"
+    assert not PROFILES["auto"].write
     assert PROFILES["unrestricted"].fallback == "hard_deny"
-    # 只有放开档带写工具：其它档位切过去不该突然能改文件
-    assert set(PROFILES["unrestricted"].tools) - set(READONLY_TOOL_NAMES) == set(WRITE_TOOL_NAMES)
-    for key in ("readonly", "workspace", "execute", "auto"):
-        assert "write" not in PROFILES[key].tools
+    assert PROFILES["unrestricted"].write
 
 
 def test_available_respects_env_and_skips_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -98,13 +99,20 @@ def test_context_without_profile_still_reads_yaml() -> None:
     assert context.mode == PermissionMode.DONT_ASK
 
 
-def test_build_toolkit_for_only_writes_in_unrestricted(tmp_path: Path) -> None:
-    def registered(names: tuple[str, ...]) -> set[str]:
-        toolkit = build_toolkit_for(names, tmp_path)
-        return {asyncio.run(toolkit.get_tool(name.capitalize())).name for name in names}
-
-    assert registered(PROFILES["readonly"].tools) == {"Bash", "Read", "Glob", "Grep"}
-    assert {"Write", "Edit"} <= registered(PROFILES["unrestricted"].tools)
+def test_full_toolkit_registers_every_group(tmp_path: Path) -> None:
+    """所有档位共用同一套工具：写工具也在，只是执行时由权限引擎判定。"""
+    toolkit = build_full_toolkit(tmp_path)
+    groups = {group.name: {tool.name for tool in group.tools} for group in toolkit.tool_groups}
+    assert {"Bash", "Read", "Glob", "Grep", "AskUser"} <= groups["basic"]
+    assert {"Write", "Edit"} <= groups["write"]
+    assert {"TaskCreate", "TaskGet", "TaskList", "TaskUpdate"} <= groups["task"]
+    # 默认激活全组，界面导出的 schema 必须包含组内工具
+    names = {
+        schema["function"]["name"]
+        for schema in asyncio.run(toolkit.get_tool_schemas(groups=list(DEFAULT_GROUPS)))
+    }
+    assert {"Bash", "Read", "Glob", "Grep", "AskUser", "Write", "Edit"} <= names
+    assert {"TaskCreate", "TaskGet", "TaskList", "TaskUpdate"} <= names
 
 
 def test_build_toolkit_for_rejects_unknown_tool(tmp_path: Path) -> None:
@@ -115,7 +123,7 @@ def test_build_toolkit_for_rejects_unknown_tool(tmp_path: Path) -> None:
 def test_build_toolkit_for_passes_middlewares_to_every_tool(tmp_path: Path) -> None:
     """密钥注入挂在每个 ToolBase 上：漏挂一个就有一条绕过注入的路。"""
     middleware = MagicMock()
-    names = READONLY_TOOL_NAMES + WRITE_TOOL_NAMES
+    names = ("bash", "read", "glob", "grep") + WRITE_TOOL_NAMES
     toolkit = build_toolkit_for(names, tmp_path, [middleware])
     for name in names:
         tool = asyncio.run(toolkit.get_tool(name.capitalize()))

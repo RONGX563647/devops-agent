@@ -153,3 +153,20 @@ def test_summarize_empty_and_populated() -> None:
     assert populated["total_input_tokens"] == 30
     assert populated["total_output_tokens"] == 15
     assert populated["token_proxy"] == 45
+
+
+def test_summarize_reports_prefix_cache_hit_rate() -> None:
+    """缓存命中率 = 命中读 / 输入；没有输入时返回 None 而不是除零。"""
+    empty = summarize([_run(input_tokens=0, cache_input_tokens=50)])
+    assert empty["cache_read_tokens"] == 50
+    assert empty["cache_hit_rate"] is None
+
+    populated = summarize(
+        [
+            _run(input_tokens=100, cache_input_tokens=60, cache_creation_input_tokens=10),
+            _run(input_tokens=200, cache_input_tokens=60, cache_creation_input_tokens=20),
+        ]
+    )
+    assert populated["cache_read_tokens"] == 120
+    assert populated["cache_write_tokens"] == 30
+    assert populated["cache_hit_rate"] == 0.4

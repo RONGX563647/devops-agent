@@ -78,7 +78,7 @@ def test_context_unknown_profile_falls_back_to_default() -> None:
 
 
 def test_estimate_tokens_calibrated_on_real_context() -> None:
-    """估算要和实测同量级：409 字提示 + 一万字符 schema 实测约 3060 token。"""
+    """估算要和实测同量级：全量工具 schema（含写/任务/AskUser）约 7600 token。"""
     body = client.get("/api/context").json()
-    assert 2600 < body["prefix_tokens"] < 3400
+    assert 6500 < body["prefix_tokens"] < 8800
     assert estimate_tokens("中文四个字") == 3  # 5 个汉字 ÷ 1.4

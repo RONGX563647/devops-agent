@@ -309,3 +309,14 @@ a:hover { text-decoration: underline; }
 }
 @keyframes proc-spin { to { transform: rotate(360deg); } }
 .process-foot { padding: 8px 14px; border-top: 1px solid #f1f5f9; font-size: 11px; color: #94a3b8; }
+
+/* ---- 流式打字机：首 token 占位 + 出字光标 ---- */
+.chat-pending { color: #94a3b8; font-style: italic; }
+.chat-cursor {
+  display: inline-block; margin-left: 1px; color: #2563eb;
+  animation: chat-caret 1s steps(2, start) infinite;
+}
+@keyframes chat-caret { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .chat-cursor { animation: none; }
+}

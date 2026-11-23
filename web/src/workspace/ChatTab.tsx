@@ -1,8 +1,25 @@
 /** 对话 tab：SSE 流式运行 + 消息列表（复用 useRunStream）。 */
 import { useEffect, useRef, useState } from 'react';
 import { useRunStream } from '../api/useRunStream';
+import { useTypewriter } from '../api/useTypewriter';
 import type { ProcessEntry } from '../types';
 import { ProcessBlock } from './ProcessBlock';
+
+/** 助手正文：流式期间逐字揭示 + 闪烁光标，首 token 未到时给推理占位。 */
+function AssistantText({ text, typing }: { text: string; typing: boolean }) {
+  const { text: shown } = useTypewriter(text, typing);
+  if (typing && !shown) return <span className="chat-pending">正在推理…</span>;
+  return (
+    <>
+      {shown}
+      {typing && (
+        <span className="chat-cursor" aria-hidden="true">
+          ▍
+        </span>
+      )}
+    </>
+  );
+}
 
 interface Message {
   role: 'user' | 'assistant';
@@ -94,7 +111,11 @@ export function ChatTab({ session }: Props) {
               />
             )}
             <div className={`chat-bubble ${m.error ? 'has-error' : ''}`}>
-              {m.text || (m.pending && stream.running ? '等待首个 token…' : '')}
+              {m.role === 'assistant' ? (
+                <AssistantText text={m.text} typing={stream.running && i === messages.length - 1} />
+              ) : (
+                m.text
+              )}
             </div>
             {m.error && <div className="error">错误：{m.error}</div>}
           </div>

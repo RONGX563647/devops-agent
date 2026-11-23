@@ -124,15 +124,31 @@ def _strip_fence(content: str) -> str:
     return "\n".join(lines).strip()
 
 
-def _parse_scores(content: str, required: set[str]) -> dict[str, float]:
-    """解析并校验评分的 JSON，返回维度 → 分数。"""
-    text = _strip_fence(content)
+def _load_json(content: str) -> dict[str, Any]:
+    """去掉代码围栏后解析 JSON 对象。"""
     try:
-        parsed = json.loads(text)
+        parsed = json.loads(_strip_fence(content))
     except json.JSONDecodeError as exc:
         raise JudgeError(f"裁判 JSON 解析失败: {exc}") from exc
     if not isinstance(parsed, dict):
         raise JudgeError("裁判 JSON 顶层不是对象")
+    return parsed
+
+
+def _dimension_score(dimension: str, entry: object) -> float:
+    """单个维度的分数：允许 {score: n} 或直接 n，必须落在 1..5。"""
+    value = entry.get("score") if isinstance(entry, dict) else entry
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise JudgeError(f"维度 {dimension} 的分数不是数字")
+    score = float(value)
+    if not 1.0 <= score <= 5.0:
+        raise JudgeError(f"维度 {dimension} 的分数越界: {score}")
+    return score
+
+
+def _parse_scores(content: str, required: set[str]) -> dict[str, float]:
+    """解析并校验评分的 JSON，返回维度 → 分数。"""
+    parsed = _load_json(content)
     raw_scores = parsed.get("scores")
     if not isinstance(raw_scores, dict):
         raise JudgeError("裁判 JSON 缺少 scores 对象")
@@ -142,16 +158,7 @@ def _parse_scores(content: str, required: set[str]) -> dict[str, float]:
         entry = raw_scores.get(dimension)
         if entry is None:
             continue
-        if isinstance(entry, dict):
-            value = entry.get("score")
-        else:
-            value = entry
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise JudgeError(f"维度 {dimension} 的分数不是数字")
-        score = float(value)
-        if not 1.0 <= score <= 5.0:
-            raise JudgeError(f"维度 {dimension} 的分数越界: {score}")
-        scores[dimension] = score
+        scores[dimension] = _dimension_score(dimension, entry)
 
     missing = sorted(required - scores.keys())
     if missing:

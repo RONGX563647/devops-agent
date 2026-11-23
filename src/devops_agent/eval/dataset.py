@@ -172,6 +172,51 @@ def _has_assertion(expected: Expected) -> bool:
     )
 
 
+def _case_tag_errors(case: EvalCase) -> list[str]:
+    """标签必须有值、非空且带 scenario:*。"""
+    if not case.tags:
+        return [f"{case.id}: tags 不能为空"]
+    if any(not tag.strip() for tag in case.tags):
+        return [f"{case.id}: tags 不能包含空字符串"]
+    if scenario_of(case) is None:
+        return [f"{case.id}: 缺少 scenario:* 标签"]
+    return []
+
+
+def _case_errors(case: EvalCase) -> list[str]:
+    """单个用例的标签、断言与 judge 维度校验。"""
+    errors = _case_tag_errors(case)
+    if not _has_assertion(case.expected):
+        errors.append(f"{case.id}: expected 至少需要一条断言")
+    if case.judge is not None:
+        unknown = sorted(set(case.judge.dimensions) - ALLOWED_JUDGE_DIMENSIONS)
+        if unknown:
+            errors.append(f"{case.id}: 未知 judge 维度: {', '.join(unknown)}")
+    return errors
+
+
+def _counts_errors(suite: Suite, actual_counts: Counter[str]) -> list[str]:
+    """manifest 声明的场景计数必须与实际一致。"""
+    if dict(actual_counts) == dict(suite.manifest.counts):
+        return []
+    return [
+        f"manifest.counts 与实际不一致: 期望 {suite.manifest.counts}, 实际 {dict(actual_counts)}"
+    ]
+
+
+def _ratio_errors(n: int, actual_counts: Counter[str]) -> list[str]:
+    """场景配比必须落在目标区间（含容差）内。"""
+    errors: list[str] = []
+    for scenario, (low, high) in RATIO_TARGETS.items():
+        share = actual_counts.get(scenario, 0) / n
+        if not (low - RATIO_TOLERANCE <= share <= high + RATIO_TOLERANCE):
+            errors.append(
+                f"scenario:{scenario} 占比 {share:.1%} 超出 "
+                f"[{low:.0%}, {high:.0%}] ±{RATIO_TOLERANCE:.0%}"
+            )
+    return errors
+
+
 def validate_suite(suite: Suite) -> list[str]:
     """返回语义校验错误；`warning:` 开头的条目只提示、不阻断。
 
@@ -184,18 +229,7 @@ def validate_suite(suite: Suite) -> list[str]:
         if case.id in seen:
             errors.append(f"duplicate case id: {case.id}")
         seen.add(case.id)
-        if not case.tags:
-            errors.append(f"{case.id}: tags 不能为空")
-        elif any(not tag.strip() for tag in case.tags):
-            errors.append(f"{case.id}: tags 不能包含空字符串")
-        elif scenario_of(case) is None:
-            errors.append(f"{case.id}: 缺少 scenario:* 标签")
-        if not _has_assertion(case.expected):
-            errors.append(f"{case.id}: expected 至少需要一条断言")
-        if case.judge is not None:
-            unknown = sorted(set(case.judge.dimensions) - ALLOWED_JUDGE_DIMENSIONS)
-            if unknown:
-                errors.append(f"{case.id}: 未知 judge 维度: {', '.join(unknown)}")
+        errors.extend(_case_errors(case))
 
     actual_sha = suite_sha256(suite.cases)
     if suite.manifest.sha256 != actual_sha:
@@ -204,12 +238,7 @@ def validate_suite(suite: Suite) -> list[str]:
     actual_counts = Counter(
         scenario for case in suite.cases if (scenario := scenario_of(case)) is not None
     )
-    counts_match = dict(actual_counts) == dict(suite.manifest.counts)
-    if not counts_match:
-        errors.append(
-            "manifest.counts 与实际不一致: "
-            f"期望 {suite.manifest.counts}, 实际 {dict(actual_counts)}"
-        )
+    errors.extend(_counts_errors(suite, actual_counts))
 
     n = len(suite.cases)
     if n < suite.manifest.min_cases_for_gate:
@@ -218,13 +247,7 @@ def validate_suite(suite: Suite) -> list[str]:
             f"{suite.manifest.min_cases_for_gate}，不参与发布门禁"
         )
     else:
-        for scenario, (low, high) in RATIO_TARGETS.items():
-            share = actual_counts.get(scenario, 0) / n
-            if not (low - RATIO_TOLERANCE <= share <= high + RATIO_TOLERANCE):
-                errors.append(
-                    f"scenario:{scenario} 占比 {share:.1%} 超出 "
-                    f"[{low:.0%}, {high:.0%}] ±{RATIO_TOLERANCE:.0%}"
-                )
+        errors.extend(_ratio_errors(n, actual_counts))
     return errors
 
 

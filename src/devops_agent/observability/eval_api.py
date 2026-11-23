@@ -65,43 +65,60 @@ def _to_int(value: object) -> int:
     return 0
 
 
+def _text(row: dict[str, object], key: str) -> str:
+    return str(row.get(key) or "")
+
+
+def _summary_int(summary: dict[str, object], key: str) -> int:
+    return int(summary.get(key, 0) or 0)
+
+
+def _summary_float(summary: dict[str, object], key: str) -> float:
+    return float(summary.get(key, 0.0) or 0.0)
+
+
+def _hard_failures(summary: dict[str, object]) -> dict[str, int]:
+    hard = summary.get("hard_failures")
+    if not isinstance(hard, dict):
+        return dict(_HARD_DEFAULTS)
+    return {key: int(hard.get(key, 0) or 0) for key in _HARD_DEFAULTS}
+
+
+def _verdict(row: dict[str, object], summary: dict[str, object]) -> str:
+    verdict = str(summary.get("verdict") or "")
+    # 运行中的批次还没 summary，前端要能显示 running 而不是空徽标
+    if not verdict and row.get("status") == "running":
+        return "running"
+    return verdict
+
+
 def _batch_out(row: dict[str, object]) -> dict[str, Any]:
     """把 DB 行 + summary_json 摊平成稳定响应字段。"""
     summary = _as_dict(row.get("summary_json"))
-    hard = summary.get("hard_failures")
-    hard_failures = (
-        {key: int(hard.get(key, 0) or 0) for key in _HARD_DEFAULTS}
-        if isinstance(hard, dict)
-        else dict(_HARD_DEFAULTS)
-    )
     judge = summary.get("judge")
-    verdict = str(summary.get("verdict") or "")
-    if not verdict and row.get("status") == "running":
-        verdict = "running"
     return {
         "id": _to_int(row["id"]),
-        "suite": str(row.get("suite") or ""),
-        "suite_version": str(row.get("suite_version") or ""),
-        "suite_sha": str(row.get("suite_sha") or ""),
-        "prompt_id": str(row.get("prompt_id") or ""),
-        "prompt_hash": str(row.get("prompt_sha") or ""),
-        "model": str(row.get("model") or ""),
-        "profile": str(row.get("profile") or ""),
-        "started_at": str(row.get("started_at") or ""),
+        "suite": _text(row, "suite"),
+        "suite_version": _text(row, "suite_version"),
+        "suite_sha": _text(row, "suite_sha"),
+        "prompt_id": _text(row, "prompt_id"),
+        "prompt_hash": _text(row, "prompt_sha"),
+        "model": _text(row, "model"),
+        "profile": _text(row, "profile"),
+        "started_at": _text(row, "started_at"),
         "finished_at": row.get("finished_at"),
-        "status": str(row.get("status") or ""),
-        "n": int(summary.get("n", 0) or 0),
-        "passed": int(summary.get("passed", 0) or 0),
-        "pass_rate": float(summary.get("pass_rate", 0.0) or 0.0),
-        "hard_failures": hard_failures,
+        "status": _text(row, "status"),
+        "n": _summary_int(summary, "n"),
+        "passed": _summary_int(summary, "passed"),
+        "pass_rate": _summary_float(summary, "pass_rate"),
+        "hard_failures": _hard_failures(summary),
         "judge": judge if isinstance(judge, dict) else None,
         "trajectory_score": summary.get("trajectory_score"),
-        "p95_ms": int(summary.get("p95_ms", 0) or 0),
-        "tokens_total": int(summary.get("tokens_total", 0) or 0),
-        "cost_total": float(summary.get("cost_total", 0.0) or 0.0),
+        "p95_ms": _summary_int(summary, "p95_ms"),
+        "tokens_total": _summary_int(summary, "tokens_total"),
+        "cost_total": _summary_float(summary, "cost_total"),
         "baseline_id": summary.get("baseline_id"),
-        # 运行中的批次还没 summary，前端要能显示 running 而不是空徽标
-        "verdict": verdict,
+        "verdict": _verdict(row, summary),
     }
 
 

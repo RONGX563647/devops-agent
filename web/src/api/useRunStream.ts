@@ -23,13 +23,18 @@ const INITIAL: StreamState = {
   error: null,
 };
 
+// 手写 SSE 帧解析而非引入 fetch-event-source：本应用只需 POST + data 帧 + abort，
+// 约 10 行即可覆盖，且后端每帧的 type 已写在 data 里、不依赖 event: 行语义。
+// 按 SSE 规范兼容 CRLF 与 \n 两种换行，并支持多行 data 拼接。
 function parseFrame(frame: string): StreamEvent | null {
-  const line = frame
+  const normalized = frame.replace(/\r\n/g, '\n');
+  const dataLines = normalized
     .split('\n')
-    .find((l) => l.startsWith('data: '));
-  if (!line) return null;
+    .filter((l) => l.startsWith('data:'))
+    .map((l) => l.slice(5).trimStart());
+  if (dataLines.length === 0) return null;
   try {
-    return JSON.parse(line.slice(6)) as StreamEvent;
+    return JSON.parse(dataLines.join('\n')) as StreamEvent;
   } catch {
     return null;
   }
@@ -66,7 +71,7 @@ export function useRunStream() {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
         const frames = buffer.split('\n\n');
         buffer = frames.pop() ?? '';
         for (const frame of frames) {

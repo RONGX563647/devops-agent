@@ -151,11 +151,6 @@ def main() -> int:
         selected.append("mutation")
 
     results = [checks[name]() for name in selected]
-    print(
-        f"[duplicate] SKIP — 阈值 {gates['duplicate_code_threshold']}% 已读取；"
-        "未配置重复代码检测器（radon/mutmut/vulture 均不覆盖此项）",
-        flush=True,
-    )
     return 0 if all(results) else 1
 
 

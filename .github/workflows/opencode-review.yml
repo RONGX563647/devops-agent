@@ -1,0 +1,147 @@
+name: opencode-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore: ['web/**', 'docs/**', '**/*.md', '**/package-lock.json']
+
+jobs:
+  review:
+    # 只审同一仓库的非草稿 PR：fork PR 的 GITHUB_TOKEN 是只读的，无法写状态
+    if: |
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write        # 官方 action 要求
+      contents: read         # checkout + git diff
+      pull-requests: write   # 把审查结论评论回 PR
+      issues: write          # 防循环状态 issue
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # 单一 state step：读状态 → 算增量 base → 判轮次（round >= 3 或 SHA 未变则跳过）
+      - name: Resolve review state
+        id: state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          def gh(*args: str) -> str:
+              return subprocess.run(
+                  ["gh", *args], capture_output=True, text=True, check=True
+              ).stdout.strip()
+
+          label = "opencode-review-state"
+          subprocess.run(
+              ["gh", "label", "create", label, "--color", "0E8A16",
+               "--description", "OpenCode review state"],
+              capture_output=True, text=True, check=False,
+          )
+          issue = gh("issue", "list", "--state", "all", "--label", label,
+                     "--json", "number", "--jq", ".[0].number // empty")
+          if not issue:
+              issue = gh("issue", "create", "--title", "[bot] OpenCode review state",
+                         "--body", "{}", "--label", label, "--json", "number",
+                         "--jq", ".number")
+          body = gh("issue", "view", issue, "--json", "body", "--jq", ".body")
+          try:
+              state = json.loads(body)
+          except (ValueError, TypeError):
+              state = {}
+          if not isinstance(state, dict):
+              state = {}
+
+          pr = os.environ["PR_NUMBER"]
+          head = os.environ["HEAD_SHA"]
+          default_base = os.environ["BASE_SHA"]
+          entry = state.get(pr)
+          entry = entry if isinstance(entry, dict) else {}
+          reviewed = str(entry.get("sha", ""))
+          rounds = int(entry.get("round", 0))
+          skip = reviewed == head or rounds >= 3
+          base = reviewed or default_base
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"base={base}\n")
+              out.write(f"round={rounds if skip else rounds + 1}\n")
+              out.write(f"skip={'true' if skip else 'false'}\n")
+              out.write(f"issue={issue}\n")
+          PY
+
+      # 归一化上下文：diff + 调用方代码，一次打包进 prompt
+      - name: Build review context
+        id: ctx
+        if: steps.state.outputs.skip != 'true'
+        run: |
+          {
+            echo 'context<<OPENCODE_CTX_EOF_7f3a'
+            python scripts/build_review_context.py "${{ steps.state.outputs.base }}"
+            echo OPENCODE_CTX_EOF_7f3a
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run opencode review
+        if: steps.state.outputs.skip != 'true'
+        uses: anomalyco/opencode/github@latest
+        env:
+          OPENCODE_REVIEW_KEY: ${{ secrets.DEVOPS_AGENT_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: dashscope/qwen3.8-flash
+          agent: reviewer
+          use_github_token: true
+          prompt: |
+            审查以下代码改动。列出所有确认的问题，每条标注 file:line，按严重度从高到低排序。
+            跳过风格/命名/文档建议，不报推测性问题。无问题只回复 LGTM 和 FINDINGS_TOTAL: 0。
+            末尾单独一行输出 FINDINGS_TOTAL: <问题总数>。
+
+            ---BEGIN CONTEXT---
+            ${{ steps.ctx.outputs.context }}
+            ---END CONTEXT---
+
+      # 审查后把「已审 SHA + 轮次」写回状态 issue，作为下次增量 base 与防循环依据
+      - name: Save review state
+        if: steps.state.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ steps.state.outputs.issue }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ROUND: ${{ steps.state.outputs.round }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          def gh(*args: str, stdin: str | None = None) -> str:
+              return subprocess.run(
+                  ["gh", *args], input=stdin, capture_output=True, text=True, check=True
+              ).stdout.strip()
+
+          issue = os.environ["ISSUE"]
+          body = gh("issue", "view", issue, "--json", "body", "--jq", ".body")
+          try:
+              state = json.loads(body)
+          except (ValueError, TypeError):
+              state = {}
+          if not isinstance(state, dict):
+              state = {}
+          state[os.environ["PR_NUMBER"]] = {
+              "sha": os.environ["HEAD_SHA"],
+              "round": int(os.environ["ROUND"]),
+          }
+          gh("issue", "edit", issue, "--body-file", "-",
+             stdin=json.dumps(state, ensure_ascii=False))
+          PY

@@ -52,11 +52,17 @@ def caller_snippets(symbols: list[str], changed_files: set[str]) -> str:
     return "\n\n".join(blocks)
 
 
+def changed_paths(diff: str) -> set[str]:
+    """从 diff 的 +++ b/ 行提取改动文件路径（去掉 b/ 前缀）。"""
+    return {line[6:] for line in diff.splitlines() if line.startswith("+++ b/")}
+
+
 def build(base: str) -> str:
-    """构造完整审查上下文文本。"""
-    diff = "\n".join(git("diff", base, "HEAD", "--", "src", "tests").splitlines()[:MAX_DIFF_LINES])
-    changed = {line[4:] for line in diff.splitlines() if line.startswith("+++ b/")}
-    callers = caller_snippets(changed_symbols(diff), changed)
+    """构造完整审查上下文文本；三点 diff 排除 base 分支自身的演进。"""
+    diff = "\n".join(
+        git("diff", f"{base}...HEAD", "--", "src", "tests").splitlines()[:MAX_DIFF_LINES]
+    )
+    callers = caller_snippets(changed_symbols(diff), changed_paths(diff))
     return f"=== DIFF ===\n{diff}\n\n=== CALLER CONTEXT ===\n{callers}"
 
 

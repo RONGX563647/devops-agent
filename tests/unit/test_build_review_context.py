@@ -74,7 +74,7 @@ def test_caller_snippets_ignores_grep_with_no_hits(ctx):
 
 def test_build_packs_diff_and_callers(ctx):
     module, responses = ctx
-    responses[("diff", "abc123", "HEAD", "--", "src", "tests")] = (
+    responses[("diff", "abc123...HEAD", "--", "src", "tests")] = (
         "diff --git a/src/devops_agent/main.py b/src/devops_agent/main.py\n"
         "+++ b/src/devops_agent/main.py\n"
         "+def new_api():\n"
@@ -90,8 +90,27 @@ def test_build_packs_diff_and_callers(ctx):
 
 def test_build_truncates_long_diff(ctx):
     module, responses = ctx
-    responses[("diff", "base", "HEAD", "--", "src", "tests")] = "\n".join(
+    responses[("diff", "base...HEAD", "--", "src", "tests")] = "\n".join(
         f"line {i}" for i in range(module.MAX_DIFF_LINES + 50)
     )
     text = module.build("base")
     assert text.count("line ") == module.MAX_DIFF_LINES
+
+
+def test_changed_paths_strips_b_prefix(ctx):
+    module, _ = ctx
+    diff = "+++ b/src/devops_agent/main.py\n+++ /dev/null\n--- a/old.py\n"
+    assert module.changed_paths(diff) == {"src/devops_agent/main.py"}
+
+
+def test_build_skips_changed_file_callers(ctx):
+    """build() 产出的 changed 集合必须是干净路径，避免把改动文件重复注入。"""
+    module, responses = ctx
+    responses[("diff", "base...HEAD", "--", "src", "tests")] = (
+        "+++ b/src/devops_agent/main.py\n+def new_api():\n"
+    )
+    responses[("grep", "-n", "new_api", "--", "src")] = "src/devops_agent/main.py:5:new_api()\n"
+    responses[("show", "HEAD:src/devops_agent/main.py")] = "new_api()\n"
+    text = module.build("base")
+    assert "CALLER CONTEXT" in text
+    assert "main.py:5" not in text  # 改动文件已被跳过

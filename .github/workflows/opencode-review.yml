@@ -94,10 +94,12 @@ jobs:
       - name: Build review context
         id: ctx
         if: steps.state.outputs.skip != 'true'
+        env:
+          BASE_SHA: ${{ steps.state.outputs.base }}
         run: |
           {
             echo 'context<<OPENCODE_CTX_EOF_7f3a'
-            python scripts/build_review_context.py "${{ steps.state.outputs.base }}"
+            python scripts/build_review_context.py "$BASE_SHA"
             echo OPENCODE_CTX_EOF_7f3a
           } >> "$GITHUB_OUTPUT"
 

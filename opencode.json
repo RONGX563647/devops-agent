@@ -3,6 +3,7 @@
   "model": "dashscope/qwen3.8-flash",
   "agent": {
     "reviewer": {
+      "description": "单步只读代码审查代理，输出 file:line 问题清单与 FINDINGS_TOTAL",
       "mode": "primary",
       "model": "dashscope/qwen3.8-flash",
       "steps": 1,

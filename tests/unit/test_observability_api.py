@@ -156,3 +156,11 @@ def test_feedback_and_trends(db: Path) -> None:
     assert body["count"] == 1
     assert body["averages"]["correctness"] == 1.0
     assert body["by_source"]["human"] == 1
+
+
+def test_feedback_rejects_unknown_dimension(db: Path) -> None:
+    """非法评测维度应在入口被拒（422），不污染 DB。"""
+    bad = client.post("/api/feedback/1", json={"score": 1.0, "dimension": "not_a_dimension"})
+    assert bad.status_code == 422
+    trends = client.get("/api/eval/trends").json()
+    assert trends["count"] == 0

@@ -13,9 +13,10 @@ from collections import Counter
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from devops_agent.config import HealthPolicy, load_health
+from devops_agent.eval.scorer import EvalDimension
 from devops_agent.observability import health as health_mod
 from devops_agent.observability import repository as repo
 from devops_agent.observability.models import EvalScoreRecord, RunRecord, SpanRecord
@@ -62,11 +63,19 @@ class RunListOut(BaseModel):
 
 
 class FeedbackIn(BaseModel):
-    dimension: str = "correctness"
+    dimension: str = EvalDimension.CORRECTNESS.value
     score: float
     source: str = "human"
     rater: str = ""
     comment: str = ""
+
+    @field_validator("dimension")
+    @classmethod
+    def _valid_dimension(cls, value: str) -> str:
+        """拒绝非法评测维度，避免脏值写入 DB（STATIC 约束之外的第一道校验）。"""
+        if not EvalDimension.is_valid(value):
+            raise ValueError(f"未知评测维度: {value}")
+        return value
 
 
 def _health_policy() -> HealthPolicy:

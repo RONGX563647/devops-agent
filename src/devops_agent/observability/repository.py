@@ -15,11 +15,15 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from devops_agent.eval.scorer import EvalDimension
 from devops_agent.observability.models import EvalScoreRecord, RunRecord, SpanRecord
 
 DB_PATH_ENV = "DEVOPS_AGENT_DB_PATH"
 
-_SCHEMA = """
+# 评测维度 CHECK 与枚举同源：新增维度只改 EvalDimension，DB 约束自动跟进。
+_DIMENSIONS_SQL = ", ".join(f"'{dim.value}'" for dim in EvalDimension)
+
+_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id    TEXT NOT NULL,
@@ -59,7 +63,7 @@ CREATE INDEX IF NOT EXISTS idx_spans_run ON spans(run_id);
 CREATE TABLE IF NOT EXISTS eval_scores (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    dimension   TEXT NOT NULL CHECK (dimension IN ('correctness', 'performance', 'safety')),
+    dimension   TEXT NOT NULL CHECK (dimension IN ({_DIMENSIONS_SQL})),
     score       REAL NOT NULL,
     source      TEXT NOT NULL CHECK (source IN ('human', 'judge', 'rule')),
     rater       TEXT NOT NULL DEFAULT '',

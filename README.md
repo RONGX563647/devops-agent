@@ -13,7 +13,7 @@
 | 原则 | 落地 |
 |---|---|
 | **编排与执行分离** | 模型不可靠，执行必须可靠；`runtime` 管编排，`executor` 管沙箱 |
-| **框架与业务分离** | `runtime/agent.py` 是唯一 import `agentscope` 的地方，业务不依赖框架 |
+| **框架与业务分离** | `agentscope` 只在 6 个装配/工厂模块中 import（见 AGENTS.md §3.1），网关与可观测性依赖协议/工厂，不直接依赖框架 |
 | **过程态与源码分离** | 运行态写 `workspace/`（不提交），代码改动走 git PR |
 | **过程隔离、结果共享** | 并行 Agent 互不读私有记忆，通过台账共享结果（台账待实现，见 Roadmap） |
 
@@ -27,14 +27,15 @@ devops-agent/
 ├── .gitignore
 ├── config/
 │   ├── policy.yaml          # 运行时策略：权限矩阵 / max_iters / 模型重试
-│   └── gates.yaml           # 质量门禁阈值（check_gates.py 读取）
+│   ├── gates.yaml           # 质量门禁阈值（check_gates.py 读取）
+│   └── health.yaml          # 健康分权重与延迟基准
 ├── scripts/
 │   └── check_gates.py       # 从 gates.yaml 读取阈值并执行 CI 门禁
 ├── src/devops_agent/
 │   ├── config.py            # config/*.yaml 的唯一加载入口（强类型）
 │   ├── main.py              # FastAPI 入口（/health + /run + /run/stream + /api/*）
 │   ├── runtime/             # 编排层
-│   │   ├── agent.py         #   build_agent()：唯一 import agentscope
+│   │   ├── agent.py         #   build_agent()：Agent/模型装配（框架隔离边界之一）
 │   │   ├── events.py        #   事件 → 普通 dict（原生序列化 + duck typing 边界）
 │   │   ├── supervisor.py    #   TeamPipeline / GoalPipeline 编排
 │   │   └── runtime.py       #   AgentRuntime 协议（框架隔离接口）
@@ -48,11 +49,7 @@ devops-agent/
 │   ├── executor/boundary.py # LocalWorkspace / DockerWorkspace 沙箱
 │   ├── governance/policy.py # PermissionEngine 权限引擎
 │   ├── memory/ledger.py     # Mem0Middleware 长期记忆
-│   └── eval/scorer.py       # 评测维度枚举（打分逻辑待实现）
-├── config/
-│   ├── policy.yaml          # 运行时策略
-│   ├── gates.yaml           # 质量门禁阈值
-│   └── health.yaml          # 健康分权重与延迟基准
+│   └── eval/scorer.py       # 评测维度常量（EvalDimension）
 ├── web/                     # React 18 + TS + Vite 可观测性前端
 ├── tests/                   # unit / integration
 ├── skills/                  # 预留：可复用技能（Roadmap）

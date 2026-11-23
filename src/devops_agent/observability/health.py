@@ -14,6 +14,7 @@ from __future__ import annotations
 from math import ceil
 
 from devops_agent.config import HealthPolicy
+from devops_agent.eval.scorer import EvalDimension
 from devops_agent.observability.models import EvalScoreRecord, RunRecord, SpanRecord
 
 # 评分维度 key（也是对外输出的子分名称）
@@ -48,7 +49,11 @@ def efficiency_score(run: RunRecord, baseline_ms: int) -> float:
 
 def quality_score(scores: list[EvalScoreRecord]) -> float | None:
     """效果质量：correctness 维度均值；无评分返回 None（该维度不参与加权）。"""
-    values = [s.score for s in scores if s.dimension == "correctness" and 0.0 <= s.score <= 1.0]
+    values = [
+        s.score
+        for s in scores
+        if s.dimension == EvalDimension.CORRECTNESS.value and 0.0 <= s.score <= 1.0
+    ]
     if not values:
         return None
     return _clamp(sum(values) / len(values) * 100.0)

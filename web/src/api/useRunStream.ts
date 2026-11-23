@@ -11,6 +11,8 @@ export interface StreamState {
   steps: ProcessEntry[];
   inputTokens: number;
   outputTokens: number;
+  /** 命中前缀缓存的输入 token，用于底部遥测栏的缓存命中率。 */
+  cacheInputTokens: number;
   runId: number | null;
   error: string | null;
   modelName: string;
@@ -26,6 +28,7 @@ export const INITIAL_STATE: StreamState = {
   steps: [],
   inputTokens: 0,
   outputTokens: 0,
+  cacheInputTokens: 0,
   runId: null,
   error: null,
   modelName: '',
@@ -259,7 +262,7 @@ const HANDLERS: Record<string, EventHandler> = {
     modelName: e.model_name ?? s.modelName,
     steps: upsertStep(s.steps, {
       id: blockStepId(e, 'model'),
-      kind: 'lifecycle',
+      kind: 'model',
       label: `模型调用 · ${e.model_name ?? '未知'}`,
       detail: '',
       state: 'running',
@@ -270,11 +273,18 @@ const HANDLERS: Record<string, EventHandler> = {
     ...s,
     inputTokens: e.input_tokens ?? s.inputTokens,
     outputTokens: e.output_tokens ?? s.outputTokens,
+    cacheInputTokens: e.cache_input_tokens ?? s.cacheInputTokens,
     steps: patchStep(
       s.steps,
       blockStepId(e, 'model'),
-      { state: 'success', endedAt: e.created_at ?? null },
-      { kind: 'lifecycle', label: '模型调用', detail: '', state: 'success', at: eventAt(e) },
+      {
+        state: 'success',
+        endedAt: e.created_at ?? null,
+        tokensIn: e.input_tokens,
+        tokensOut: e.output_tokens,
+        cacheTokens: e.cache_input_tokens,
+      },
+      { kind: 'model', label: '模型调用', detail: '', state: 'success', at: eventAt(e) },
     ),
   }),
   HINT_BLOCK: (s, e) => {
@@ -492,6 +502,7 @@ const HANDLERS: Record<string, EventHandler> = {
     runId: e.run_id ?? null,
     inputTokens: e.input_tokens ?? s.inputTokens,
     outputTokens: e.output_tokens ?? s.outputTokens,
+    cacheInputTokens: e.cache_input_tokens ?? s.cacheInputTokens,
     running: false,
     steps: finishRunningSteps(s.steps),
     endedAt: s.endedAt ?? e.created_at ?? null,

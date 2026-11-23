@@ -15,6 +15,10 @@ from pathlib import Path
 from devops_agent.observability import repository as repo
 from devops_agent.observability.models import InputStageRecord, RunRecord, SpanRecord
 
+# 单个 span 的入参/返回最长保留字符数。工具返回可能是整份日志，
+# 全量落库会让 sqlite 文件无上限膨胀；8k 足够定位问题，超长部分靠 run 的输出兜底。
+MAX_SPAN_TEXT = 8_000
+
 
 def utc_now() -> str:
     """当前 UTC 时间（ISO 8601），供 recorder 打点。"""
@@ -65,6 +69,8 @@ class RunRecorder:
         self._final_text = ""
         self._finished_reason = ""
         self._pending: dict[str, dict[str, object]] = {}
+        # 最近的工具调用 id：部分 delta 事件不带 tool_call_id，只能回落到上一个工具
+        self._last_tool_key = ""
         # 输入解析阶段在过程中先缓存，finish 时随 run 一起落库（run_id 此时才齐备）
         self._input_stages: list[InputStageRecord] = []
         self._conn: sqlite3.Connection | None = None
@@ -107,7 +113,9 @@ class RunRecorder:
         "MODEL_CALL_START": "_on_model_start",
         "MODEL_CALL_END": "_on_model_end",
         "TOOL_CALL_START": "_on_tool_start",
+        "TOOL_CALL_DELTA": "_on_tool_args_delta",
         "TOOL_CALL_END": "_on_tool_end",
+        "TOOL_RESULT_TEXT_DELTA": "_on_tool_result_delta",
         "TOOL_RESULT_END": "_on_tool_end",
         "TEXT_BLOCK_DELTA": "_on_text_delta",
         "EXCEED_MAX_ITERS": "_on_exceed_iters",
@@ -150,11 +158,32 @@ class RunRecorder:
         )
 
     def _on_tool_start(self, event: dict[str, object]) -> None:
-        self._pending[str(event.get("tool_call_id", ""))] = {
+        key = str(event.get("tool_call_id", ""))
+        self._last_tool_key = key
+        self._pending[key] = {
             "type": "tool",
             "name": str(event.get("tool_call_name", "tool")),
             "start": self._event_time(event),
+            "input": "",
+            "output": "",
         }
+
+    def _on_tool_args_delta(self, event: dict[str, object]) -> None:
+        """累积工具入参：span 里没有入参，事后就回答不了「它到底执行了什么」。"""
+        self._append_tool_text(event, "input")
+
+    def _on_tool_result_delta(self, event: dict[str, object]) -> None:
+        """累积工具返回，与入参分开存放，前端可以按页签分别渲染。"""
+        self._append_tool_text(event, "output")
+
+    def _append_tool_text(self, event: dict[str, object], field: str) -> None:
+        """把一条增量拼到对应工具 span 的 input/output 上，超长时保留尾部。"""
+        key = str(event.get("tool_call_id", "")) or self._last_tool_key
+        pending = self._pending.get(key)
+        if pending is None or pending.get("type") != "tool":
+            return
+        merged = str(pending.get(field, "")) + str(event.get("delta", ""))
+        pending[field] = merged[-MAX_SPAN_TEXT:]
 
     def _on_tool_end(self, event: dict[str, object]) -> None:
         state = event.get("state")
@@ -233,8 +262,8 @@ class RunRecorder:
             name=name or str(pending.get("name", "step")),
             start_offset_ms=offset,
             duration_ms=duration,
-            input="",
-            output="",
+            input=str(pending.get("input", "")),
+            output=str(pending.get("output", "")),
             tokens=tokens,
             status=status,
             error=None,

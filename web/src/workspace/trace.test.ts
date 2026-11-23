@@ -67,7 +67,8 @@ describe('turnsFromMessages', () => {
     // lifecycle 不作为轨迹条目；工具 + 正文
     expect(turns[0].items.map((item) => item.kind)).toEqual(['tool', 'text']);
     expect(turns[0].items[0]).toMatchObject({
-      title: '调用工具 · bash',
+      title: 'bash',
+      layer: 'tool',
       args: 'kubectl',
       result: 'timeout',
     });

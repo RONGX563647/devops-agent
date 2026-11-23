@@ -22,6 +22,8 @@ from devops_agent.runtime.agent import build_agentscope_runtime
 from devops_agent.runtime.runtime import AgentRuntime, EchoRuntime
 from devops_agent.secrets.api import router as secrets_router
 from devops_agent.secrets.vault import get_vault
+from devops_agent.tools.api import router as tools_router
+from devops_agent.tools.context_api import router as context_router
 
 
 def select_runtime() -> AgentRuntime:
@@ -41,6 +43,8 @@ app.state.runtime = select_runtime()
 app.include_router(observability_router)
 app.include_router(attachments_router)
 app.include_router(secrets_router)
+app.include_router(tools_router)
+app.include_router(context_router)
 
 
 class RunRequest(BaseModel):

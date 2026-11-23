@@ -243,3 +243,52 @@ def test_recorder_consume_before_start_is_noop(tmp_path: Path) -> None:
     rec.consume(_evt("TEXT_BLOCK_DELTA", delta="ignored"))
     assert rec.final_text == ""
     assert rec.finish() == -1
+
+
+def test_recorder_captures_tool_args_and_result(tmp_path: Path) -> None:
+    """工具 span 必须落参数与返回：否则运行记录页点开一个步骤是空的。"""
+    rec = RunRecorder(tmp_path / "t.db")
+    rec.start("s", "列目录")
+    rec.consume(_evt("TOOL_CALL_START", tool_call_id="t1", tool_call_name="Bash"))
+    rec.consume(_evt("TOOL_CALL_DELTA", tool_call_id="t1", delta='{"command":'))
+    rec.consume(_evt("TOOL_CALL_DELTA", tool_call_id="t1", delta=' "ls"}'))
+    rec.consume(_evt("TOOL_RESULT_TEXT_DELTA", delta="a.txt\n"))
+    # 结果 delta 不带 tool_call_id：回落到最近一个工具，不能丢
+    rec.consume(_evt("TOOL_RESULT_TEXT_DELTA", delta="b.txt"))
+    rec.consume(_evt("TOOL_RESULT_END", tool_call_id="t1", state="success"))
+    run_id = rec.finish()
+
+    with repo.connect(tmp_path / "t.db") as conn:
+        spans = repo.list_spans(conn, run_id)
+
+    assert len(spans) == 1
+    assert spans[0].input == '{"command": "ls"}'
+    assert spans[0].output == "a.txt\nb.txt"
+
+
+def test_recorder_truncates_oversized_tool_output(tmp_path: Path) -> None:
+    """超长返回只保留尾部，避免把整份日志写进 sqlite。"""
+    rec = RunRecorder(tmp_path / "t.db")
+    rec.start("s", "看日志")
+    rec.consume(_evt("TOOL_CALL_START", tool_call_id="t1", tool_call_name="Bash"))
+    rec.consume(_evt("TOOL_RESULT_TEXT_DELTA", delta="x" * 9_000 + "TAIL"))
+    rec.consume(_evt("TOOL_RESULT_END", tool_call_id="t1", state="success"))
+    run_id = rec.finish()
+
+    with repo.connect(tmp_path / "t.db") as conn:
+        spans = repo.list_spans(conn, run_id)
+
+    assert len(spans[0].output) == 8_000
+    assert spans[0].output.endswith("TAIL")
+
+
+def test_recorder_ignores_orphan_tool_delta(tmp_path: Path) -> None:
+    """没有对应 TOOL_CALL_START 的增量直接丢弃，不能凭空造 span。"""
+    rec = RunRecorder(tmp_path / "t.db")
+    rec.start("s", "q")
+    rec.consume(_evt("TOOL_CALL_DELTA", tool_call_id="ghost", delta='{"x":1}'))
+    rec.consume(_evt("TOOL_RESULT_TEXT_DELTA", delta="orphan"))
+    run_id = rec.finish()
+
+    with repo.connect(tmp_path / "t.db") as conn:
+        assert repo.list_spans(conn, run_id) == []

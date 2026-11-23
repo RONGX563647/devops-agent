@@ -24,7 +24,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # 单一 state step：读状态 → 算增量 base → 判轮次（round >= 3 或 SHA 未变则跳过）
+      # 每个 PR 独立 issue 存状态：读状态 → 算增量 base → 判轮次（round >= 3 或 SHA 未变则跳过）
       - name: Resolve review state
         id: state
         env:
@@ -45,26 +45,31 @@ jobs:
                   raise RuntimeError(f"gh {' '.join(args)} failed: {proc.stderr.strip()}")
               return proc.stdout.strip()
 
-          def find_state_issue(label: str) -> str:
-              found = gh("issue", "list", "--state", "all", "--label", label,
-                         "--json", "number", "--jq", ".[0].number // empty")
-              if found:
-                  return found
-              # 新建后标签搜索可能有索引延迟，直接解析 create 返回的 URL
-              url = gh("issue", "create", "--title", "[bot] OpenCode review state",
-                       "--body", "{}", "--label", label)
-              match = re.search(r"/issues/(\d+)", url)
-              return match.group(1) if match else ""
-
+          pr = os.environ["PR_NUMBER"]
           label = "opencode-review-state"
+          title = f"[bot] OpenCode review state PR #{pr}"
           subprocess.run(
               ["gh", "label", "create", label, "--color", "0E8A16",
                "--description", "OpenCode review state"],
               capture_output=True, text=True, check=False,
           )
-          issue = find_state_issue(label)
+
+          # 按标题精确匹配本 PR 的 issue，避免多个 PR 共用一个 body 造成读改写竞态
+          listing = gh("issue", "list", "--state", "all", "--label", label,
+                       "--json", "number,title")
+          issue = ""
+          for row in json.loads(listing or "[]"):
+              if row.get("title") == title:
+                  issue = str(row["number"])
+                  break
+          if not issue:
+              # 标签搜索可能有索引延迟，直接解析 create 返回的 URL
+              url = gh("issue", "create", "--title", title, "--body", "{}", "--label", label)
+              match = re.search(r"/issues/(\d+)", url)
+              issue = match.group(1) if match else ""
           if not issue:
               raise RuntimeError("cannot locate or create review state issue")
+
           body = gh("issue", "view", issue, "--json", "body", "--jq", ".body")
           try:
               state = json.loads(body)
@@ -73,13 +78,10 @@ jobs:
           if not isinstance(state, dict):
               state = {}
 
-          pr = os.environ["PR_NUMBER"]
           head = os.environ["HEAD_SHA"]
           default_base = os.environ["BASE_SHA"]
-          entry = state.get(pr)
-          entry = entry if isinstance(entry, dict) else {}
-          reviewed = str(entry.get("sha", ""))
-          rounds = int(entry.get("round", 0))
+          reviewed = str(state.get("sha", ""))
+          rounds = int(state.get("round", 0))
           skip = reviewed == head or rounds >= 3
           base = reviewed or default_base
 
@@ -143,14 +145,7 @@ jobs:
               ).stdout.strip()
 
           issue = os.environ["ISSUE"]
-          body = gh("issue", "view", issue, "--json", "body", "--jq", ".body")
-          try:
-              state = json.loads(body)
-          except (ValueError, TypeError):
-              state = {}
-          if not isinstance(state, dict):
-              state = {}
-          state[os.environ["PR_NUMBER"]] = {
+          state = {
               "sha": os.environ["HEAD_SHA"],
               "round": int(os.environ["ROUND"]),
           }

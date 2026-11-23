@@ -15,6 +15,8 @@ MAX_DIFF_LINES = 800
 MAX_CONTEXT_CHARS = 12000
 CALLER_WINDOW = 15
 MAX_SYMBOLS = 10
+DIFF_PATHS = ["src", "tests", "scripts", ".github/workflows", "opencode.json", ".opencode/agents"]
+GREP_PATHS = ["src", "tests", "scripts", ".github/workflows"]
 
 
 def git(*args: str) -> str:
@@ -33,10 +35,10 @@ def changed_symbols(diff: str) -> list[str]:
 
 
 def caller_snippets(symbols: list[str], changed_files: set[str]) -> str:
-    """在 src/ 里找符号引用点，截取上下文；跳过本次改动的文件。"""
+    """在代码目录里找符号引用点，截取上下文；跳过本次改动的文件。"""
     blocks: list[str] = []
     for symbol in symbols:
-        hits = git("grep", "-n", symbol, "--", "src").splitlines()[:3]
+        hits = git("grep", "-n", symbol, "--", *GREP_PATHS).splitlines()[:3]
         for hit in hits:
             parts = hit.split(":", 2)
             if len(parts) < 2:
@@ -59,9 +61,7 @@ def changed_paths(diff: str) -> set[str]:
 
 def build(base: str) -> str:
     """构造完整审查上下文文本；三点 diff 排除 base 分支自身的演进。"""
-    diff = "\n".join(
-        git("diff", f"{base}...HEAD", "--", "src", "tests").splitlines()[:MAX_DIFF_LINES]
-    )
+    diff = "\n".join(git("diff", f"{base}...HEAD", "--", *DIFF_PATHS).splitlines()[:MAX_DIFF_LINES])
     callers = caller_snippets(changed_symbols(diff), changed_paths(diff))
     return f"=== DIFF ===\n{diff}\n\n=== CALLER CONTEXT ===\n{callers}"
 

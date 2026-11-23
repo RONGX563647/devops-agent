@@ -55,7 +55,7 @@ def test_changed_symbols_caps_at_max(ctx):
 
 def test_caller_snippets_skips_changed_files(ctx):
     module, responses = ctx
-    responses[("grep", "-n", "alpha", "--", "src")] = (
+    responses[("grep", "-n", "alpha", "--", *module.GREP_PATHS)] = (
         "src/devops_agent/changed.py:10:alpha\nsrc/devops_agent/caller.py:20:alpha = alpha()\n"
     )
     responses[("show", "HEAD:src/devops_agent/caller.py")] = "\n".join(
@@ -74,12 +74,14 @@ def test_caller_snippets_ignores_grep_with_no_hits(ctx):
 
 def test_build_packs_diff_and_callers(ctx):
     module, responses = ctx
-    responses[("diff", "abc123...HEAD", "--", "src", "tests")] = (
+    responses[("diff", "abc123...HEAD", "--", *module.DIFF_PATHS)] = (
         "diff --git a/src/devops_agent/main.py b/src/devops_agent/main.py\n"
         "+++ b/src/devops_agent/main.py\n"
         "+def new_api():\n"
     )
-    responses[("grep", "-n", "new_api", "--", "src")] = "src/devops_agent/caller.py:5:new_api()\n"
+    responses[("grep", "-n", "new_api", "--", *module.GREP_PATHS)] = (
+        "src/devops_agent/caller.py:5:new_api()\n"
+    )
     responses[("show", "HEAD:src/devops_agent/caller.py")] = "new_api()\n"
     text = module.build("abc123")
     assert "=== DIFF ===" in text
@@ -90,7 +92,7 @@ def test_build_packs_diff_and_callers(ctx):
 
 def test_build_truncates_long_diff(ctx):
     module, responses = ctx
-    responses[("diff", "base...HEAD", "--", "src", "tests")] = "\n".join(
+    responses[("diff", "base...HEAD", "--", *module.DIFF_PATHS)] = "\n".join(
         f"line {i}" for i in range(module.MAX_DIFF_LINES + 50)
     )
     text = module.build("base")
@@ -106,10 +108,12 @@ def test_changed_paths_strips_b_prefix(ctx):
 def test_build_skips_changed_file_callers(ctx):
     """build() 产出的 changed 集合必须是干净路径，避免把改动文件重复注入。"""
     module, responses = ctx
-    responses[("diff", "base...HEAD", "--", "src", "tests")] = (
+    responses[("diff", "base...HEAD", "--", *module.DIFF_PATHS)] = (
         "+++ b/src/devops_agent/main.py\n+def new_api():\n"
     )
-    responses[("grep", "-n", "new_api", "--", "src")] = "src/devops_agent/main.py:5:new_api()\n"
+    responses[("grep", "-n", "new_api", "--", *module.GREP_PATHS)] = (
+        "src/devops_agent/main.py:5:new_api()\n"
+    )
     responses[("show", "HEAD:src/devops_agent/main.py")] = "new_api()\n"
     text = module.build("base")
     assert "CALLER CONTEXT" in text

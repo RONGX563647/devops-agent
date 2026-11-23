@@ -1,6 +1,7 @@
 /** 会话工作台：左侧会话栏 + 顶部会话标题 + tab 行，指标等作为对话内的 tab。 */
+import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { SessionSidebar } from './SessionSidebar';
+import { SessionSidebar, aggregateSessions, useSessionRuns } from './SessionSidebar';
 import { Dashboard } from '../pages/Dashboard';
 import { Quality } from '../pages/Quality';
 import { Cost } from '../pages/Cost';
@@ -33,6 +34,14 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
   const [params, setParams] = useSearchParams();
   const tab = parseTab(params.get('tab') ?? initialTab);
   const session = params.get('session') ?? initialSession;
+  const [newNonce, setNewNonce] = useState(0);
+
+  const runs = useSessionRuns();
+  const sessions = aggregateSessions(runs.data?.items ?? []);
+  const current = session ? sessions.find((s) => s.id === session) : undefined;
+  const title = session ? (current?.title ?? session) : '新会话';
+  const totalRuns = sessions.reduce((sum, s) => sum + s.runCount, 0);
+  const failedRuns = sessions.reduce((sum, s) => sum + s.failedCount, 0);
 
   function switchTab(key: TabKey) {
     const next = new URLSearchParams(params);
@@ -47,12 +56,21 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
     setParams(next, { replace: true });
   }
 
+  /** 新会话 = 清空当前对话：换 key 让 ChatTab 重挂载，即使已在「全部会话」也生效。 */
+  function startNewSession() {
+    setNewNonce((n) => n + 1);
+    switchSession(null);
+  }
+
   return (
     <div className="workspace">
-      <SessionSidebar selected={session} onSelect={switchSession} />
+      <SessionSidebar selected={session} onSelect={switchSession} onNew={startNewSession} />
       <div className="workspace-main">
         <header className="workspace-header">
-          <h1 className="workspace-title">{session ?? '全部会话'}</h1>
+          <h1 className="workspace-title">{title}</h1>
+          <span className="workspace-chip">
+            {totalRuns} 次运行{failedRuns ? ` · ${failedRuns} 次失败` : ''}
+          </span>
         </header>
         <nav className="workspace-tabs" role="tablist" aria-label="会话视图">
           {TABS.map((t) => (
@@ -67,8 +85,10 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
             </button>
           ))}
         </nav>
-        <main className="workspace-body" role="tabpanel">
-          {tab === 'chat' && <ChatTab session={session} />}
+        <main className={`workspace-body${tab === 'chat' ? ' is-chat' : ''}`} role="tabpanel">
+          {tab === 'chat' && (
+            <ChatTab key={`${session ?? 'new'}-${newNonce}`} session={session} />
+          )}
           {tab === 'trace' && <TraceTab session={session} />}
           {tab === 'metrics' && <Dashboard />}
           {tab === 'quality' && <Quality />}

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChatTab } from './ChatTab';
+import { ChatTab, formatClock, shouldStickToBottom } from './ChatTab';
 
 const start = vi.fn();
 const stop = vi.fn();
@@ -51,11 +51,42 @@ beforeEach(() => {
   resetStream();
 });
 
+describe('shouldStickToBottom', () => {
+  it('贴底或接近底部时继续吸底', () => {
+    expect(shouldStickToBottom(1000, 600, 400)).toBe(true); // 正好在底部
+    expect(shouldStickToBottom(1000, 550, 400)).toBe(true); // 距底 50px
+  });
+
+  it('上翻超过阈值后不再吸底，避免拽回阅读位置', () => {
+    expect(shouldStickToBottom(1000, 400, 400)).toBe(false); // 距底 200px
+  });
+
+  it('内容不足一屏时始终吸底', () => {
+    expect(shouldStickToBottom(300, 0, 400)).toBe(true);
+  });
+});
+
+describe('formatClock', () => {
+  it('取本地时分，非法或缺值返回空串', () => {
+    const local = new Date(2026, 10, 23, 9, 5);
+    expect(formatClock(local.toISOString())).toBe('09:05');
+    expect(formatClock(null)).toBe('');
+    expect(formatClock('bad')).toBe('');
+  });
+});
+
 describe('ChatTab', () => {
-  it('渲染空态与输入框', () => {
+  it('渲染空态引导卡与输入框', () => {
     render(<ChatTab session={null} />);
-    expect(screen.getByText(/输入问题开始对话/)).toBeTruthy();
+    expect(screen.getByText('开始一次会话')).toBeTruthy();
     expect(screen.getByRole('button', { name: /发送/ })).toBeTruthy();
+  });
+
+  it('点击示例问题直接发起会话', () => {
+    render(<ChatTab session="s-1" />);
+    fireEvent.click(screen.getByRole('button', { name: /CI 流程是怎么跑的/ }));
+    expect(start).toHaveBeenCalledWith('s-1', '这个仓库的 CI 流程是怎么跑的？');
+    expect(screen.getByText('这个仓库的 CI 流程是怎么跑的？')).toBeTruthy();
   });
 
   it('提交后追加用户消息并调用 start', () => {
@@ -71,42 +102,50 @@ describe('ChatTab', () => {
     expect(start).toHaveBeenCalledWith('live-1', 'hi');
   });
 
-  it('首 token 未到前显示推理占位，而不是空白气泡', () => {
+  it('首 token 未到时不留空气泡', () => {
     const { rerender } = render(<ChatTab session="s-1" />);
     submit('hi');
     stream.running = true;
     rerender(<ChatTab session="s-1" />);
-    expect(screen.getByText('正在推理…')).toBeTruthy();
+    expect(screen.queryByText('正在推理…')).toBeNull();
+    expect(document.querySelector('.chat-msg.assistant .chat-bubble')).toBeNull();
   });
 
-  it('收到文本后逐字出字并显示光标', async () => {
+  it('收到文本即完整渲染，不做逐字揭示', () => {
     const { rerender } = render(<ChatTab session="s-1" />);
     submit('hi');
-
     stream.running = true;
     stream.text = '持续交付是一种工程实践';
     rerender(<ChatTab session="s-1" />);
-
-    await waitFor(() => {
-      expect(document.querySelector('.chat-cursor')).not.toBeNull();
-    });
-    // 打字机是渐进的：首帧只揭示前几个字，不等同于一次性全出
-    expect(screen.queryByText('持续交付是一种工程实践')).toBeNull();
+    expect(screen.getByText('持续交付是一种工程实践')).toBeTruthy();
+    expect(document.querySelector('.chat-cursor')).toBeNull();
   });
 
-  it('流结束后光标移除并显示全文', async () => {
+  it('流结束后保留全文', () => {
     const { rerender } = render(<ChatTab session="s-1" />);
     submit('hi');
-
     stream.running = true;
     stream.text = '流水线失败常见于测试阶段';
     rerender(<ChatTab session="s-1" />);
-    await waitFor(() => expect(document.querySelector('.chat-cursor')).not.toBeNull());
-
     stream.running = false;
     rerender(<ChatTab session="s-1" />);
-    expect(await screen.findByText('流水线失败常见于测试阶段')).toBeTruthy();
-    expect(document.querySelector('.chat-cursor')).toBeNull();
+    expect(screen.getByText('流水线失败常见于测试阶段')).toBeTruthy();
+  });
+
+  it('助手消息带复制与重试操作条，重试复用原问题', async () => {
+    const { rerender } = render(<ChatTab session="s-1" />);
+    submit('hi');
+    stream.text = '这是答案';
+    stream.endedAt = new Date(2026, 10, 23, 9, 5).toISOString();
+    rerender(<ChatTab session="s-1" />);
+
+    expect(await screen.findByText('这是答案')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '复制' })).toBeTruthy();
+    expect(screen.getByText('09:05')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenLastCalledWith('s-1', 'hi');
   });
 });
 

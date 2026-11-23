@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Run } from '../types';
-import { aggregateSessions } from './SessionSidebar';
+import { aggregateSessions, groupOf, toSessionTitle } from './SessionSidebar';
 import { Workspace, parseTab } from './Workspace';
 
 function makeRun(
@@ -12,13 +12,14 @@ function makeRun(
   sessionId: string,
   status: Run['status'] = 'success',
   startedAt = `2026-11-23T10:00:${String(id).padStart(2, '0')}`,
+  input = 'q',
 ): Run {
   return {
     id,
     session_id: sessionId,
     domain: 'delivery',
     status,
-    input: 'q',
+    input,
     output: 'a',
     started_at: startedAt,
     ended_at: null,
@@ -60,9 +61,9 @@ beforeEach(() => {
     disconnect() {}
   });
   mockRuns([
-    makeRun(1, 's-one'),
-    makeRun(2, 's-one', 'failed'),
-    makeRun(3, 's-two', 'success', '2026-11-22T09:00:00'),
+    makeRun(1, 's-one', 'success', '2026-11-23T10:00:01', '会话一的第一个问题'),
+    makeRun(2, 's-one', 'failed', '2026-11-23T10:00:02', '后续的短问题'),
+    makeRun(3, 's-two', 'success', '2026-11-22T09:00:00', '会话二的问题'),
   ]);
 });
 afterEach(() => {
@@ -79,6 +80,27 @@ describe('parseTab', () => {
   });
 });
 
+describe('toSessionTitle', () => {
+  it('压成单行并按长度截断', () => {
+    expect(toSessionTitle('  多行\n输入  ')).toBe('多行 输入');
+    expect(toSessionTitle('一二三四五六七八九十一二三四五六七八九十超出部分')).toBe(
+      '一二三四五六七八九十一二三四五六七八九十…',
+    );
+    expect(toSessionTitle('   ')).toBe('未命名会话');
+  });
+});
+
+describe('groupOf', () => {
+  const now = new Date(2026, 10, 23, 12, 0, 0);
+
+  it('按本地日界分今天/昨天/更早', () => {
+    expect(groupOf(new Date(2026, 10, 23, 8, 0, 0).toISOString(), now)).toBe('今天');
+    expect(groupOf(new Date(2026, 10, 22, 23, 0, 0).toISOString(), now)).toBe('昨天');
+    expect(groupOf(new Date(2026, 10, 20, 10, 0, 0).toISOString(), now)).toBe('更早');
+    expect(groupOf('bad', now)).toBe('更早');
+  });
+});
+
 describe('aggregateSessions', () => {
   it('按 session_id 聚合、统计失败数并按最新时间排序', () => {
     const sessions = aggregateSessions([
@@ -92,6 +114,14 @@ describe('aggregateSessions', () => {
     expect(sessions[0].failedCount).toBe(1);
     expect(sessions[1].id).toBe('s-two');
   });
+
+  it('标题取最早一条用户输入，不被后续短问题覆盖', () => {
+    const sessions = aggregateSessions([
+      makeRun(1, 's-one', 'success', '2026-11-23T10:00:01', '会话主题：CI 流水线为什么失败'),
+      makeRun(2, 's-one', 'success', '2026-11-23T10:05:00', '继续'),
+    ]);
+    expect(sessions[0].title).toBe('会话主题：CI 流水线为什么失败');
+  });
 });
 
 describe('Workspace', () => {
@@ -99,7 +129,13 @@ describe('Workspace', () => {
     renderWorkspace();
     expect(screen.getAllByRole('tab')).toHaveLength(5);
     expect(screen.getByRole('tab', { name: '对话' }).getAttribute('aria-selected')).toBe('true');
-    expect(screen.getByText(/逐帧渲染/)).toBeTruthy();
+    expect(screen.getByText('开始一次会话')).toBeTruthy();
+  });
+
+  it('默认标题为新会话，并显示运行统计 chip', async () => {
+    renderWorkspace();
+    expect(screen.getByRole('heading', { name: '新会话' })).toBeTruthy();
+    expect(await screen.findByText('3 次运行 · 1 次失败')).toBeTruthy();
   });
 
   it('从 URL 读取初始 tab，点击切换到指标', async () => {
@@ -112,7 +148,24 @@ describe('Workspace', () => {
 
   it('点击会话切换标题并选中态', async () => {
     renderWorkspace();
-    fireEvent.click(await screen.findByRole('button', { name: /s-one/ }));
-    expect(screen.getByRole('heading', { name: 's-one' })).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: /会话一的第一个问题/ }));
+    expect(screen.getByRole('heading', { name: '会话一的第一个问题' })).toBeTruthy();
+  });
+
+  it('搜索框按标题过滤会话', async () => {
+    renderWorkspace();
+    await screen.findByRole('button', { name: /会话一的第一个问题/ });
+    fireEvent.change(screen.getByRole('searchbox', { name: '搜索会话' }), {
+      target: { value: '会话二' },
+    });
+    expect(screen.queryByRole('button', { name: /会话一的第一个问题/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /会话二的问题/ })).toBeTruthy();
+  });
+
+  it('新会话按钮清空当前选择', async () => {
+    renderWorkspace('/?session=s-two');
+    expect(await screen.findByRole('heading', { name: '会话二的问题' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /新会话/ }));
+    expect(screen.getByRole('heading', { name: '新会话' })).toBeTruthy();
   });
 });

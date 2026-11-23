@@ -82,13 +82,38 @@ export interface StreamEvent {
   created_at?: string;
   session_id?: string;
   reply_id?: string;
+  block_id?: string;
   delta?: string;
+  name?: string;
   model_name?: string;
   tool_call_name?: string;
+  tool_call_id?: string;
+  state?: string;
+  hint?: string;
+  source?: string;
   input_tokens?: number;
   output_tokens?: number;
   finished_reason?: string;
   error?: string;
   run_id?: number;
   text?: string;
+}
+
+/** 过程步骤的类别——每类在 UI 上有不同视觉标注。 */
+export type ProcessKind =
+  | 'lifecycle'
+  | 'text'
+  | 'thinking'
+  | 'tool'
+  | 'control'
+  | 'error';
+
+/** 一条过程步骤：由若干同类事件流聚合成，携带展示所需的标注与状态。 */
+export interface ProcessEntry {
+  id: string;
+  kind: ProcessKind;
+  label: string;
+  detail: string;
+  state: 'running' | 'success' | 'error';
+  toolCallId?: string;
 }

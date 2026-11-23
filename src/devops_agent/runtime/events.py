@@ -32,15 +32,20 @@ SPAN_EVENT_TYPES = frozenset(
 
 # 所有事件都带的基础字段（缺失补空串，保证 key 稳定）
 _BASE_FIELDS = ("type", "created_at", "session_id", "reply_id")
-# 按事件类型补充的标量字段（仅当值非 None 才输出）
+# 按事件类型补充的标量字段（仅当值非 None 才输出）。
+# hint/source 供 HINT_BLOCK 显示分析提示，block_id 供正文/思考/工具结果块按 id 配对；
+# 这些字段此前被投影层丢弃，导致前端拿到的 HINT_BLOCK 是空壳、无法区分同类块。
 _SCALAR_FIELDS = (
     "name",
     "role",
     "model_name",
     "tool_call_id",
     "tool_call_name",
+    "block_id",
     "delta",
     "state",
+    "hint",
+    "source",
     "finished_reason",
     "input_tokens",
     "output_tokens",

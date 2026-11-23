@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatTab } from './ChatTab';
 
@@ -71,42 +71,34 @@ describe('ChatTab', () => {
     expect(start).toHaveBeenCalledWith('live-1', 'hi');
   });
 
-  it('首 token 未到前显示推理占位，而不是空白气泡', () => {
+  it('首 token 未到时不留空气泡', () => {
     const { rerender } = render(<ChatTab session="s-1" />);
     submit('hi');
     stream.running = true;
     rerender(<ChatTab session="s-1" />);
-    expect(screen.getByText('正在推理…')).toBeTruthy();
+    expect(screen.queryByText('正在推理…')).toBeNull();
+    expect(document.querySelector('.chat-msg.assistant .chat-bubble')).toBeNull();
   });
 
-  it('收到文本后逐字出字并显示光标', async () => {
+  it('收到文本即完整渲染，不做逐字揭示', () => {
     const { rerender } = render(<ChatTab session="s-1" />);
     submit('hi');
-
     stream.running = true;
     stream.text = '持续交付是一种工程实践';
     rerender(<ChatTab session="s-1" />);
-
-    await waitFor(() => {
-      expect(document.querySelector('.chat-cursor')).not.toBeNull();
-    });
-    // 打字机是渐进的：首帧只揭示前几个字，不等同于一次性全出
-    expect(screen.queryByText('持续交付是一种工程实践')).toBeNull();
+    expect(screen.getByText('持续交付是一种工程实践')).toBeTruthy();
+    expect(document.querySelector('.chat-cursor')).toBeNull();
   });
 
-  it('流结束后光标移除并显示全文', async () => {
+  it('流结束后保留全文', () => {
     const { rerender } = render(<ChatTab session="s-1" />);
     submit('hi');
-
     stream.running = true;
     stream.text = '流水线失败常见于测试阶段';
     rerender(<ChatTab session="s-1" />);
-    await waitFor(() => expect(document.querySelector('.chat-cursor')).not.toBeNull());
-
     stream.running = false;
     rerender(<ChatTab session="s-1" />);
-    expect(await screen.findByText('流水线失败常见于测试阶段')).toBeTruthy();
-    expect(document.querySelector('.chat-cursor')).toBeNull();
+    expect(screen.getByText('流水线失败常见于测试阶段')).toBeTruthy();
   });
 });
 

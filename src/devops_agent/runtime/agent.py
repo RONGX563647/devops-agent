@@ -36,7 +36,6 @@ def build_agent(
     middlewares: Sequence[MiddlewareBase] | None = None,
     max_iters: int | None = None,
     max_retries: int | None = None,
-    fallback_model: ChatModelBase | None = None,
     policy: RuntimePolicy | None = None,
 ) -> Agent:
     """按域装配一个 Agent（交付 / 排期 / 定位共用此工厂）。
@@ -45,10 +44,6 @@ def build_agent(
     max_iters 按域取 react.max_iters.<name>，未命中回退 default。
     """
     resolved = policy if policy is not None else load_policy()
-    if fallback_model is None and resolved.model.fallback_model is not None:
-        raise ValueError(
-            "policy.yaml 已配置 model.fallback_model，请显式传入 fallback_model 模型对象"
-        )
     return Agent(
         name=name,
         system_prompt=system_prompt,
@@ -60,7 +55,6 @@ def build_agent(
         ),
         model_config=ModelConfig(
             max_retries=max_retries if max_retries is not None else resolved.model.max_retries,
-            fallback_model=fallback_model,
         ),
     )
 

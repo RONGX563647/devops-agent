@@ -127,9 +127,3 @@ def test_build_agent_explicit_limits_override_policy() -> None:
     agent = build_agent("schedule", "sys", MagicMock(), max_iters=2, max_retries=1, policy=policy)
     assert agent.react_config.max_iters == 2
     assert agent.model_config.max_retries == 1
-
-
-def test_build_agent_fallback_model_requires_explicit_model() -> None:
-    policy = RuntimePolicy(model=ModelPolicy(fallback_model="some-model"))
-    with pytest.raises(ValueError, match="fallback_model"):
-        build_agent("schedule", "sys", MagicMock(), policy=policy)

@@ -84,7 +84,6 @@ class ModelPolicy(BaseModel):
     """policy.yaml 的 model 段。"""
 
     max_retries: int = 3
-    fallback_model: str | None = None
 
 
 class RuntimePolicy(BaseModel):

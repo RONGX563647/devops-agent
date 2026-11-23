@@ -45,6 +45,30 @@ def test_event_to_dict_converts_enum_and_scalars() -> None:
     assert "error" not in data
 
 
+def test_event_to_dict_keeps_annotation_fields() -> None:
+    """hint/source/block_id 必须透传，否则前端拿到的 HINT_BLOCK 是空壳、无法区分同类块。"""
+    from dataclasses import dataclass as dc
+
+    @dc
+    class FakeHint:
+        type: object
+        hint: str
+        source: str
+        block_id: str
+
+    data = event_to_dict(
+        FakeHint(
+            type=FakeEnum("HINT_BLOCK"),
+            hint="已完成分析",
+            source="reasoning",
+            block_id="b1",
+        )
+    )
+    assert data["hint"] == "已完成分析"
+    assert data["source"] == "reasoning"
+    assert data["block_id"] == "b1"
+
+
 def test_event_to_dict_tolerates_missing_fields() -> None:
     @dataclass
     class Minimal:

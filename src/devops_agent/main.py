@@ -242,6 +242,7 @@ async def _stream_entry(
         return
     run_id = recorder.finish()
     in_tok, out_tok = recorder.token_usage
+    cache_read, cache_write = recorder.cache_usage
     yield _named_frame(
         "done",
         {
@@ -250,6 +251,10 @@ async def _stream_entry(
             "status": "success",
             "input_tokens": in_tok,
             "output_tokens": out_tok,
+            # 缓存必须与 input 同时给：只给 input 时前端拿最后一次的命中除以整轮输入，
+            # 命中率会被系统性低估「调用次数」倍。
+            "cache_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_write,
             "text": recorder.final_text,
         },
     )

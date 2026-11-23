@@ -28,6 +28,10 @@ class RunRecord:
     # P1 补充：输入输出 token 分拆，用于按不同单价算成本
     input_tokens: int = 0
     output_tokens: int = 0
+    # 前缀缓存命中量（input_tokens 已含这部分）与本次新写入缓存的量。
+    # 只记 input/output 时算不出命中率，界面上就只剩一个拍脑袋的百分比。
+    cache_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
     # P1 补充：客户端幂等键，防止重试写入重复 run
     request_id: str = ""
     # 本轮的权限档位（readonly / workspace / execute / unrestricted / auto）
@@ -52,6 +56,9 @@ class SpanRecord:
     # P1 补充：模型调用的 token 分拆，工具 span 保持 0
     input_tokens: int = 0
     output_tokens: int = 0
+    # 这一次调用的缓存命中/写入量：逐调用可见，才回答得了「哪一步开始全冷」
+    cache_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)

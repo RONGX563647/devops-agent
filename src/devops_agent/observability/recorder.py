@@ -77,6 +77,10 @@ class RunRecorder:
         self._started_monotonic_ms = 0
         self._input_tokens = 0
         self._output_tokens = 0
+        # 前缀缓存：命中量（从缓存读）与创建量（本次写入缓存）。两者都按调用累加，
+        # 只留最后一次会让命中率被低估「调用次数」倍。
+        self._cache_input_tokens = 0
+        self._cache_creation_input_tokens = 0
         self._final_text = ""
         self._finished_reason = ""
         self._finished = False
@@ -130,6 +134,8 @@ class RunRecorder:
         self._final_text = record.output
         self._input_tokens = record.input_tokens
         self._output_tokens = record.output_tokens
+        self._cache_input_tokens = record.cache_input_tokens
+        self._cache_creation_input_tokens = record.cache_creation_input_tokens
         self._permission = record.permission or self._permission
         self._finished = False
         return run_id
@@ -173,14 +179,20 @@ class RunRecorder:
     def _on_model_end(self, event: dict[str, object]) -> None:
         in_tok = _as_int(event.get("input_tokens", 0))
         out_tok = _as_int(event.get("output_tokens", 0))
+        cache_read = _as_int(event.get("cache_input_tokens", 0))
+        cache_write = _as_int(event.get("cache_creation_input_tokens", 0))
         self._input_tokens += in_tok
         self._output_tokens += out_tok
+        self._cache_input_tokens += cache_read
+        self._cache_creation_input_tokens += cache_write
         self._close_span(
             str(event.get("reply_id", "")),
             self._event_time(event),
             in_tok + out_tok,
             input_tokens=in_tok,
             output_tokens=out_tok,
+            cache_input_tokens=cache_read,
+            cache_creation_input_tokens=cache_write,
         )
 
     def _on_tool_start(self, event: dict[str, object]) -> None:
@@ -271,6 +283,8 @@ class RunRecorder:
         status: str = "ok",
         input_tokens: int = 0,
         output_tokens: int = 0,
+        cache_input_tokens: int = 0,
+        cache_creation_input_tokens: int = 0,
     ) -> None:
         """把 pending 中的起点配对成一条 span 落库；无起点则忽略。"""
         if self._run_id is None:
@@ -295,6 +309,8 @@ class RunRecorder:
             error=None,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cache_input_tokens=cache_input_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
         )
         with repo.connect(self._db_path) as conn:
             repo.add_span(conn, span)
@@ -325,6 +341,8 @@ class RunRecorder:
                 health_score=None,  # health_score 由 P2 的健康分模块计算
                 input_tokens=self._input_tokens,
                 output_tokens=self._output_tokens,
+                cache_input_tokens=self._cache_input_tokens,
+                cache_creation_input_tokens=self._cache_creation_input_tokens,
             )
         self._input_stages = []
         self._finished = True
@@ -351,3 +369,8 @@ class RunRecorder:
     def token_usage(self) -> tuple[int, int]:
         """返回 (input_tokens, output_tokens)。"""
         return self._input_tokens, self._output_tokens
+
+    @property
+    def cache_usage(self) -> tuple[int, int]:
+        """返回 (cache_input_tokens, cache_creation_input_tokens)，均为全程累加。"""
+        return self._cache_input_tokens, self._cache_creation_input_tokens

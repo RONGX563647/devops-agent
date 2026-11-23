@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS runs (
     health_score  REAL,
     input_tokens  INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
     request_id    TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_request ON runs(request_id)
@@ -62,7 +64,9 @@ CREATE TABLE IF NOT EXISTS spans (
     status          TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok', 'error')),
     error           TEXT,
     input_tokens    INTEGER NOT NULL DEFAULT 0,
-    output_tokens   INTEGER NOT NULL DEFAULT 0
+    output_tokens   INTEGER NOT NULL DEFAULT 0,
+    cache_input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_spans_run ON spans(run_id);
 CREATE TABLE IF NOT EXISTS input_stages (
@@ -112,6 +116,17 @@ _RUN_COLUMNS: tuple[tuple[str, str], ...] = (
     # 本 run 已发出的确认请求次数：模型被拒后换个写法重试会产生新的 tool_call_id，
     # 按 id 去重挡不住，只能按 run 计数兜底
     ("ask_count", "INTEGER NOT NULL DEFAULT 0"),
+    # 缓存命中/写入：老库补列后旧记录读出来是 0，界面据此显示「无数据」而不是 0%
+    ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    ("cache_creation_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+# spans 上后加的列：逐调用的 token 分拆与缓存命中，用来回答「哪一步开始全冷」。
+_SPAN_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    ("output_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    ("cache_creation_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -152,11 +167,18 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """按 PRAGMA 结果补列。已存在的列跳过，重复执行安全。"""
-    existing = {str(row["name"]) for row in conn.execute("PRAGMA table_info(runs)")}
-    for name, ddl in _RUN_COLUMNS:
+    _ensure_columns(conn, "runs", _RUN_COLUMNS)
+    _ensure_columns(conn, "spans", _SPAN_COLUMNS)
+
+
+def _ensure_columns(
+    conn: sqlite3.Connection, table: str, columns: tuple[tuple[str, str], ...]
+) -> None:
+    """给指定表补齐缺失的列（表名与 DDL 都是模块内常量，不含外部输入）。"""
+    existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, ddl in columns:
         if name not in existing:
-            # 列名与 DDL 都是模块内常量，不含外部输入
-            conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {ddl}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
 def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
@@ -174,8 +196,9 @@ def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
         """INSERT INTO runs
            (session_id, domain, status, input, output, started_at, ended_at,
             duration_ms, model, total_tokens, health_score,
-            input_tokens, output_tokens, request_id, permission)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            input_tokens, output_tokens, request_id, permission,
+            cache_input_tokens, cache_creation_input_tokens)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run.session_id,
             run.domain,
@@ -192,6 +215,8 @@ def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
             run.output_tokens,
             run.request_id or None,
             run.permission,
+            run.cache_input_tokens,
+            run.cache_creation_input_tokens,
         ),
     )
     assert cur.lastrowid is not None  # INSERT 成功时 sqlite3 保证有 lastrowid
@@ -210,11 +235,14 @@ def finish_run(
     health_score: float | None,
     input_tokens: int = 0,
     output_tokens: int = 0,
+    cache_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
 ) -> None:
-    """运行结束时回填结果与聚合指标（含 token 分拆）。"""
+    """运行结束时回填结果与聚合指标（含 token 分拆与缓存命中）。"""
     conn.execute(
         """UPDATE runs SET status=?, output=?, ended_at=?, duration_ms=?,
-           total_tokens=?, health_score=?, input_tokens=?, output_tokens=? WHERE id=?""",
+           total_tokens=?, health_score=?, input_tokens=?, output_tokens=?,
+           cache_input_tokens=?, cache_creation_input_tokens=? WHERE id=?""",
         (
             status,
             output,
@@ -224,6 +252,8 @@ def finish_run(
             health_score,
             input_tokens,
             output_tokens,
+            cache_input_tokens,
+            cache_creation_input_tokens,
             run_id,
         ),
     )
@@ -234,8 +264,9 @@ def add_span(conn: sqlite3.Connection, span: SpanRecord) -> int:
     cur = conn.execute(
         """INSERT INTO spans
            (run_id, type, name, start_offset_ms, duration_ms, input, output,
-            tokens, status, error, input_tokens, output_tokens)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            tokens, status, error, input_tokens, output_tokens,
+            cache_input_tokens, cache_creation_input_tokens)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             span.run_id,
             span.type,
@@ -249,6 +280,8 @@ def add_span(conn: sqlite3.Connection, span: SpanRecord) -> int:
             span.error,
             span.input_tokens,
             span.output_tokens,
+            span.cache_input_tokens,
+            span.cache_creation_input_tokens,
         ),
     )
     assert cur.lastrowid is not None  # INSERT 成功时 sqlite3 保证有 lastrowid
@@ -334,6 +367,8 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         health_score=row["health_score"],
         input_tokens=row["input_tokens"],
         output_tokens=row["output_tokens"],
+        cache_input_tokens=row["cache_input_tokens"],
+        cache_creation_input_tokens=row["cache_creation_input_tokens"],
         request_id=row["request_id"],
         permission=row["permission"] or "",
     )
@@ -354,6 +389,8 @@ def _span_from_row(row: sqlite3.Row) -> SpanRecord:
         error=row["error"],
         input_tokens=row["input_tokens"],
         output_tokens=row["output_tokens"],
+        cache_input_tokens=row["cache_input_tokens"],
+        cache_creation_input_tokens=row["cache_creation_input_tokens"],
     )
 
 
@@ -488,7 +525,7 @@ def summary_rows(conn: sqlite3.Connection) -> list[RunRecord]:
     rows = conn.execute(
         """SELECT id, session_id, domain, status, started_at, ended_at, duration_ms,
                   model, total_tokens, health_score, input_tokens, output_tokens, request_id,
-                  input, output, permission
+                  cache_input_tokens, cache_creation_input_tokens, input, output, permission
            FROM runs"""
     ).fetchall()
     return [_run_from_row(row) for row in rows]

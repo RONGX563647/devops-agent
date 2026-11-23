@@ -215,6 +215,80 @@ def test_recorder_full_lifecycle(tmp_path: Path) -> None:
         assert spans[1].status == "ok"
 
 
+def test_recorder_accumulates_cache_across_calls(tmp_path: Path) -> None:
+    """缓存量必须逐调用累加：只留最后一次会让命中率被低估「调用次数」倍。"""
+    rec = RunRecorder(tmp_path / "c.db", model="qwen")
+    rec.start("s-cache", "看下代码")
+    for i, (in_tok, cache, write) in enumerate([(3060, 0, 3060), (9645, 9216, 0)], start=1):
+        rec.consume(_evt("MODEL_CALL_START", reply_id=f"r{i}", model_name="qwen"))
+        rec.consume(
+            _evt(
+                "MODEL_CALL_END",
+                reply_id=f"r{i}",
+                created_at=f"2026-11-23T14:00:0{i}+00:00",
+                input_tokens=in_tok,
+                output_tokens=10,
+                cache_input_tokens=cache,
+                cache_creation_input_tokens=write,
+            )
+        )
+    rec.consume(_evt("REPLY_END", finished_reason="completed"))
+    run_id = rec.finish()
+
+    assert rec.token_usage == (3060 + 9645, 20)
+    assert rec.cache_usage == (9216, 3060)
+    with repo.connect(tmp_path / "c.db") as conn:
+        run = repo.get_run(conn, run_id)
+        assert run is not None
+        assert run.cache_input_tokens == 9216
+        assert run.cache_creation_input_tokens == 3060
+        spans = [s for s in repo.list_spans(conn, run_id) if s.type == "model"]
+        # 逐调用可见：第一枪全冷、第二枪命中，界面才回答得了「哪一步开始全冷」
+        assert [(s.input_tokens, s.cache_input_tokens) for s in spans] == [
+            (3060, 0),
+            (9645, 9216),
+        ]
+
+
+def test_migration_adds_cache_columns_to_old_db(tmp_path: Path) -> None:
+    """老库没有缓存列：init_db 必须补上，且旧记录读出来是 0 而不是报错。"""
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+            domain TEXT NOT NULL, status TEXT NOT NULL, input TEXT NOT NULL,
+            output TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, ended_at TEXT,
+            duration_ms INTEGER, model TEXT NOT NULL DEFAULT '',
+            total_tokens INTEGER NOT NULL DEFAULT 0, health_score REAL,
+            input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+            request_id TEXT
+        );
+        CREATE TABLE spans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL,
+            type TEXT NOT NULL, name TEXT NOT NULL,
+            start_offset_ms INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER,
+            input TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '',
+            tokens INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'ok', error TEXT
+        );
+        INSERT INTO runs (session_id, domain, status, input, started_at)
+            VALUES ('s-old', 'debug', 'success', '旧记录', '2026-11-20T10:00:00+00:00');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with repo.connect(db) as c:
+        repo.init_db(c)
+        run = repo.get_run(c, 1)
+    assert run is not None
+    assert run.cache_input_tokens == 0
+    assert run.cache_creation_input_tokens == 0
+
+
 def test_recorder_exceed_max_iters_marks_failed(tmp_path: Path) -> None:
     rec = RunRecorder(tmp_path / "t.db")
     rec.start("s2", "跑不完")

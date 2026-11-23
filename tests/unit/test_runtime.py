@@ -1,13 +1,20 @@
 """编排层工厂单元测试（用 MagicMock 作为 model，不发真实模型请求）。"""
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
 from agentscope.agent import Agent
+from agentscope.message import Msg, TextBlock
 from agentscope.pipeline import GoalPipeline, TeamMember, TeamPipeline
 
 from devops_agent.config import ModelPolicy, ReactPolicy, RuntimePolicy
-from devops_agent.runtime.agent import build_agent
+from devops_agent.runtime.agent import (
+    AgentScopeRuntime,
+    build_agent,
+    build_chat_model,
+    text_from_msg,
+)
 from devops_agent.runtime.runtime import EchoRuntime
 from devops_agent.runtime.supervisor import (
     as_member,
@@ -56,7 +63,51 @@ def test_build_goal_pipeline() -> None:
 
 
 def test_echo_runtime() -> None:
-    assert EchoRuntime().run("s1", "hi") == "[s1] hi"
+    assert asyncio.run(EchoRuntime().run("s1", "hi")) == "[s1] hi"
+
+
+def test_text_from_msg_extracts_text_only() -> None:
+    msg = Msg(
+        name="assistant",
+        content=[
+            {"type": "thinking", "thinking": "内部推理", "id": "t1", "created_at": "x"},
+            TextBlock(type="text", text="你好", id="b1", created_at="x"),
+            TextBlock(type="text", text="世界", id="b2", created_at="x"),
+        ],
+        role="assistant",
+    )
+    assert text_from_msg(msg) == "你好世界"
+
+
+def test_build_chat_model_missing_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in ("DEVOPS_AGENT_API_KEY", "DEVOPS_AGENT_BASE_URL", "DEVOPS_AGENT_MODEL"):
+        monkeypatch.delenv(key, raising=False)
+    with pytest.raises(RuntimeError, match="缺少环境变量"):
+        build_chat_model()
+
+
+def test_build_chat_model_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
+    from agentscope.model import OpenAIChatModel
+
+    assert isinstance(build_chat_model(), OpenAIChatModel)
+
+
+def test_agentscope_runtime_run() -> None:
+    """用假 Agent 验证异步适配：await reply → 提取纯文本。"""
+
+    class FakeAgent:
+        async def reply(self, msg: Msg) -> Msg:
+            return Msg(
+                name="assistant",
+                content=[TextBlock(type="text", text="已处理", id="b1", created_at="x")],
+                role="assistant",
+            )
+
+    runtime = AgentScopeRuntime(FakeAgent())  # type: ignore[arg-type]
+    assert asyncio.run(runtime.run("s1", "hello")) == "已处理"
 
 
 def test_build_agent_reads_policy_defaults() -> None:

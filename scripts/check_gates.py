@@ -18,19 +18,22 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from pathlib import Path
 
-import yaml
-
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-GATES_FILE = ROOT / "config" / "gates.yaml"
 
 
 def load_gates() -> dict[str, int]:
-    """读取 gates.yaml，返回扁平化的阈值表。"""
-    with GATES_FILE.open(encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
-    raw = data.get("quality_gates", data)
-    return {str(key): int(value) for key, value in raw.items()}
+    """读取 gates.yaml，复用应用配置层的强类型加载器（阈值单一来源）。
+
+    显式把当前仓库的 src 放到 sys.path 最前，确保加载的是本次 checkout 的配置层，
+    而不是 editable install .pth 指向的其它副本；函数内 import 避免模块级副作用。
+    """
+    if str(SRC) not in sys.path:
+        sys.path.insert(0, str(SRC))
+    from devops_agent.config import load_gates as load_app_gates
+
+    gates = load_app_gates()
+    return gates.model_dump()
 
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:

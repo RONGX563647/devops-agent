@@ -13,4 +13,3 @@ react:
 
 model:
   max_retries: 3
-  fallback_model: null     # 降级模型，类型待确认

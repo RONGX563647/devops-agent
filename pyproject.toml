@@ -50,5 +50,5 @@ source = ["devops_agent"]
 branch = true
 
 [tool.coverage.report]
-fail_under = 80
 show_missing = true
+# 阈值唯一来源是 config/gates.yaml（由 scripts/check_gates.py 读取并注入 --cov-fail-under）

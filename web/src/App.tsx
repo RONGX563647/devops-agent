@@ -1,6 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
 import { Dashboard } from './pages/Dashboard';
+import { RunDetail } from './pages/RunDetail';
+import { Runs } from './pages/Runs';
 import { Placeholder } from './pages/Placeholder';
 
 const queryClient = new QueryClient({
@@ -24,8 +26,8 @@ export default function App() {
           <main className="app-main">
             <Routes>
               <Route path="/" element={<Dashboard />} />
-              <Route path="/runs" element={<Placeholder title="运行列表" />} />
-              <Route path="/runs/:id" element={<Placeholder title="Trace 详情" />} />
+              <Route path="/runs" element={<Runs />} />
+              <Route path="/runs/:id" element={<RunDetail />} />
               <Route path="/quality" element={<Placeholder title="质量评估" />} />
               <Route path="/cost" element={<Placeholder title="成本性能" />} />
             </Routes>

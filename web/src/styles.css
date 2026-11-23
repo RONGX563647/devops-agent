@@ -118,3 +118,46 @@ a:hover { text-decoration: underline; }
   border-radius: 8px;
   font-size: 13px;
 }
+
+.pagination { display: flex; align-items: center; gap: 14px; margin-top: 16px; justify-content: center; }
+.pagination button {
+  padding: 7px 14px; border: 1px solid #d1d5db; border-radius: 8px;
+  background: #fff; font-size: 13px; cursor: pointer; color: #1f2937;
+}
+.pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.detail-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px 18px; margin-bottom: 14px; font-size: 13px;
+}
+.detail-grid > div { display: flex; gap: 8px; align-items: center; }
+.detail-key { color: #64748b; }
+.io-block { margin-top: 12px; font-size: 13px; }
+.io-block pre {
+  background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px;
+  padding: 10px 12px; white-space: pre-wrap; word-break: break-word;
+  font-size: 12px; line-height: 1.6; margin: 6px 0 0; color: #334155;
+}
+
+.health-dims { display: flex; flex-direction: column; gap: 10px; }
+.health-total { font-size: 20px; font-weight: 600; color: #0f172a; margin-bottom: 4px; }
+.health-dim { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+.dim-name { width: 90px; color: #475569; }
+.dim-bar { flex: 1; height: 10px; background: #e5e7eb; border-radius: 999px; overflow: hidden; }
+.dim-fill { height: 100%; background: #2563eb; border-radius: 999px; }
+.dim-value { width: 44px; text-align: right; color: #64748b; }
+
+.waterfall { display: flex; flex-direction: column; gap: 8px; }
+.waterfall-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.waterfall-label {
+  width: 220px; text-align: left; border: 0; background: transparent;
+  cursor: pointer; color: #334155; font-size: 12px; padding: 0;
+}
+.waterfall-label:hover { color: #2563eb; }
+.waterfall-track { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; position: relative; }
+.waterfall-bar { position: absolute; top: 3px; height: 12px; border-radius: 3px; }
+.bar-model { background: #3b82f6; }
+.bar-tool { background: #8b5cf6; }
+.bar-permission { background: #f59e0b; }
+.bar-error { background: #dc2626; }
+.waterfall-ms { width: 60px; text-align: right; color: #64748b; }

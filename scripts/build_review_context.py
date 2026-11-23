@@ -64,13 +64,17 @@ def resolve_base(base: str) -> bool:
     return bool(git("rev-parse", "--verify", "--quiet", f"{base}^{{commit}}").strip())
 
 
+NO_CHANGES = "NO_REVIEWABLE_CHANGES"
+
+
 def build(base: str) -> str:
     """构造完整审查上下文；三点 diff 排除 base 分支自身的演进。"""
     if not resolve_base(base):
         raise ValueError(f"unresolvable base commit: {base}")
     diff = "\n".join(git("diff", f"{base}...HEAD", "--", *DIFF_PATHS).splitlines()[:MAX_DIFF_LINES])
     if not diff.strip():
-        raise ValueError("empty diff: no reviewable changes in DIFF_PATHS")
+        # 无可审内容是非错误状态，交给 workflow 中性跳过，不制造虚假 CI 失败
+        return NO_CHANGES
     callers = caller_snippets(changed_symbols(diff), changed_paths(diff))
     return f"=== DIFF ===\n{diff}\n\n=== CALLER CONTEXT ===\n{callers}"
 

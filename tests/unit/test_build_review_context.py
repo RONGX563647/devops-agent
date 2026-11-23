@@ -135,10 +135,9 @@ def test_build_rejects_unresolvable_base(ctx):
         module.build("deadbeef")
 
 
-def test_build_rejects_empty_diff(ctx):
-    """空 diff 必须抛错，避免未审代码被静默判过。"""
+def test_build_signals_empty_diff(ctx):
+    """空 diff 返回中性哨兵，交给 workflow 跳过，避免虚假 CI 失败。"""
     module, responses = ctx
     _stub_base(module, responses, "base")
     responses[("diff", "base...HEAD", "--", *module.DIFF_PATHS)] = ""
-    with pytest.raises(ValueError, match="empty diff"):
-        module.build("base")
+    assert module.build("base") == module.NO_CHANGES

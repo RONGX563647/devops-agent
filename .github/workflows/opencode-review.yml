@@ -89,6 +89,15 @@ jobs:
           default_base = os.environ["BASE_SHA"]
           reviewed = str(state.get("sha", ""))
           rounds = int(state.get("round", 0))
+          # force-push/rebase 会让已审 SHA 变成孤儿对象而不可解析；此时回退到 PR base 并重置轮次
+          if reviewed:
+              check = subprocess.run(
+                  ["git", "rev-parse", "--verify", "--quiet", f"{reviewed}^{{commit}}"],
+                  capture_output=True, text=True,
+              )
+              if check.returncode != 0:
+                  reviewed = ""
+                  rounds = 0
           skip = reviewed == head or rounds >= 3
           base = reviewed or default_base
 
@@ -106,14 +115,20 @@ jobs:
         env:
           BASE_SHA: ${{ steps.state.outputs.base }}
         run: |
-          {
-            echo 'context<<OPENCODE_CTX_EOF_7f3a'
-            python scripts/build_review_context.py "$BASE_SHA"
-            echo OPENCODE_CTX_EOF_7f3a
-          } >> "$GITHUB_OUTPUT"
+          output=$(python scripts/build_review_context.py "$BASE_SHA")
+          if [ "$output" = "NO_REVIEWABLE_CHANGES" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "无可审内容（改动均在 DIFF_PATHS 之外），中性跳过"
+          else
+            {
+              echo 'context<<OPENCODE_CTX_EOF_7f3a'
+              echo "$output"
+              echo OPENCODE_CTX_EOF_7f3a
+            } >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Run opencode review
-        if: steps.state.outputs.skip != 'true'
+        if: steps.state.outputs.skip != 'true' && steps.ctx.outputs.skip != 'true'
         uses: anomalyco/opencode/github@latest
         env:
           OPENCODE_REVIEW_KEY: ${{ secrets.DEVOPS_AGENT_API_KEY }}

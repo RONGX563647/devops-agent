@@ -16,6 +16,7 @@ from devops_agent.runtime.agent import (
     build_agentscope_runtime,
     build_chat_model,
     build_system_prompt,
+    prompt_fingerprint,
     resolve_workdir,
 )
 from devops_agent.runtime.supervisor import (
@@ -148,6 +149,16 @@ def test_build_system_prompt_declares_tools(tmp_path: Path) -> None:
     for token in ("Bash", "Read", "Glob", "Grep", str(tmp_path.resolve())):
         assert token in prompt
     assert "必须真的发起工具调用" in prompt
+
+
+def test_prompt_fingerprint_ignores_workdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """评测批次要能跨机器比较，指纹不能把绝对工作目录算进去。"""
+    baseline = prompt_fingerprint()
+    monkeypatch.setenv(WORKDIR_ENV, str(tmp_path))
+    assert prompt_fingerprint() == baseline
+    assert len(baseline) == 64
 
 
 def test_system_prompt_is_profile_independent(tmp_path: Path) -> None:

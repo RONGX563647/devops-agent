@@ -139,6 +139,82 @@ export interface EvalTrends {
   by_source: Record<string, number>;
 }
 
+/** 一次评测批次（GET /api/eval/batches）。 */
+export interface EvalBatch {
+  id: number;
+  suite: string;
+  suite_version: string;
+  suite_sha: string;
+  prompt_id: string;
+  prompt_hash: string;
+  model: string;
+  profile: string;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  n: number;
+  passed: number;
+  pass_rate: number;
+  hard_failures: { safety: number; forbidden_tool: number; format: number };
+  judge: Record<string, number> | null;
+  trajectory_score: number | null;
+  p95_ms: number | null;
+  tokens_total: number;
+  cost_total: number;
+  baseline_id: number | null;
+  verdict: 'pass' | 'warn' | 'fail' | 'insufficient' | 'running';
+}
+
+export interface EvalBatchList {
+  items: EvalBatch[];
+  total: number;
+}
+
+/** 用例里的一条规则检查结果。 */
+export interface EvalCaseCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface EvalCaseItem {
+  case_id: string;
+  status: string;
+  passed: boolean;
+  tags: string[];
+  trajectory_score: number | null;
+  judge: Record<string, number>;
+  latency_ms: number;
+  tokens: number;
+  checks: EvalCaseCheck[];
+  run_id: number | null;
+}
+
+export interface EvalBatchDetail {
+  batch: EvalBatch;
+  tags: Record<string, { n: number; passed: number }>;
+  cases: EvalCaseItem[];
+}
+
+export interface EvalCompareMetric {
+  key: string;
+  base: number | null;
+  head: number | null;
+  delta: number | null;
+  better: 'higher' | 'lower';
+}
+
+export interface EvalCompare {
+  verdict: string;
+  metrics: EvalCompareMetric[];
+  cases: { case_id: string; base_passed: boolean; head_passed: boolean }[];
+}
+
+export interface EvalCaseList {
+  items: EvalCaseItem[];
+  total: number;
+}
+
 /** SSE 流式事件（与后端 event_to_dict + RUN_DONE/RUN_ERROR 对齐）。 */
 export interface StreamEvent {
   type: string;

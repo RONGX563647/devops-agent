@@ -2,6 +2,10 @@
 
 import type {
   Attachment,
+  EvalBatchDetail,
+  EvalBatchList,
+  EvalCaseList,
+  EvalCompare,
   EvalTrends,
   InputStage,
   PendingState,
@@ -104,6 +108,40 @@ export function fetchTimeseries(days = 7): Promise<TimePoint[]> {
 
 export function fetchEvalTrends(): Promise<EvalTrends> {
   return getJson<EvalTrends>('/api/eval/trends');
+}
+
+/** 评测批次列表。running 批次由调用方决定是否轮询。 */
+export function fetchEvalBatches(limit = 20, offset = 0): Promise<EvalBatchList> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  return getJson<EvalBatchList>(`/api/eval/batches?${params.toString()}`);
+}
+
+/** 单个批次详情：带分标签统计与用例快照。 */
+export function fetchEvalBatch(id: number): Promise<EvalBatchDetail> {
+  return getJson<EvalBatchDetail>(`/api/eval/batches/${id}`);
+}
+
+export interface EvalCaseQuery {
+  status?: string;
+  tag?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** 分页 / 筛选用例。 */
+export function fetchEvalCases(id: number, params: EvalCaseQuery = {}): Promise<EvalCaseList> {
+  const query = new URLSearchParams();
+  if (params.status) query.set('status', params.status);
+  if (params.tag) query.set('tag', params.tag);
+  query.set('limit', String(params.limit ?? 50));
+  query.set('offset', String(params.offset ?? 0));
+  return getJson<EvalCaseList>(`/api/eval/batches/${id}/cases?${query.toString()}`);
+}
+
+/** 两次批次对比：verdict + 指标 delta + 变化用例。 */
+export function fetchEvalCompare(base: number, head: number): Promise<EvalCompare> {
+  const params = new URLSearchParams({ base: String(base), head: String(head) });
+  return getJson<EvalCompare>(`/api/eval/compare?${params.toString()}`);
 }
 
 /** 工具注册表导出的 schema：Inspector 的「Schema」页签据此展示参数定义。 */

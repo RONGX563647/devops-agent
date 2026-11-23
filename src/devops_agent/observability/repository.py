@@ -24,6 +24,7 @@ from devops_agent.observability.models import (
 )
 
 DB_PATH_ENV = "DEVOPS_AGENT_DB_PATH"
+EVAL_DB_PATH_ENV = "DEVOPS_AGENT_EVAL_DB_PATH"
 
 # 评测维度 CHECK 与枚举同源：新增维度只改 EvalDimension，DB 约束自动跟进。
 _DIMENSIONS_SQL = ", ".join(f"'{dim.value}'" for dim in EvalDimension)
@@ -103,6 +104,35 @@ CREATE TABLE IF NOT EXISTS session_states (
     permission  TEXT NOT NULL DEFAULT '',
     updated_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS eval_batches (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    suite         TEXT NOT NULL,
+    suite_version TEXT NOT NULL DEFAULT '',
+    suite_sha     TEXT NOT NULL DEFAULT '',
+    prompt_id     TEXT NOT NULL DEFAULT '',
+    prompt_sha    TEXT NOT NULL DEFAULT '',
+    model         TEXT NOT NULL DEFAULT '',
+    profile       TEXT NOT NULL DEFAULT '',
+    started_at    TEXT NOT NULL,
+    finished_at   TEXT,
+    status        TEXT NOT NULL DEFAULT 'running',
+    summary_json  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_eval_batches_started ON eval_batches(started_at, id);
+CREATE TABLE IF NOT EXISTS eval_cases (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id    INTEGER NOT NULL REFERENCES eval_batches(id) ON DELETE CASCADE,
+    case_id     TEXT NOT NULL,
+    run_id      INTEGER,
+    status      TEXT NOT NULL DEFAULT '',
+    passed      INTEGER NOT NULL DEFAULT 0,
+    scores_json TEXT NOT NULL DEFAULT '',
+    detail_json TEXT NOT NULL DEFAULT '',
+    latency_ms  INTEGER NOT NULL DEFAULT 0,
+    tokens      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_eval_cases_batch ON eval_cases(batch_id, status);
+CREATE INDEX IF NOT EXISTS idx_eval_cases_case ON eval_cases(case_id);
 """
 
 # 后加的列（CREATE TABLE IF NOT EXISTS 不会给老库补列，必须 ALTER）。
@@ -653,3 +683,202 @@ def delete_session_state(conn: sqlite3.Connection, session_id: str) -> bool:
     """删除会话快照，返回是否命中。"""
     cur = conn.execute("DELETE FROM session_states WHERE session_id=?", (session_id,))
     return cur.rowcount > 0
+
+
+# --- 评测批次 -----------------------------------------------------------
+# 与 run 表分开：评测是离线批处理，不产生用户会话，混进 runs 会污染线上指标。
+
+
+def eval_db_path() -> Path:
+    """评测数据库路径：环境变量优先，默认 workspace/evals/eval.db。"""
+    override = os.environ.get(EVAL_DB_PATH_ENV)
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(__file__).resolve().parents[3] / "workspace" / "evals" / "eval.db"
+
+
+def create_eval_batch(
+    conn: sqlite3.Connection,
+    *,
+    started_at: str,
+    suite: str,
+    suite_version: str = "",
+    suite_sha: str = "",
+    prompt_id: str = "",
+    prompt_sha: str = "",
+    model: str = "",
+    profile: str = "",
+    status: str = "running",
+    summary_json: str = "",
+) -> int:
+    """插入一个评测批次，返回 id。"""
+    cur = conn.execute(
+        """INSERT INTO eval_batches
+           (suite, suite_version, suite_sha, prompt_id, prompt_sha, model, profile,
+            started_at, finished_at, status, summary_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+        (
+            suite,
+            suite_version,
+            suite_sha,
+            prompt_id,
+            prompt_sha,
+            model,
+            profile,
+            started_at,
+            status,
+            summary_json,
+        ),
+    )
+    assert cur.lastrowid is not None  # INSERT 成功时 sqlite3 保证有 lastrowid
+    return int(cur.lastrowid)
+
+
+def insert_eval_case(
+    conn: sqlite3.Connection,
+    *,
+    batch_id: int,
+    case_id: str,
+    status: str,
+    passed: bool,
+    run_id: int | None = None,
+    scores_json: str = "",
+    detail_json: str = "",
+    latency_ms: int = 0,
+    tokens: int = 0,
+) -> int:
+    """插入一条评测用例结果，返回 id。"""
+    cur = conn.execute(
+        """INSERT INTO eval_cases
+           (batch_id, case_id, run_id, status, passed, scores_json, detail_json,
+            latency_ms, tokens)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            batch_id,
+            case_id,
+            run_id,
+            status,
+            1 if passed else 0,
+            scores_json,
+            detail_json,
+            latency_ms,
+            tokens,
+        ),
+    )
+    assert cur.lastrowid is not None  # INSERT 成功时 sqlite3 保证有 lastrowid
+    return int(cur.lastrowid)
+
+
+def finish_eval_batch(
+    conn: sqlite3.Connection,
+    batch_id: int,
+    *,
+    status: str,
+    summary_json: str,
+    finished_at: str,
+) -> None:
+    """回填批次的结束时间、状态与汇总。"""
+    conn.execute(
+        "UPDATE eval_batches SET status=?, summary_json=?, finished_at=? WHERE id=?",
+        (status, summary_json, finished_at, batch_id),
+    )
+
+
+def _eval_batch_from_row(row: sqlite3.Row) -> dict[str, object]:
+    return {
+        "id": int(row["id"]),
+        "suite": str(row["suite"]),
+        "suite_version": str(row["suite_version"] or ""),
+        "suite_sha": str(row["suite_sha"] or ""),
+        "prompt_id": str(row["prompt_id"] or ""),
+        "prompt_sha": str(row["prompt_sha"] or ""),
+        "model": str(row["model"] or ""),
+        "profile": str(row["profile"] or ""),
+        "started_at": str(row["started_at"]),
+        "finished_at": row["finished_at"],
+        "status": str(row["status"]),
+        "summary_json": str(row["summary_json"] or ""),
+    }
+
+
+def list_eval_batches(
+    conn: sqlite3.Connection, limit: int = 20, offset: int = 0
+) -> list[dict[str, object]]:
+    """按开始时间倒序列出评测批次。"""
+    rows = conn.execute(
+        "SELECT * FROM eval_batches ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    ).fetchall()
+    return [_eval_batch_from_row(row) for row in rows]
+
+
+def count_eval_batches(conn: sqlite3.Connection) -> int:
+    """评测批次总数（分页配套）。"""
+    row = conn.execute("SELECT COUNT(*) AS n FROM eval_batches").fetchone()
+    return int(row["n"])
+
+
+def get_eval_batch(conn: sqlite3.Connection, batch_id: int) -> dict[str, object] | None:
+    """按 id 取评测批次。"""
+    row = conn.execute("SELECT * FROM eval_batches WHERE id=?", (batch_id,)).fetchone()
+    return _eval_batch_from_row(row) if row is not None else None
+
+
+def _eval_case_from_row(row: sqlite3.Row) -> dict[str, object]:
+    return {
+        "id": int(row["id"]),
+        "batch_id": int(row["batch_id"]),
+        "case_id": str(row["case_id"]),
+        "run_id": row["run_id"],
+        "status": str(row["status"]),
+        "passed": bool(row["passed"]),
+        "scores_json": str(row["scores_json"] or ""),
+        "detail_json": str(row["detail_json"] or ""),
+        "latency_ms": int(row["latency_ms"]),
+        "tokens": int(row["tokens"]),
+    }
+
+
+def _eval_case_filter(
+    batch_id: int, status: str | None, tag: str | None
+) -> tuple[str, list[object]]:
+    """构造 eval_cases 的筛选条件（参数化）。"""
+    clauses = ["batch_id=?"]
+    params: list[object] = [batch_id]
+    if status:
+        clauses.append("status=?")
+        params.append(status)
+    if tag:
+        # 标签存在 detail_json.tags 数组里，用带引号的精确匹配避免子串误命中
+        clauses.append("detail_json LIKE ?")
+        params.append(f'%"{tag}"%')
+    return " WHERE " + " AND ".join(clauses), params
+
+
+def list_eval_cases(
+    conn: sqlite3.Connection,
+    batch_id: int,
+    status: str | None = None,
+    tag: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, object]]:
+    """按批次列用例结果，可按状态 / 标签筛选。"""
+    where, params = _eval_case_filter(batch_id, status, tag)
+    rows = conn.execute(
+        "SELECT * FROM eval_cases" + where + " ORDER BY id LIMIT ? OFFSET ?",
+        (*params, limit, offset),
+    ).fetchall()
+    return [_eval_case_from_row(row) for row in rows]
+
+
+def count_eval_cases(
+    conn: sqlite3.Connection,
+    batch_id: int,
+    status: str | None = None,
+    tag: str | None = None,
+) -> int:
+    """筛选后的用例总数（分页配套）。"""
+    where, params = _eval_case_filter(batch_id, status, tag)
+    row = conn.execute("SELECT COUNT(*) AS n FROM eval_cases" + where, params).fetchone()
+    return int(row["n"])

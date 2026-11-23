@@ -26,6 +26,7 @@ from devops_agent.input.events import events as parse_events
 from devops_agent.input.pipeline import PreparedInput, prepare
 from devops_agent.observability import repository as repo
 from devops_agent.observability.api import router as observability_router
+from devops_agent.observability.eval_api import router as eval_router
 from devops_agent.observability.recorder import RunRecorder, utc_now
 from devops_agent.runtime.agent import build_agentscope_runtime, session_runtime_factory
 from devops_agent.runtime.confirm import ConfirmDecision, parse_decisions
@@ -67,6 +68,7 @@ app.state.runtime = select_runtime()
 app.state.sessions = None
 app.state.sessions_base = None
 app.include_router(observability_router)
+app.include_router(eval_router)
 app.include_router(attachments_router)
 app.include_router(secrets_router)
 app.include_router(tools_router)

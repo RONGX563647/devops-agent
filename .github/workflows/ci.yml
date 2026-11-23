@@ -20,6 +20,8 @@ jobs:
         run: mypy src
       - name: quality gates (config/gates.yaml)
         run: python scripts/check_gates.py
+      - name: eval suite validate
+        run: python -m devops_agent.eval validate --suite eval/suites/devops-core.v1.jsonl
 
   frontend:
     runs-on: ubuntu-latest

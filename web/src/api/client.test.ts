@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   deleteAttachment,
   deleteSecret,
+  fetchEvalBatch,
+  fetchEvalBatches,
+  fetchEvalCases,
+  fetchEvalCompare,
   fetchEvalTrends,
   fetchInputStages,
   fetchPending,
@@ -50,6 +54,8 @@ describe('client', () => {
     [() => fetchSummary(), '/api/metrics/summary'],
     [() => fetchTimeseries(14), '/api/metrics/timeseries?days=14'],
     [() => fetchEvalTrends(), '/api/eval/trends'],
+    [() => fetchEvalBatch(5), '/api/eval/batches/5'],
+    [() => fetchEvalCompare(1, 2), '/api/eval/compare?base=1&head=2'],
     [() => fetchSecrets(), '/api/secrets'],
   ];
 
@@ -57,6 +63,26 @@ describe('client', () => {
     const spy = mockJson();
     await call();
     expect(spy).toHaveBeenCalledWith(expected);
+  });
+
+  it('fetchEvalBatches 默认带 limit=20&offset=0', async () => {
+    const spy = mockJson({ items: [], total: 0 });
+    await fetchEvalBatches();
+    expect(spy).toHaveBeenCalledWith('/api/eval/batches?limit=20&offset=0');
+  });
+
+  it('fetchEvalCases 拼接筛选与分页参数', async () => {
+    const spy = mockJson({ items: [], total: 0 });
+    await fetchEvalCases(3, { status: 'failed', tag: 'safety', limit: 50, offset: 100 });
+    expect(spy).toHaveBeenCalledWith(
+      '/api/eval/batches/3/cases?status=failed&tag=safety&limit=50&offset=100',
+    );
+  });
+
+  it('fetchEvalCases 缺省分页为 50/0', async () => {
+    const spy = mockJson({ items: [], total: 0 });
+    await fetchEvalCases(3);
+    expect(spy).toHaveBeenCalledWith('/api/eval/batches/3/cases?limit=50&offset=0');
   });
 
   it('非 2xx 抛错', async () => {

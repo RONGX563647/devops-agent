@@ -12,6 +12,7 @@ agentscope 2.x 真实 API（2.0.12 introspect 已核实）：
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -74,6 +75,25 @@ def resolve_workdir(workdir: str | os.PathLike[str] | None = None) -> Path:
     return Path(os.environ.get(WORKDIR_ENV) or os.getcwd()).expanduser().resolve()
 
 
+# 提示词版本：改动系统提示或档位说明时手动递增，评测批次会记录它，
+# 便于把「分数变化」和「哪一版提示词」对上。hash 由 prompt_fingerprint() 现算。
+PROMPT_ID = "agent-system"
+PROMPT_VERSION = "v1"
+
+
+def _render_system_prompt(workdir_label: str) -> str:
+    """按给定的工作目录标签渲染系统提示（评测 fingerprint 用占位符）。"""
+    tool_prompt = _TOOL_PROMPT.format(
+        shell_tool="Bash",
+        shell=shell_name(),
+        workdir=workdir_label,
+        read_tool="Read",
+        glob_tool="Glob",
+        grep_tool="Grep",
+    )
+    return "\n\n".join([DEFAULT_SYSTEM_PROMPT, tool_prompt])
+
+
 def build_system_prompt(workdir: str | os.PathLike[str] | None = None) -> str:
     """拼装系统提示：角色描述 + 可用工具契约。
 
@@ -82,16 +102,17 @@ def build_system_prompt(workdir: str | os.PathLike[str] | None = None) -> str:
     那里改一个字，后面的工具 schema 与整段历史全部作废（实测跨档命中 21%）。
     档位约束改由 `runtime/profile_note.py` 追加在消息末尾（实测 96%）。
     """
-    base = resolve_workdir(workdir)
-    tool_prompt = _TOOL_PROMPT.format(
-        shell_tool="Bash",
-        shell=shell_name(),
-        workdir=base,
-        read_tool="Read",
-        glob_tool="Glob",
-        grep_tool="Grep",
-    )
-    return "\n\n".join([DEFAULT_SYSTEM_PROMPT, tool_prompt])
+    return _render_system_prompt(str(resolve_workdir(workdir)))
+
+
+def prompt_fingerprint() -> str:
+    """提示词指纹：与具体机器路径无关，用于评测批次对比。
+
+    只覆盖系统提示与显式的 PROMPT_VERSION；档位说明是动态追加的，
+    改动 `runtime/profile_note.py` 时需要同步递增 PROMPT_VERSION。
+    """
+    payload = f"{PROMPT_ID}:{PROMPT_VERSION}\n{_render_system_prompt('<workdir>')}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def build_agent(
@@ -296,9 +317,7 @@ def build_agentscope_runtime(
     base = resolve_workdir(workdir)
     agent = build_agent(
         name="devops",
-        system_prompt=system_prompt
-        if system_prompt is not None
-        else build_system_prompt(base),
+        system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),
         model=build_chat_model(enable_search=web_search),
         toolkit=build_toolkit_for(resolved.tools, base, middlewares=[build_secret_middleware()]),
         middlewares=[ProfileNoteMiddleware(resolved)],

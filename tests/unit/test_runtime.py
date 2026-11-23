@@ -80,6 +80,24 @@ def test_build_chat_model_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(build_chat_model(), OpenAIChatModel)
 
 
+def test_build_chat_model_search_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """联网搜索默认关闭：不改变既有请求体。"""
+    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
+    monkeypatch.delenv("DEVOPS_AGENT_ENABLE_SEARCH", raising=False)
+    assert build_chat_model().extra_body is None
+
+
+def test_build_chat_model_search_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """显式开启时注入 enable_search=true，由供应商侧执行联网检索。"""
+    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
+    monkeypatch.setenv("DEVOPS_AGENT_ENABLE_SEARCH", "1")
+    assert build_chat_model().extra_body == {"enable_search": True}
+
+
 def test_build_agent_reads_policy_defaults() -> None:
     policy = RuntimePolicy(
         react=ReactPolicy(default=7, delivery=9),

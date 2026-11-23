@@ -147,6 +147,52 @@ describe('ChatTab', () => {
     expect(start).toHaveBeenCalledTimes(2);
     expect(start).toHaveBeenLastCalledWith('s-1', 'hi');
   });
+
+  it('回答按 Markdown 渲染，而不是整段纯文本', async () => {
+    const { rerender } = render(<ChatTab session="s-1" />);
+    submit('hi');
+    stream.text = '## 结论\n\n- **先看日志**\n- 再跑 `ruff`';
+    rerender(<ChatTab session="s-1" />);
+
+    expect(await screen.findByRole('heading', { level: 2, name: '结论' })).toBeTruthy();
+    expect(document.querySelector('.md strong')?.textContent).toBe('先看日志');
+    expect(document.querySelector('.md code')?.textContent).toBe('ruff');
+  });
+
+  it('过程步骤直接显示在回答上方，工具行可点开返回', async () => {
+    const { rerender } = render(<ChatTab session="s-1" />);
+    submit('hi');
+    stream.steps = [
+      { id: 'reply:1', kind: 'lifecycle', label: '开始回复', detail: '', state: 'success' },
+      {
+        id: 'tool:t1',
+        kind: 'tool',
+        label: '调用工具 · bash',
+        detail: 'ls -la',
+        state: 'success',
+      },
+    ];
+    stream.text = '看完了';
+    rerender(<ChatTab session="s-1" />);
+
+    expect(await screen.findByText('开始回复')).toBeTruthy();
+    const line = screen.getByRole('button', { name: /调用工具 · bash/ });
+    expect(line.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(line);
+    expect(document.querySelector('.step-result')?.textContent).toBe('ls -la');
+    expect(screen.getByText('看完了')).toBeTruthy();
+  });
+
+  it('运行失败时给出中断提示与重试入口', async () => {
+    const { rerender } = render(<ChatTab session="s-1" />);
+    submit('hi');
+    stream.error = '流式请求失败 500';
+    rerender(<ChatTab session="s-1" />);
+
+    expect(await screen.findByText('中断')).toBeTruthy();
+    expect(screen.getByText('流式请求失败 500')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '重试' })).toBeTruthy();
+  });
 });
 
 afterEach(cleanup);

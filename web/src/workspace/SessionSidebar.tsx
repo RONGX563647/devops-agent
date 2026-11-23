@@ -87,6 +87,28 @@ interface Props {
   onNew: () => void;
 }
 
+function MarkIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M3.2 5.5 8 2.8l4.8 2.7v5L8 13.2l-4.8-2.7v-5Z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <path d="M8 8v5.2M8 8 3.4 5.6M8 8l4.6-2.4" stroke="currentColor" strokeWidth="1.1" opacity=".7" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M8 3.4v9.2M3.4 8h9.2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function SessionSidebar({ selected, onSelect, onNew }: Props) {
   const runs = useSessionRuns();
   const [query, setQuery] = useState('');
@@ -113,9 +135,18 @@ export function SessionSidebar({ selected, onSelect, onNew }: Props) {
 
   return (
     <aside className="session-sidebar">
-      <div className="session-sidebar-brand">DevOps Agent</div>
+      <div className="session-sidebar-brand">
+        <span className="rail-mark">
+          <MarkIcon />
+        </span>
+        <span>
+          <span className="brand-name">DevOps Agent</span>
+          <span className="brand-meta">workspace</span>
+        </span>
+      </div>
       <button className="session-new" onClick={onNew}>
-        ＋ 新会话
+        <PlusIcon />
+        新会话
       </button>
       <input
         className="session-search"

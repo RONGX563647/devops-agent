@@ -115,6 +115,18 @@ describe('RunTrace', () => {
     expect(screen.getByText('50 ms')).toBeTruthy();
   });
 
+  it('点瀑布图一行，右侧看落库的入参与返回', async () => {
+    vi.mocked(fetchSpans).mockResolvedValue([
+      { ...span, input: '{"prompt":"定位"}', output: '镜像拉取超时' },
+    ]);
+    wrap(<RunTrace runId={7} />);
+    const row = await screen.findByRole('button', { name: /模型调用 · chat/ });
+    fireEvent.click(row);
+    expect(await screen.findByText(/prompt: 定位/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: '结果' }));
+    expect(screen.getByText(/镜像拉取超时/)).toBeTruthy();
+  });
+
   it('运行记录页展示落库的完整解析链（含无改动阶段）', async () => {
     wrap(<RunTrace runId={7} />);
     expect(await screen.findByText('输入解析链')).toBeTruthy();
@@ -166,13 +178,16 @@ describe('TraceTab', () => {
     wrap(<TraceTab session="s-two" />);
 
     expect(await screen.findByRole('heading', { name: '会话轨迹' })).toBeTruthy();
-    expect(screen.getAllByText('为什么部署失败？').length).toBeGreaterThan(0);
-    const tool = screen.getByRole('button', { name: /调用工具 · bash/ });
+    // 轮次分隔 + 步骤行：入参摘要直接出现在行里，不用点开
+    expect(screen.getAllByText(/为什么部署失败/).length).toBeGreaterThan(0);
+    const rows = await screen.findAllByRole('button', { name: /bash/ });
+    const tool = rows.find((row) => row.classList.contains('trace-step'))!;
+    expect(tool.textContent).toContain('kubectl describe pod');
     fireEvent.click(tool);
-    expect(await screen.findByText('入参')).toBeTruthy();
-    expect(screen.getByText('kubectl describe pod')).toBeTruthy();
-    expect(screen.getByText('返回')).toBeTruthy();
-    expect(screen.getByText('ImagePullBackOff')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('tab', { name: '参数' }));
+    expect((await screen.findAllByText(/kubectl describe pod/)).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('tab', { name: '结果' }));
+    expect((await screen.findAllByText(/ImagePullBackOff/)).length).toBeGreaterThan(0);
   });
 
   it('解析步骤只展示生效的阶段，并说明其余无改动', async () => {
@@ -207,8 +222,11 @@ describe('TraceTab', () => {
     saveMessages('s-parse', messages);
     wrap(<TraceTab session="s-parse" />);
 
-    const row = await screen.findByRole('button', { name: /输入解析/ });
+    // 徽标已写作「输入」，标题不再重复同一个词，用行摘要定位
+    const row = await screen.findByRole('button', { name: /阶段生效/ });
     fireEvent.click(row);
+    // 解析步骤的结果页签就叫「阶段」
+    fireEvent.click(await screen.findByRole('tab', { name: '阶段' }));
     expect(await screen.findByText('引用探测')).toBeTruthy();
     expect(screen.getByText('本地路径 ×1')).toBeTruthy();
     // 未生效的阶段不该占位置

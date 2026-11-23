@@ -1,18 +1,32 @@
-/** 轨迹 tab：由会话消息派生的轮次轨迹（时间轴 + 轮列表 + 详情），并保留后端运行入口。 */
-import { useMemo, useState } from 'react';
+/** 轨迹 tab：泳道 + 轮次列表 + 详情检查面板。
+ *
+ * 三级粒度：顶部泳道看「时间花在哪」，中间列表看「做了什么」，右侧看「具体参数」。
+ * 运行记录（后端快照）仍保留为另一个视图，用于回看落库后的历史运行。
+ */
+import { useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchRuns } from '../api/client';
 import { StatusBadge } from '../components/StatusBadge';
 import type { Run, TraceStep, TraceTurn } from '../types';
 import { RunTrace } from './RunTrace';
-import { stageMetric } from './StepRow';
 import { useSession } from './store';
-import { turnsFromMessages } from './trace';
+import { buildLanes, traceStats, turnsFromMessages } from './trace';
+import { TraceInspector } from './TraceInspector';
+import { TraceLanes } from './TraceLanes';
+import { TraceList, type TraceMode } from './TraceList';
 import { formatClock, formatDateTime, formatDuration } from './time';
 
 interface Props {
   session: string | null;
+  /** 轨迹页内追问：发送后由外层切回对话。 */
+  onAsk?: (text: string) => void;
 }
+
+const MODES: { key: TraceMode; label: string }[] = [
+  { key: 'time', label: '时长' },
+  { key: 'turn', label: '轮次' },
+  { key: 'call', label: '调用' },
+];
 
 function RunTable({
   items,
@@ -55,82 +69,39 @@ function RunTable({
   );
 }
 
-const STEP_TONE: Record<TraceStep['kind'], string> = {
-  text: 'text',
-  tool: 'tool',
-  error: 'error',
-  parse: 'parse',
-};
-
-const KIND_TEXT: Record<TraceStep['kind'], string> = {
-  text: '输出',
-  tool: '工具',
-  error: '异常',
-  parse: '解析',
-};
-
-/** 只展示真正生效的解析阶段：无改动且没出错的不占位置。 */
-export function visibleStages(stages: TraceStep['stages']): TraceStep['stages'] {
-  return (stages ?? []).filter(
-    (stage) => stage.changed || stage.status === 'error' || stage.failed > 0,
-  );
+/** 默认选中「全会话最费时的一步」：打开就能看到最值得看的那一条。 */
+function slowestStep(turns: TraceTurn[]): { step: TraceStep; turn: TraceTurn } | null {
+  let best: { step: TraceStep; turn: TraceTurn } | null = null;
+  for (const turn of turns) {
+    for (const step of turn.items) {
+      if (!best || step.durationMs > best.step.durationMs) best = { step, turn };
+    }
+  }
+  return best;
 }
 
-/** 单步详情：工具分入参与返回，文本与异常直接贴原文。 */
-function StepDetail({ step }: { step: TraceStep }) {
+function StatusBar({
+  stats,
+  running,
+}: {
+  stats: ReturnType<typeof traceStats>;
+  running: boolean;
+}) {
+  const cache = stats.cacheRate === null ? null : `${Math.round(stats.cacheRate * 100)}%`;
   return (
-    <div className="ws-step-detail">
-      <div className="ws-step-detail-head">
-        <span className={`ws-kind ${STEP_TONE[step.kind]}`}>{KIND_TEXT[step.kind]}</span>
-        <strong>{step.title}</strong>
-        <span className="muted mono">{formatDuration(step.durationMs)}</span>
-        {step.status && <span className={`mono ws-status ${step.status}`}>{step.status}</span>}
-      </div>
-      {step.kind === 'parse' ? (
-        <ParseDetail step={step} />
-      ) : step.kind === 'tool' ? (
-        <>
-          <div className="ws-block">
-            <span className="ws-block-label">入参</span>
-            <pre>{step.args || '（无）'}</pre>
-          </div>
-          <div className="ws-block">
-            <span className="ws-block-label">返回</span>
-            <pre>{step.result || '（暂无返回）'}</pre>
-          </div>
-        </>
-      ) : (
-        <pre className="ws-step-text">{step.text || '（空）'}</pre>
-      )}
-    </div>
-  );
-}
-
-/** 解析详情：阶段表（标签 · 做了什么 · 计量）+ 未展示项说明。 */
-function ParseDetail({ step }: { step: TraceStep }) {
-  const stages = step.stages ?? [];
-  const visible = visibleStages(stages) ?? [];
-  const hidden = stages.length - visible.length;
-  return (
-    <div className="ws-parse">
-      <p className="ws-parse-note">{step.text || '输入解析完成。'}</p>
-      <div className="ws-parse-rows">
-        {visible.map((stage) => (
-          <div className="ws-parse-row" key={stage.stage} data-status={stage.status}>
-            <span className="ws-parse-label">{stage.label}</span>
-            <span className="ws-parse-summary" title={stage.detail || stage.summary}>
-              {stage.summary}
-            </span>
-            <span className="ws-parse-metric mono">{stageMetric(stage)}</span>
-          </div>
-        ))}
-        {visible.length === 0 && <p className="muted">这一轮输入没有需要处理的步骤。</p>}
-      </div>
-      {hidden > 0 && (
-        <p className="ws-parse-foot muted">
-          另有 {hidden} 项无改动（已落库，可在「运行记录」里查看完整解析链）。
-        </p>
-      )}
+    <div className="trace-status mono">
+      <span>
+        {stats.turns} 轮 · {stats.steps} 步 · {stats.tools} 工具
+      </span>
+      {stats.tokPerSec !== null && <span>{stats.tokPerSec.toFixed(1)} tok/s</span>}
+      <span>
+        {stats.tokensIn + stats.tokensOut} tok
+        {cache && ` · 缓存 ${cache}`}
+      </span>
+      <span className={stats.errors > 0 ? 'has-error' : ''}>异常 {stats.errors}</span>
+      <span className="trace-status-right">
+        {running ? '生成中…' : `会话 ${formatDuration(stats.totalMs)}`}
+      </span>
     </div>
   );
 }
@@ -141,53 +112,69 @@ function SessionTrace({
   runsLoading,
   runsError,
   onOpenRun,
+  onAsk,
 }: {
   session: string;
   runs: Run[];
   runsLoading: boolean;
   runsError: boolean;
   onOpenRun: (id: number) => void;
+  onAsk?: (text: string) => void;
 }) {
   const view = useSession(session);
   const [mode, setMode] = useState<'trace' | 'runs'>('trace');
+  const [layout, setLayout] = useState<TraceMode>('time');
   const [query, setQuery] = useState('');
-  const [selectedTurnId, setSelectedTurnId] = useState('');
-  const [selectedStepId, setSelectedStepId] = useState('');
+  const [ask, setAsk] = useState('');
+  const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
+  const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
 
   const turns = useMemo(() => turnsFromMessages(view.messages), [view.messages]);
-  const totalMs = turns.reduce((sum, turn) => sum + Math.max(0, turn.endedAt - turn.startedAt), 0);
-  const toolCount = turns.reduce((sum, turn) => sum + turn.tools, 0);
+  const lanes = useMemo(() => buildLanes(turns), [turns]);
+  const stats = useMemo(() => traceStats(turns, lanes), [turns, lanes]);
+  const initial = useMemo(() => slowestStep(turns), [turns]);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return turns;
-    return turns.filter((turn) => {
-      const haystack = [
-        turn.userText,
-        ...turn.items.flatMap((item) => [item.title, item.text, item.args ?? '', item.result ?? '']),
-      ]
-        .join(' ')
-        .toLowerCase();
-      return haystack.includes(q);
-    });
-  }, [turns, query]);
+  const activeStepId = selectedStepId ?? initial?.step.id ?? null;
+  const flat = useMemo(() => turns.flatMap((turn) => turn.items), [turns]);
+  const activeStep = flat.find((step) => step.id === activeStepId) ?? null;
+  const activeTurn =
+    (activeStep && turns.find((turn) => turn.items.some((step) => step.id === activeStep.id))) ||
+    turns.find((turn) => turn.id === selectedTurnId) ||
+    null;
 
-  const activeTurn: TraceTurn | null =
-    filtered.find((turn) => turn.id === selectedTurnId) ?? filtered[filtered.length - 1] ?? null;
-  const activeStep = activeTurn?.items.find((item) => item.id === selectedStepId) ?? null;
+  /** j/k 或上下键在步骤间移动；/ 聚焦搜索；Esc 清掉手选。 */
+  function handleKey(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.target instanceof HTMLInputElement) return;
+    const index = flat.findIndex((step) => step.id === activeStepId);
+    if (event.key === 'j' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      setSelectedStepId(flat[Math.min(flat.length - 1, index + 1)]?.id ?? null);
+    } else if (event.key === 'k' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      setSelectedStepId(flat[Math.max(0, index - 1)]?.id ?? null);
+    } else if (event.key === '/') {
+      event.preventDefault();
+      searchRef.current?.focus();
+    } else if (event.key === 'Escape') {
+      setSelectedStepId(null);
+    }
+  }
 
-  function selectTurn(turn: TraceTurn) {
-    setSelectedTurnId(turn.id);
-    setSelectedStepId('');
+  function submitAsk() {
+    const text = ask.trim();
+    if (!text || !onAsk) return;
+    setAsk('');
+    onAsk(text);
   }
 
   return (
-    <div className="ws-trace">
+    <div className="ws-trace" onKeyDown={handleKey}>
       <div className="ws-trace-head">
         <div>
           <h2 className="ws-trace-title">会话轨迹</h2>
           <p className="ws-trace-sub mono">
-            {turns.length} 轮 · {toolCount} 次工具 · {formatDuration(totalMs)}
+            {turns.length} 轮 · {stats.tools} 次工具 · {formatDuration(stats.totalMs)}
             {view.running ? ' · 生成中' : ''}
           </p>
         </div>
@@ -212,121 +199,78 @@ function SessionTrace({
         </div>
       ) : (
         <>
-          <div className="ws-trace-strip" aria-label="轮次耗时分布">
-            {filtered.map((turn) => {
-              const ms = Math.max(1, turn.endedAt - turn.startedAt);
-              return (
+          <div className="trace-toolbar">
+            <div className="trace-modes" role="tablist" aria-label="轨迹维度">
+              {MODES.map((item) => (
                 <button
-                  key={turn.id}
-                  type="button"
-                  className={`ws-seg${turn === activeTurn ? ' active' : ''}${turn.failed ? ' failed' : ''}`}
-                  style={{ flexGrow: ms }}
-                  title={`第 ${turn.index} 轮 · ${formatDuration(ms)}`}
-                  onClick={() => selectTurn(turn)}
+                  key={item.key}
+                  role="tab"
+                  aria-selected={layout === item.key}
+                  className={layout === item.key ? 'active' : ''}
+                  onClick={() => setLayout(item.key)}
                 >
-                  <span>第 {turn.index} 轮</span>
+                  {item.label}
                 </button>
-              );
-            })}
-            {filtered.length === 0 && <span className="ws-strip-empty">暂无轮次</span>}
+              ))}
+            </div>
+            <input
+              ref={searchRef}
+              className="session-search trace-search"
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索步骤、工具、参数…（/）"
+              aria-label="搜索轨迹"
+            />
           </div>
 
-          <div className="ws-trace-body">
-            <aside className="ws-trace-list">
-              <input
-                className="session-search"
-                type="search"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="搜索问题或工具"
-                aria-label="搜索轨迹"
+          <TraceLanes
+            lanes={lanes}
+            activeStepId={activeStepId}
+            onSelect={(id) => setSelectedStepId(id)}
+          />
+
+          <div className="trace-body" tabIndex={0} role="group" aria-label="轨迹步骤">
+            <div className="trace-scroll">
+              <TraceList
+                turns={turns}
+                mode={layout}
+                query={query}
+                activeStepId={activeStepId}
+                activeTurnId={activeTurn?.id ?? null}
+                onSelectStep={(step) => setSelectedStepId(step.id)}
+                onSelectTurn={(turn) => setSelectedTurnId(turn.id)}
               />
-              {filtered.map((turn) => {
-                // 附件数取用户实际挂上的文件数；历史回放没有消息级附件时
-                // 回落到解析阶段真正读到的份数，两者可能因附件过期而不等。
-                const files = turn.attachments ?? turn.parse?.attachments ?? 0;
-                return (
-                  <button
-                    key={turn.id}
-                    type="button"
-                    className={`ws-turn${turn === activeTurn ? ' active' : ''}${turn.failed ? ' failed' : ''}`}
-                    onClick={() => selectTurn(turn)}
-                  >
-                    <span className="ws-turn-index mono">#{turn.index}</span>
-                    <span className="ws-turn-main">
-                      <span className="ws-turn-question">{turn.question || '（空问题）'}</span>
-                      <span className="ws-turn-meta mono">
-                        {formatClock(turn.at)} · {turn.tools} 工具
-                        {files ? ` · ${files} 附件` : ''}
-                        {turn.parse?.refs ? ` · ${turn.parse.refs} 引用` : ''}
-                        {turn.parse?.degraded ? ` · ${turn.parse.degraded} 降级` : ''} ·{' '}
-                        {formatDuration(turn.endedAt - turn.startedAt)}
-                      </span>
-                    </span>
-                  </button>
-                );
-              })}
-              {filtered.length === 0 && (
-                <p className="session-empty">
-                  {turns.length === 0
-                    ? '该会话还没有可展示的轨迹，去对话里发一条消息。'
-                    : `没有匹配「${query}」的轮次。`}
-                </p>
-              )}
-            </aside>
-
-            <section className="ws-trace-detail">
-              {!activeTurn && (
-                <div className="ws-detail-empty">
-                  <strong>轨迹由对话消息派生</strong>
-                  <p>每一轮包含模型输出与工具调用；点左侧轮次或上方时间轴定位。</p>
-                </div>
-              )}
-              {activeTurn && (
-                <>
-                  <div className="ws-detail-head">
-                    <div>
-                      <span className="muted mono">第 {activeTurn.index} 轮 · {formatClock(activeTurn.at)}</span>
-                      <p className="ws-detail-question">{activeTurn.userText || '（空问题）'}</p>
-                    </div>
-                    <span className={`mono ws-status ${activeTurn.failed ? 'error' : 'success'}`}>
-                      {activeTurn.failed ? '有异常' : '正常'}
-                    </span>
-                  </div>
-                  <div className="ws-detail-steps">
-                    {activeTurn.items.map((step) => (
-                      <button
-                        key={step.id}
-                        type="button"
-                        className={`ws-step-item${step === activeStep ? ' active' : ''}`}
-                        onClick={() => setSelectedStepId(step.id)}
-                      >
-                        <span className={`ws-kind ${STEP_TONE[step.kind]}`}>
-                          {KIND_TEXT[step.kind]}
-                        </span>
-                        <span className="ws-step-title">{step.title}</span>
-                        <span className="ws-step-meta mono">{formatDuration(step.durationMs)}</span>
-                      </button>
-                    ))}
-                    {activeTurn.items.length === 0 && (
-                      <p className="session-empty">这一轮还没有过程步骤。</p>
-                    )}
-                  </div>
-                  {activeStep ? (
-                    <StepDetail step={activeStep} />
-                  ) : (
-                    <div className="ws-detail-empty">
-                      <p>点一个步骤查看入参、返回与耗时。</p>
-                    </div>
-                  )}
-                </>
-              )}
-            </section>
+            </div>
+            {/* key 随步骤变：换一条时页签回到「概述」，避免误读上一条的参数 */}
+            <TraceInspector
+              key={activeStep?.id ?? 'none'}
+              step={activeStep}
+              turn={activeTurn}
+              totalMs={stats.totalMs}
+            />
           </div>
-          {turns.length > 0 && runs.length > 0 && (
-            <p className="ws-trace-note muted">
-              仅展示最近加载的消息与运行；更多历史请切换「运行记录」进入后端快照。
-            </p>
+
+          <StatusBar stats={stats} running={view.running} />
+
+          {onAsk && (
+            <div className="trace-ask">
+              <input
+                value={ask}
+                onChange={(e) => setAsk(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    submitAsk();
+                  }
+                }}
+                placeholder="继续追问，回车发送并回到对话…"
+                aria-label="继续追问"
+              />
+              <button type="button" onClick={submitAsk} disabled={!ask.trim()}>
+                发送
+              </button>
+            </div>
           )}
         </>
       )}
@@ -334,7 +278,7 @@ function SessionTrace({
   );
 }
 
-export function TraceTab({ session }: Props) {
+export function TraceTab({ session, onAsk }: Props) {
   const [selected, setSelected] = useState<number | null>(null);
   const runs = useQuery({
     // 一次取 200 条，前后端都不再做二次截断
@@ -370,6 +314,9 @@ export function TraceTab({ session }: Props) {
       runsLoading={runs.isLoading}
       runsError={runs.isError}
       onOpenRun={setSelected}
+      onAsk={onAsk}
     />
   );
 }
+
+export { formatClock };

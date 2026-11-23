@@ -236,16 +236,20 @@ describe('applyEvent', () => {
       model_name: 'qwen3.8-flash',
     });
     expect(s.modelName).toBe('qwen3.8-flash');
-    expect(s.steps[0]).toMatchObject({ kind: 'lifecycle', state: 'running' });
+    expect(s.steps[0]).toMatchObject({ kind: 'model', state: 'running' });
     s = applyEvent(s, {
       type: 'MODEL_CALL_END',
       reply_id: 'r1',
       input_tokens: 12,
       output_tokens: 34,
+      cache_input_tokens: 8,
     });
     expect(s.inputTokens).toBe(12);
     expect(s.outputTokens).toBe(34);
+    expect(s.cacheInputTokens).toBe(8);
     expect(s.steps[0].state).toBe('success');
+    // 泳道要按模型调用画区间，token 挂在步骤上供 Inspector 展示
+    expect(s.steps[0]).toMatchObject({ tokensIn: 12, tokensOut: 34, cacheTokens: 8 });
     s = applyEvent(s, { type: 'EXCEED_MAX_ITERS', reply_id: 'r1', name: 'devops' });
     expect(s.steps[1]).toMatchObject({ kind: 'error', label: '达到最大迭代次数', state: 'error' });
   });

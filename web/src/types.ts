@@ -93,6 +93,9 @@ export interface StreamEvent {
   source?: string;
   input_tokens?: number;
   output_tokens?: number;
+  /** 命中前缀缓存的输入 token 数（模型不支持时缺省）。 */
+  cache_input_tokens?: number;
+  cache_creation_tokens?: number;
   finished_reason?: string;
   error?: string;
   run_id?: number;
@@ -114,6 +117,7 @@ export interface StreamEvent {
 /** 过程步骤的类别——每类在 UI 上有不同视觉标注。 */
 export type ProcessKind =
   | 'lifecycle'
+  | 'model'
   | 'text'
   | 'thinking'
   | 'tool'
@@ -156,6 +160,11 @@ export interface ProcessEntry {
   result?: string;
   /** 工具原始标识，排查时展示。 */
   toolName?: string;
+  /** 该次模型调用的 token 用量（kind === 'model' 时有值）。 */
+  tokensIn?: number;
+  tokensOut?: number;
+  /** 其中命中前缀缓存的输入 token。 */
+  cacheTokens?: number;
   /** 输入解析阶段的明细（kind === 'parse' 时有值）。 */
   parseStages?: ParseStage[];
 }
@@ -198,26 +207,79 @@ export interface ChatMessage {
   modelName?: string;
   inputTokens?: number;
   outputTokens?: number;
+  cacheInputTokens?: number;
   runId?: number | null;
   endedAt?: string | null;
+}
+
+/** 工具调用的 diff：Edit / Write 的旧串与新串按行拆开。 */
+export interface TraceDiff {
+  oldLines: string[];
+  newLines: string[];
 }
 
 /** 轨迹步骤：由消息与过程步骤派生的只读视图。 */
 export interface TraceStep {
   id: string;
-  kind: 'text' | 'tool' | 'error' | 'parse';
+  kind: 'text' | 'tool' | 'error' | 'parse' | 'model';
+  /** 该步骤占用的资源：模型推理 / 工具执行 / 输入解析。 */
+  layer: 'model' | 'tool' | 'input' | 'control';
+  /** 轮内序号，从 1 开始；Inspector 标题用。 */
+  index: number;
   title: string;
   text: string;
   /** 毫秒时间戳。 */
   at: number;
   durationMs: number;
+  /** 耗时是否来自真实起止事件；false 表示按相邻步骤估算的兜底值。 */
+  measured: boolean;
   status?: ProcessEntry['state'];
   toolCallId?: string;
   toolName?: string;
   args?: string;
   result?: string;
-  /** 解析步骤的阶段明细。 */
+  /** 行内展示用的入参摘要（只取关键字段）。 */
+  argsSummary?: string;
+  /** 行内展示用的返回摘要（首行 + 行数）。 */
+  resultSummary?: string;
+  diff?: TraceDiff;
   stages?: ParseStage[];
+  tokensIn?: number;
+  tokensOut?: number;
+  cacheTokens?: number;
+}
+
+/** 泳道段：某条资源泳道上的一段占用。 */
+export interface TraceSpan {
+  id: string;
+  lane: 'model' | 'tool';
+  start: number;
+  end: number;
+  status: 'ok' | 'error' | 'running';
+  label: string;
+  stepId: string;
+}
+
+/** 两条泳道的占用区间。只画真实占用的时间，空隙就留白，不造「等待」块。 */
+export interface TraceLanes {
+  model: TraceSpan[];
+  tool: TraceSpan[];
+}
+
+/** 一组聚合指标：顶部状态栏与空态提示共用。 */
+export interface TraceStats {
+  totalMs: number;
+  turns: number;
+  steps: number;
+  tools: number;
+  errors: number;
+  tokensIn: number;
+  tokensOut: number;
+  cacheTokens: number;
+  /** 输出 token / 模型总耗时（秒）；没有模型耗时为 null。 */
+  tokPerSec: number | null;
+  /** 缓存命中率 0~1；模型不回传缓存字段时为 null。 */
+  cacheRate: number | null;
 }
 
 /** 一次运行落库的解析阶段（GET /api/runs/{id}/input-stages）。 */
@@ -253,6 +315,13 @@ export interface TraceTurn {
   parse?: { refs: number; redactions: number; degraded: number; attachments: number };
   /** 该轮用户消息附带的文件数（无附件时缺省）。 */
   attachments?: number;
+  /** 模型/工具的真实占用区间，供泳道图使用；正文与思考不在其中。 */
+  spans: TraceSpan[];
+  tokens: { in: number; out: number; cache: number };
+  /** 该轮失败步骤数（异常行 + 工具报错）。 */
+  errorCount: number;
+  /** 同题的上一轮序号：用来对比「同一个问题这次是变快还是变慢」。 */
+  repeatOf?: number;
 }
 
 /** 保险箱里的一条凭据（GET /api/secrets）：只给元信息，没有值。 */

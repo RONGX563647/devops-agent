@@ -166,10 +166,10 @@ function TextStep({ step }: { step: ProcessEntry }) {
   );
 }
 
-/** 生命周期：读作运行日志，比步骤更弱一档。 */
+/** 生命周期与模型调用：读作运行日志，比步骤更弱一档。 */
 function LogStep({ step }: { step: ProcessEntry }) {
   return (
-    <div className="step-log" data-kind="lifecycle">
+    <div className="step-log" data-kind={step.kind}>
       {step.label}
       {step.detail ? ` · ${summarize(step.detail, 80)}` : ''}
     </div>
@@ -177,7 +177,7 @@ function LogStep({ step }: { step: ProcessEntry }) {
 }
 
 export function StepRow({ step }: { step: ProcessEntry }) {
-  if (step.kind === 'lifecycle') return <LogStep step={step} />;
+  if (step.kind === 'lifecycle' || step.kind === 'model') return <LogStep step={step} />;
   if (step.kind === 'thinking') return <ThinkingStep step={step} />;
   if (step.kind === 'parse') return <ParseStep step={step} />;
   if (step.kind === 'text') return <TextStep step={step} />;

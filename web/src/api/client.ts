@@ -92,6 +92,20 @@ export function fetchEvalTrends(): Promise<EvalTrends> {
   return getJson<EvalTrends>('/api/eval/trends');
 }
 
+/** 工具注册表导出的 schema：Inspector 的「Schema」页签据此展示参数定义。 */
+export interface ToolSchema {
+  type: string;
+  function: {
+    name: string;
+    description?: string;
+    parameters?: unknown;
+  };
+}
+
+export function fetchToolSchemas(): Promise<ToolSchema[]> {
+  return getJson<ToolSchema[]>('/api/tools/schema');
+}
+
 export async function postFeedback(
   runId: number,
   score: number,

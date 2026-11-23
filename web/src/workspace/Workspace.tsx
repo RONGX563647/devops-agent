@@ -8,7 +8,7 @@ import { Cost } from '../pages/Cost';
 import { ChatTab } from './ChatTab';
 import { SecretsTab } from './SecretsTab';
 import { TraceTab } from './TraceTab';
-import { ensureHistory } from './store';
+import { ensureHistory, send } from './store';
 import { newId } from './id';
 
 const TABS = [
@@ -110,7 +110,21 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
               onOpenTrace={() => switchTab('trace')}
             />
           )}
-          {tab === 'trace' && <TraceTab key={`trace-${session ?? 'all'}`} session={session} />}
+          {tab === 'trace' && (
+            <TraceTab
+              key={`trace-${session ?? 'all'}`}
+              session={session}
+              // 轨迹页里追问：消息交给 store 后立刻切回对话，边看边问不打断浏览
+              onAsk={
+                session
+                  ? (text) => {
+                      send(sessionId, text);
+                      switchTab('chat');
+                    }
+                  : undefined
+              }
+            />
+          )}
           {tab === 'metrics' && <Dashboard />}
           {tab === 'quality' && <Quality />}
           {tab === 'cost' && <Cost />}

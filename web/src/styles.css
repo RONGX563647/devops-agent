@@ -69,6 +69,15 @@
   --ev-parse: #0f6e56; /* 输入解析：青绿，表示「进模型之前的预处理」这一层 */
   --ev-parse-line: rgb(29 158 117 / 34%);
 
+  /* ---- 泳道资源色：与上面的事件类型色分开用 ----
+   * 类型色回答「这是什么事件」，资源色回答「谁在占时间」。
+   * 模型紫 / 工具琥珀 是耗时归因要用的第二套编码，空隙留白不占色。 */
+  --lane-model: #7f77dd;
+  --lane-model-soft: #cecbf6;
+  --lane-tool: #ef9f27;
+  --lane-tool-soft: #faeeda;
+  --lane-error: #e24b4a;
+
   /* ---- 兼容旧 token 名（指标 / 质量 / 成本页仍在用） ---- */
   --text-1: var(--ink);
   --text-2: var(--ink-soft);
@@ -1863,278 +1872,6 @@ a:hover {
   color: var(--ink);
   box-shadow: var(--shadow-1);
 }
-.ws-trace-strip {
-  display: flex;
-  height: 34px;
-  flex: none;
-  gap: 3px;
-  padding: 4px;
-  overflow: hidden;
-  border-radius: var(--radius-sm);
-  background: var(--surface-muted);
-}
-.ws-seg {
-  flex-basis: 0;
-  min-width: 0;
-  padding: 0 6px;
-  overflow: hidden;
-  border: 0;
-  border-radius: var(--radius-xs);
-  background: var(--accent-faint);
-  color: var(--accent-ink);
-  font-size: 10px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-.ws-seg.active {
-  background: var(--accent-soft-strong);
-  outline: 1px solid var(--accent);
-}
-.ws-seg.failed {
-  background: var(--danger-soft);
-  color: var(--danger-ink);
-}
-.ws-strip-empty {
-  color: var(--ink-muted);
-  font-size: 11px;
-  padding: 2px 6px;
-}
-.ws-trace-body {
-  display: grid;
-  flex: 1;
-  min-height: 0;
-  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
-  gap: var(--sp-4);
-}
-.ws-trace-list {
-  display: flex;
-  min-height: 0;
-  flex-direction: column;
-  gap: 4px;
-  padding-right: 4px;
-  overflow-y: auto;
-}
-.ws-turn {
-  display: flex;
-  gap: 8px;
-  padding: 8px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-.ws-turn:hover {
-  background: var(--surface-hover);
-}
-.ws-turn.active {
-  border-color: var(--accent-soft-strong);
-  background: var(--accent-faint);
-}
-.ws-turn.failed .ws-turn-index {
-  color: var(--danger-ink);
-}
-.ws-turn-index {
-  padding-top: 2px;
-  color: var(--ink-muted);
-  font-size: 11px;
-}
-.ws-turn-main {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-.ws-turn-question {
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ws-turn-meta {
-  color: var(--ink-muted);
-  font-size: 11px;
-}
-.ws-trace-detail {
-  display: flex;
-  min-height: 0;
-  flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-4);
-  overflow-y: auto;
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-}
-.ws-detail-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--sp-3);
-}
-.ws-detail-question {
-  margin: 4px 0 0;
-  color: var(--ink);
-  font-size: 14px;
-  line-height: 1.55;
-}
-.ws-detail-steps {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.ws-step-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: var(--surface-muted);
-  cursor: pointer;
-}
-.ws-step-item.active {
-  border-color: var(--accent-soft-strong);
-  background: var(--accent-faint);
-}
-.ws-step-title {
-  flex: 1;
-  overflow: hidden;
-  color: var(--ink-soft);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ws-step-meta {
-  color: var(--ink-muted);
-  font-size: 11px;
-}
-.ws-kind {
-  flex: none;
-  padding: 1px 6px;
-  border-radius: var(--radius-pill);
-  font-size: 10px;
-  background: var(--surface-active);
-  color: var(--ink-soft);
-}
-.ws-kind.tool {
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-}
-.ws-kind.error {
-  background: var(--danger-soft);
-  color: var(--danger-ink);
-}
-.ws-kind.parse {
-  background: rgb(29 158 117 / 12%);
-  color: var(--ev-parse);
-}
-.ws-status {
-  font-size: 11px;
-}
-.ws-status.success {
-  color: var(--ok-ink);
-}
-.ws-status.error,
-.ws-status.running {
-  color: var(--danger-ink);
-}
-.ws-parse-note {
-  margin: var(--sp-2) 0 var(--sp-3);
-  font-size: 12px;
-  color: var(--ink-soft);
-}
-.ws-parse-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.ws-parse-row {
-  display: flex;
-  gap: var(--sp-3);
-  align-items: baseline;
-  padding: 5px var(--sp-2);
-  border-radius: var(--radius-xs);
-  background: var(--surface-muted);
-  font-size: 12px;
-}
-.ws-parse-row[data-status='error'] .ws-parse-label,
-.ws-parse-row[data-status='error'] .ws-parse-metric {
-  color: var(--ev-error);
-}
-.ws-parse-label {
-  flex: none;
-  width: 64px;
-  color: var(--ev-parse);
-}
-.ws-parse-summary {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink-soft);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ws-parse-metric {
-  flex: none;
-  font-size: 11px;
-  color: var(--ink-muted);
-}
-.ws-parse-foot {
-  margin: var(--sp-2) 0 0;
-  font-size: 11px;
-}
-.ws-step-detail {
-  padding-top: var(--sp-3);
-  border-top: 1px solid var(--line-soft);
-}
-.ws-step-detail-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-  font-size: 13px;
-}
-.ws-step-text,
-.ws-block pre {
-  margin: 0;
-  padding: 10px;
-  max-height: 280px;
-  overflow: auto;
-  border-radius: var(--radius-sm);
-  background: var(--code-bg);
-  color: var(--ink-soft);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.ws-block {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 8px;
-}
-.ws-block-label {
-  color: var(--ink-muted);
-  font-size: 11px;
-}
-.ws-detail-empty {
-  color: var(--ink-muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-.ws-detail-empty strong {
-  display: block;
-  margin-bottom: 4px;
-  color: var(--ink-soft);
-}
-.ws-trace-note {
-  font-size: 11px;
-}
 .ws-runs {
   flex: 1;
   min-height: 0;
@@ -2200,15 +1937,790 @@ a:hover {
 }
 
 @media (max-width: 1100px) {
-  .ws-trace-body {
-    grid-template-columns: 1fr;
-  }
-  .ws-trace-list {
-    max-height: 220px;
-    flex: none;
-  }
   .ws-rail {
     display: none;
+  }
+}
+
+/* ============================================================
+ * 轨迹页：泳道（时间归因）+ 步骤列表（做了什么）+ 检查面板（细节）
+ * 三块共用一份数据，层级从粗到细：泳道 → 行 → 详情。
+ * ============================================================ */
+
+.trace-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.trace-modes {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-muted);
+}
+.trace-modes button {
+  padding: 4px 11px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.trace-modes button.active {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-1);
+}
+.trace-search {
+  width: 240px;
+  margin: 0 0 0 auto;
+  height: 30px;
+}
+
+/* ---- 泳道 ---- */
+.lanes {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.lanes-empty {
+  padding: 12px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+.lanes-ruler,
+.lane-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 38px;
+  gap: 10px;
+  align-items: center;
+}
+.lanes-ticks {
+  position: relative;
+  height: 13px;
+  color: var(--ink-muted);
+  font-size: 10px;
+  letter-spacing: 0.01em;
+}
+.lanes-ticks span {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+.lanes-ticks span:first-child {
+  transform: none;
+}
+.lanes-ticks span:last-child {
+  transform: translateX(-100%);
+}
+.lane-label {
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+}
+.lane-share {
+  color: var(--ink-faint);
+  font-size: 10px;
+  text-align: right;
+}
+.lane-share.idle {
+  color: var(--ink-faint);
+  opacity: 0.7;
+}
+.lane-track {
+  position: relative;
+  height: 16px;
+  overflow: hidden;
+  border-radius: 4px;
+  background-color: var(--surface-muted);
+  background-image: linear-gradient(to right, var(--line) 1px, transparent 1px);
+  background-size: 25% 100%;
+  background-position: 1px 0;
+}
+.lane-bar {
+  position: absolute;
+  top: 2px;
+  height: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: var(--lane-model);
+  cursor: pointer;
+  transition: filter 120ms ease;
+}
+.lane-track[data-lane='tool'] .lane-bar {
+  background: var(--lane-tool);
+}
+/* 状态色要压过泳道底色规则：选择器权重与 .lane-track[data-lane='tool'] .lane-bar 持平并靠后生效 */
+.lane-track .lane-bar[data-status='error'] {
+  /* 失败块通常只有几百毫秒，必须压在相邻块上面，否则被后画的成功块吞掉 */
+  z-index: 2;
+  background: var(--lane-error);
+}
+.lane-track .lane-bar[data-status='running'] {
+  background: var(--lane-model-soft);
+}
+.lane-bar:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.lane-bar:hover {
+  z-index: 3;
+  filter: brightness(1.1);
+}
+.lane-bar.active {
+  z-index: 3;
+  box-shadow: inset 0 0 0 1.5px var(--surface), 0 0 0 1.5px var(--ink);
+}
+.lanes-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 2px;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+}
+.lanes-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-radius: 2px;
+  background: var(--lane-model);
+}
+.lanes-legend i[data-lane='tool'] {
+  background: var(--lane-tool);
+}
+.lanes-legend i[data-lane='error'] {
+  background: var(--lane-error);
+}
+.lanes-legend .mono {
+  margin-left: auto;
+}
+
+/* ---- 主体两栏 ---- */
+.trace-body {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  outline: none;
+}
+.trace-body:focus-visible {
+  border-color: var(--accent-ring);
+}
+.trace-scroll {
+  min-height: 0;
+  overflow-y: auto;
+}
+.trace-list {
+  padding: 2px 0;
+}
+.trace-more {
+  display: block;
+  width: 100%;
+  padding: 5px;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  background: transparent;
+  color: var(--accent-ink);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+}
+.trace-more:hover {
+  background: var(--surface-hover);
+}
+
+/* ---- 轮次分隔 ---- */
+.trace-turn-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 4px 10px;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-muted);
+}
+.trace-turn:first-child .trace-turn-head {
+  border-top: 0;
+}
+.trace-turn-head.active {
+  background: var(--accent-faint);
+}
+.trace-turn-toggle {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.trace-caret {
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+.trace-turn-no {
+  flex: none;
+  color: var(--ink-soft);
+  font-size: var(--text-2xs);
+}
+.trace-turn-question {
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trace-turn-meta {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+}
+.trace-turn-meta:hover {
+  color: var(--accent-ink);
+}
+.trace-turn-fail {
+  color: var(--danger-ink);
+}
+.trace-turn-repeat {
+  color: var(--accent-ink);
+}
+
+/* ---- 步骤行：一行读完「谁、做什么、拿到什么、多久」 ---- */
+.trace-steps {
+  padding: 2px 0;
+}
+.trace-step {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 20px 32px minmax(0, 1fr) 52px 8px;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 10px;
+  border: 0;
+  border-left: 2px solid transparent;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.trace-step:hover {
+  background: var(--surface-hover);
+}
+.trace-step.active {
+  border-left-color: var(--accent);
+  background: var(--accent-faint);
+}
+/* 每步的展开箭头：行本体负责选中，箭头只负责就地展开原文，互不抢点击 */
+.trace-step-wrap {
+  position: relative;
+}
+.trace-step-wrap > .trace-step {
+  padding-right: 26px;
+}
+.trace-expand {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.trace-expand:hover {
+  background: var(--surface-active);
+  color: var(--ink);
+}
+.trace-expand[aria-expanded='true'] {
+  color: var(--ink);
+}
+.trace-caret {
+  display: inline-block;
+  font-size: 13px;
+  line-height: 1;
+}
+.trace-detail {
+  margin: 0 10px 6px 42px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--line);
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  background: var(--surface-muted);
+}
+.trace-detail-block + .trace-detail-block {
+  margin-top: 6px;
+}
+.trace-detail-label {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+.trace-detail-code {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  color: var(--ink-soft);
+  font-size: 10.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.trace-detail-empty {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: var(--text-2xs);
+}
+.trace-idx {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+.trace-badge {
+  padding: 1px 0;
+  border-radius: var(--radius-xs);
+  background: var(--surface-active);
+  color: var(--ink-soft);
+  font-size: 10px;
+  text-align: center;
+}
+.trace-badge[data-kind='tool'] {
+  background: var(--lane-tool-soft);
+  color: #8a5a12;
+}
+.trace-badge[data-kind='text'],
+.trace-badge[data-kind='model'] {
+  background: var(--lane-model-soft);
+  color: var(--ev-think-strong);
+}
+.trace-badge[data-kind='error'] {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+}
+.trace-badge[data-kind='parse'] {
+  background: var(--ok-soft);
+  color: var(--ev-parse);
+}
+.trace-main {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.trace-title {
+  flex: none;
+  color: var(--ink);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+}
+.trace-summary {
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  text-overflow: ellipsis;
+}
+.trace-result {
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: var(--text-2xs);
+  text-overflow: ellipsis;
+}
+.trace-arrow {
+  margin-right: 2px;
+  color: var(--ink-faint);
+}
+.trace-dur {
+  color: var(--ink-muted);
+  font-size: 10px;
+  text-align: right;
+}
+.trace-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.trace-dot.error {
+  background: var(--danger);
+}
+.trace-dot.running {
+  background: var(--warn);
+}
+.trace-step mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: #fff2c2;
+  color: inherit;
+}
+.trace-diff {
+  max-height: 160px;
+  margin: 0 10px 6px 42px;
+  padding: 5px 7px;
+  overflow: auto;
+  border-radius: var(--radius-xs);
+  background: var(--code-bg);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
+.diff-old {
+  color: var(--danger-ink);
+}
+.diff-new {
+  color: var(--ok-ink);
+}
+.trace-empty {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+}
+.trace-calls {
+  padding: 2px 0;
+}
+
+/* ---- 详情检查面板 ---- */
+.inspector {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  border-left: 1px solid var(--line-soft);
+}
+.inspector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+}
+.inspector-kind {
+  max-width: 55%;
+  padding: 1px 6px;
+  overflow: hidden;
+  border-radius: var(--radius-xs);
+  background: var(--surface-active);
+  color: var(--ink-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inspector-kind[data-kind='tool'] {
+  background: var(--lane-tool-soft);
+  color: #8a5a12;
+}
+.inspector-kind[data-kind='text'],
+.inspector-kind[data-kind='model'] {
+  background: var(--lane-model-soft);
+  color: var(--ev-think-strong);
+}
+.inspector-kind[data-kind='error'] {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+}
+.inspector-kind[data-kind='parse'] {
+  background: var(--ok-soft);
+  color: var(--ev-parse);
+}
+.inspector-tabs {
+  display: flex;
+  flex: none;
+  gap: 10px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.inspector-tabs button {
+  padding: 6px 0;
+  border: 0;
+  border-bottom: 1.5px solid transparent;
+  background: none;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+}
+.inspector-tabs button.active {
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+}
+.inspector-body {
+  min-height: 0;
+  flex: 1;
+  padding: 10px;
+  overflow-y: auto;
+}
+.inspector-empty-state {
+  padding: 14px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+.inspector-empty-state strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ink-soft);
+}
+.inspect-grid {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 4px 8px;
+  font-size: var(--text-2xs);
+}
+.inspect-key {
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+}
+.inspect-status.success {
+  color: var(--ok-ink);
+}
+.inspect-status.error {
+  color: var(--danger-ink);
+}
+.inspect-status.running {
+  color: var(--warn-ink);
+}
+.inspect-muted {
+  color: var(--ink-muted);
+}
+.inspect-line {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: var(--text-2xs);
+  line-height: 1.5;
+  word-break: break-all;
+}
+.inspect-line .mono {
+  color: var(--ink-soft);
+}
+.inspect-block {
+  margin-top: 6px;
+}
+.inspect-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+}
+.inspect-block-head button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+}
+.inspect-code {
+  max-height: 320px;
+  margin: 0;
+  padding: 7px 8px;
+  overflow: auto;
+  border-radius: var(--radius-xs);
+  background: var(--code-bg);
+  color: var(--ink-soft);
+  font-size: 10.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.inspect-ratio {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) 32px;
+  gap: 6px;
+  align-items: center;
+  margin-top: 8px;
+  font-size: var(--text-2xs);
+}
+.inspect-ratio-track {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--surface-muted);
+}
+.inspect-ratio-fill {
+  height: 100%;
+  background: var(--accent);
+}
+.inspect-note,
+.inspect-empty,
+.inspect-desc {
+  margin: 8px 0 0;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  line-height: 1.6;
+}
+.inspect-desc {
+  margin-top: 0;
+  color: var(--ink-soft);
+}
+.inspect-diff {
+  max-height: 140px;
+  margin-bottom: 6px;
+  padding: 5px 7px;
+  overflow: auto;
+  border-radius: var(--radius-xs);
+  background: var(--code-bg);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
+.inspect-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 6px;
+}
+.inspect-stage {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: var(--text-2xs);
+}
+
+/* ---- 底部遥测与追问 ---- */
+.trace-status {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 16px;
+  padding: 5px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+}
+/* 规模、吞吐、token 三组数字：先读规模，再读速度 */
+.trace-status > span:first-child {
+  color: var(--ink-soft);
+}
+.trace-status .has-error {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+}
+.trace-status-right {
+  margin-left: auto;
+  color: var(--ink-soft);
+}
+.trace-ask {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+.trace-ask input {
+  flex: 1;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--text-xs);
+  outline: none;
+}
+.trace-ask input:focus {
+  border-color: var(--accent-ring);
+  box-shadow: var(--shadow-focus);
+}
+.trace-ask button {
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--ink-inverse);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.trace-ask button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+@media (max-width: 1100px) {
+  .trace-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .inspector {
+    max-height: 300px;
+    border-top: 1px solid var(--line-soft);
+    border-left: 0;
+  }
+  .trace-search {
+    width: 180px;
+  }
+}
+
+/* ---- 运行记录：瀑布图 + 落库详情 ---- */
+.run-waterfall {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: var(--sp-4);
+  align-items: start;
+}
+.run-waterfall .inspector {
+  min-height: 260px;
+  max-height: 380px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+}
+.waterfall-row {
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.waterfall-row:hover {
+  background: var(--surface-hover);
+}
+.waterfall-row.active {
+  background: var(--accent-faint);
+}
+.waterfall-open {
+  flex: none;
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+@media (max-width: 1100px) {
+  .run-waterfall {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

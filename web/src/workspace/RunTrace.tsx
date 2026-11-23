@@ -1,8 +1,33 @@
 /** 单次运行的轨迹展示（瀑布图 + 健康分 + 输入输出），供路由详情与轨迹 tab 复用。 */
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchInputStages, fetchRun, fetchRunHealth, fetchSpans } from '../api/client';
 import { StatusBadge } from '../components/StatusBadge';
-import type { Span } from '../types';
+import type { Span, TraceStep } from '../types';
+import { summarizeArgs, summarizeResult } from './trace';
+import { TraceInspector } from './TraceInspector';
+
+/** 落库的 span → 检查面板认识的步骤：字段一一对应，只差展示用的摘要。 */
+function spanToStep(span: Span, index: number): TraceStep {
+  const status = span.status === 'error' ? 'error' : 'success';
+  return {
+    id: `span-${span.id}`,
+    kind: span.type === 'tool' ? 'tool' : 'model',
+    layer: span.type === 'tool' ? 'tool' : 'model',
+    index: index + 1,
+    title: span.name,
+    text: span.error ?? '',
+    at: span.start_offset_ms,
+    durationMs: span.duration_ms ?? 0,
+    measured: true,
+    status,
+    toolName: span.type === 'tool' ? span.name : undefined,
+    args: span.input,
+    result: span.output,
+    argsSummary: summarizeArgs(span.input),
+    resultSummary: summarizeResult(span.output, status),
+  };
+}
 
 function spanLabel(span: Span): string {
   if (span.type === 'model') return `模型调用 · ${span.name}`;
@@ -23,11 +48,14 @@ export function RunTrace({ runId, onClose }: Props) {
     queryKey: ['input-stages', runId],
     queryFn: () => fetchInputStages(runId),
   });
+  const [selectedSpanId, setSelectedSpanId] = useState<number | null>(null);
 
   if (run.isLoading) return <p className="subtitle">加载中…</p>;
   if (run.isError || !run.data) return <p className="error">加载失败：run #{runId} 不存在</p>;
 
   const r = run.data;
+  const selectedIndex = (spans.data ?? []).findIndex((span) => span.id === selectedSpanId);
+  const selectedSpan = selectedIndex >= 0 ? (spans.data ?? [])[selectedIndex] : null;
   const maxOffset = Math.max(
     1,
     ...(spans.data ?? []).map((s) => s.start_offset_ms + (s.duration_ms ?? 0)),
@@ -100,26 +128,46 @@ export function RunTrace({ runId, onClose }: Props) {
 
       <section className="panel">
         <h2>时间线（瀑布图）</h2>
-        <p className="hint">横条位置 = 相对 run 起点的偏移，宽度 = 该步骤耗时</p>
-        <div className="waterfall">
-          {(spans.data ?? []).map((span) => {
-            const left = (span.start_offset_ms / maxOffset) * 100;
-            const width = Math.max(1.5, ((span.duration_ms ?? 0) / maxOffset) * 100);
-            return (
-              <div className="waterfall-row" key={span.id}>
-                <span className="waterfall-label">{span.status === 'error' ? '✗' : '•'} {spanLabel(span)}</span>
-                <div className="waterfall-track">
-                  <div
-                    className={`waterfall-bar bar-${span.type} ${span.status === 'error' ? 'bar-error' : ''}`}
-                    style={{ left: `${left}%`, width: `${width}%` }}
-                    title={`${span.duration_ms ?? 0} ms`}
-                  />
-                </div>
-                <span className="waterfall-ms">{span.duration_ms ?? 0} ms</span>
-              </div>
-            );
-          })}
-          {(spans.data ?? []).length === 0 && <p className="muted">该运行没有 span（可能用了非流式 /run）。</p>}
+        <p className="hint">
+          横条位置 = 相对 run 起点的偏移，宽度 = 该步骤耗时；点一行看落库的入参与返回。
+        </p>
+        <div className="run-waterfall">
+          <div className="waterfall">
+            {(spans.data ?? []).map((span, index) => {
+              const left = (span.start_offset_ms / maxOffset) * 100;
+              const width = Math.max(1.5, ((span.duration_ms ?? 0) / maxOffset) * 100);
+              return (
+                <button
+                  type="button"
+                  className={`waterfall-row${selectedSpanId === span.id ? ' active' : ''}`}
+                  key={span.id}
+                  onClick={() => setSelectedSpanId(span.id)}
+                >
+                  <span className="waterfall-label">
+                    {span.status === 'error' ? '✗' : '•'} {spanLabel(span)}
+                  </span>
+                  <div className="waterfall-track">
+                    <div
+                      className={`waterfall-bar bar-${span.type} ${span.status === 'error' ? 'bar-error' : ''}`}
+                      style={{ left: `${left}%`, width: `${width}%` }}
+                      title={`${span.duration_ms ?? 0} ms`}
+                    />
+                  </div>
+                  <span className="waterfall-ms">{span.duration_ms ?? 0} ms</span>
+                  <span className="waterfall-open mono">第 {index + 1} 步</span>
+                </button>
+              );
+            })}
+            {(spans.data ?? []).length === 0 && (
+              <p className="muted">该运行没有 span（可能用了非流式 /run）。</p>
+            )}
+          </div>
+          <TraceInspector
+            key={selectedSpanId ?? 'none'}
+            step={selectedSpan ? spanToStep(selectedSpan, selectedIndex) : null}
+            turn={null}
+            totalMs={maxOffset}
+          />
         </div>
       </section>
     </div>

@@ -147,6 +147,7 @@ function syncAssistant(entry: Entry): void {
     modelName: entry.stream.modelName || current.modelName,
     inputTokens: entry.stream.inputTokens,
     outputTokens: entry.stream.outputTokens,
+    cacheInputTokens: entry.stream.cacheInputTokens,
     runId: entry.stream.runId ?? current.runId,
     endedAt: entry.stream.endedAt ?? current.endedAt,
   });

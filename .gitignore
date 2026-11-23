@@ -9,7 +9,7 @@ dist/
 venv/
 
 # runtime workspace (NOT committed — process state lives here, not source)
-workspace/
+/workspace/
 
 # secrets & env
 .env

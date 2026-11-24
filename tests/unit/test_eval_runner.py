@@ -236,9 +236,7 @@ def test_absolute_fixture_path_is_rejected(tmp_path: Path, monkeypatch: pytest.M
     outside.mkdir()
     (outside / "secret.txt").write_text("secret", encoding="utf-8")
 
-    trace, workdir = _run_invalid_fixture(
-        tmp_path, monkeypatch, str(outside / "secret.txt")
-    )
+    trace, workdir = _run_invalid_fixture(tmp_path, monkeypatch, str(outside / "secret.txt"))
     assert trace.status == "error"
     assert trace.error is not None and "路径非法" in trace.error
     assert list(workdir.iterdir()) == []

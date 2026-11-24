@@ -127,10 +127,12 @@ class Source(str, Enum):
     ENV = "env"
     FRAMEWORK = "framework-default"
 
+
 @dataclass(frozen=True)
 class Resolved:
     value: Any
     source: Source
+
 
 def resolve(session_overrides: dict | None = None) -> dict[str, Resolved]:
     """逐项解析出「值 + 来源」；None 表示该项用供应商/框架默认。"""
@@ -166,7 +168,7 @@ CREATE TABLE IF NOT EXISTS settings (
 ### 5.2 `session_states` 加列
 
 ```python
-("model_config", "TEXT NOT NULL DEFAULT ''")   # JSON；空串 = 无覆盖
+("model_config", "TEXT NOT NULL DEFAULT ''")  # JSON；空串 = 无覆盖
 ```
 
 加列位置：`repository._SESSION_COLUMNS`（新增常量），由 `_migrate()` 统一走
@@ -178,7 +180,7 @@ CREATE TABLE IF NOT EXISTS settings (
 ### 5.3 `runs` 加列
 
 ```python
-("model_params", "TEXT NOT NULL DEFAULT ''")   # JSON 快照
+("model_params", "TEXT NOT NULL DEFAULT ''")  # JSON 快照
 ```
 
 只存**实际下发**的非默认值（`{"temperature": 0.3, "model": "qwen3.8-flash"}`），

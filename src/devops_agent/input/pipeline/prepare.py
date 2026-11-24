@@ -15,7 +15,7 @@ from pathlib import Path
 
 from devops_agent.input.attachments import Attachment
 
-from .budget import _budget
+from .budget import BudgetPolicy, _budget
 from .detect import _detect
 from .fetch import _attach, _expand, _remote_fetch_enabled
 from .model import PreparedInput, Stage, _elapsed_ms, _stage
@@ -58,6 +58,13 @@ def _normalize(text: str) -> tuple[str, Stage]:
     )
 
 
+def _build_policy() -> BudgetPolicy:
+    """调用时读包门面的预算常量，保证测试 monkeypatch 门面后仍生效。"""
+    from devops_agent.input import pipeline as _pipeline
+
+    return BudgetPolicy(total_chars=_pipeline.MAX_TOTAL_CHARS)
+
+
 def default_workspace_root() -> Path | None:
     """本地引用解析的根目录：DEVOPS_AGENT_WORKSPACE 优先，否则当前工作目录。"""
     override = os.environ.get("DEVOPS_AGENT_WORKSPACE", "").strip()
@@ -91,7 +98,7 @@ def prepare(
     # 失败说明也要进模型上下文，因此同样过一遍脱敏（URL 里可能带 token）。
     # 这些内容来自用户原文或文件名，正文那一步已经走过 sink，这里不重复入库。
     misses = [_redact_text(miss, namer, None)[0] for miss in (*ref_misses, *attach_misses)]
-    text, all_blocks, budget_stage = _budget(text, all_blocks)
+    text, all_blocks, budget_stage = _budget(text, all_blocks, _build_policy())
     text, compose_stage = _compose(text, all_blocks, misses)
 
     return PreparedInput(

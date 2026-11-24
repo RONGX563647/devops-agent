@@ -120,9 +120,7 @@ class SessionRegistry:
     def _build(self, session_id: str, profile: Any, web_search: bool | None) -> SessionEntry:
         state_json = self._load_state(session_id)
         overrides = self._load_model_config(session_id)
-        runtime = self._factory(
-            session_id, profile, state_json, web_search, model_config=overrides
-        )
+        runtime = self._factory(session_id, profile, state_json, web_search, model_config=overrides)
         entry = SessionEntry(
             session_id=session_id,
             runtime=runtime,

@@ -1,7 +1,21 @@
 """流式端点：事件流 → SSE 帧 → 挂起或正常结束。
 
-挂起相关的助手也放在这里：它们决定的都是「这条流怎么收尾」，与续跑端点
-（confirm.py）共用同一套实现，避免两套收尾逻辑慢慢长歪。
+为什么收尾集中在这里：主链路（/run/stream）与确认续跑（confirm.py）必须对
+「这一轮怎么结束」给出一致答案，否则会一边发 done、一边发 parked 地漂移。
+
+返回 StreamingResponse 之前必须成立的不变量：
+
+- 409 `session_busy` 检查与会话锁 acquire 都已**同步**完成。若把抢锁延迟到流内
+  （例如 `__aenter__`），前端会先拿到 200 再在流里失败，重试语义也说不清。
+- 锁一旦拿下只能由 `_release_lease` 释放。客户端断连抛的是 GeneratorExit /
+  CancelledError（都不是 Exception 子类），所以断连兜底只能写在 finally 里，
+  否则会留下永远 running 的 run。
+- 断连终态沿用 failed 而不是新增 aborted：`runs.status` 的 CHECK 是建表时定的，
+  老库不会因改 DDL 而放宽，新状态值会在旧库上直接 IntegrityError；
+  `recorder.finish` 幂等，正常路径已写终态时不会被兜底覆盖。
+- 挂起时这一条流正常结束但**不发 done**：前端据此把消息标成「等待确认」。
+
+心跳与静默补帧的编码细节见 sse.py；挂起落库与续跑校验见 confirm.py。
 """
 
 from __future__ import annotations
@@ -9,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -24,7 +39,7 @@ from devops_agent.observability import repository as repo
 from devops_agent.observability.recorder import RunRecorder
 from devops_agent.runtime.confirm import ConfirmDecision
 from devops_agent.runtime.runtime import AgentRuntime
-from devops_agent.runtime.sessions import SessionEntry
+from devops_agent.runtime.sessions import SessionEntry, SessionRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +54,24 @@ PARK_TTL_SECONDS = 600
 # 结清挂起时最多允许多少轮追跑：模型被拒后通常会换个方案再试一次，
 # 再被拒还继续要确认就是它自己的问题，不必无限追。
 SETTLE_ROUNDS = 2
+
+
+@dataclass
+class SessionLease:
+    """一轮流式请求持有的会话租约：收尾需要的会话、记录器与注册表。"""
+
+    entry: SessionEntry
+    recorder: RunRecorder
+    registry: SessionRegistry
+    session_id: str
+
+
+@dataclass(frozen=True)
+class PreparedPayload:
+    """这一轮交出去的两份输入：进模型上下文的 text 与给前端画轨迹的帧。"""
+
+    text: str
+    frames: list[dict[str, Any]]
 
 
 def pending_of(runtime: AgentRuntime) -> list[dict[str, Any]]:
@@ -69,13 +102,10 @@ def _rejections(pending: list[dict[str, Any]]) -> list[ConfirmDecision]:
 async def _settle_abandoned(runtime: AgentRuntime) -> bool:
     """把上一轮没作答的挂起按「拒绝」结清，好让新一轮能正常开跑。
 
-    为什么非有这一步：卡片弹出后用户可能直接点中断或关掉页面，前端只是 abort
-    了请求，**服务端仍停在 ASKING**。这时再发一条消息，框架的
-    `_check_incoming_event` 发现「等着 N 个调用、进来的事件里却没有确认结果」，
-    直接抛 `Agent is waiting for N tool calls ... but received no event` ——
-    用户看到的就是「对话运行失败」「怎么搞的你」。
+    不结清就直接开跑，框架的 `_check_incoming_event` 会抛
+    `Agent is waiting for N tool calls ... but received no event`，用户看到的是
+    「对话运行失败」。结清方式固定是**拒绝**：没被批准的调用一条都不执行。
 
-    结清方式固定是**拒绝**：没被批准的调用一条都不执行，发条消息不会顺手放行。
     模型被拒后会自己换方案，这一段追跑的输出直接丢弃（它回答的是上一个问题）。
     """
     for _ in range(SETTLE_ROUNDS):
@@ -111,32 +141,68 @@ def _park(runtime: AgentRuntime, recorder: RunRecorder, pending: list[dict[str, 
     )
 
 
-async def _stream_entry(
-    entry: SessionEntry,
-    recorder: RunRecorder,
-    source: AsyncIterator[dict[str, Any]],
-) -> AsyncIterator[str]:
-    """共用的收尾逻辑：跑事件流 → 需要确认就挂起 → 否则正常结束。
+def _prepare_payload(req: RunRequest, recorder: RunRecorder) -> PreparedPayload:
+    """解析输入：阶段事件进 recorder 并转成帧，只有 text 进模型上下文。"""
+    prepared = _prepare_input(req.user_input, _load_attachments(req.attachments))
+    if prepared is None:
+        return PreparedPayload(text=req.user_input, frames=[])
+    frames = parse_events(prepared)
+    for frame in frames:
+        recorder.consume(frame)  # 阶段缓存进 recorder，finish 时落库
+    return PreparedPayload(text=prepared.text, frames=frames)
 
-    主链路与「确认后续跑」都走这里，避免两套收尾实现慢慢长歪。
+
+async def _acquire_lease(
+    request: Request, req: RunRequest, x_request_id: str | None = None
+) -> SessionLease:
+    """同步占住会话：409 检查与 lock.acquire 都必须在返回响应前完成。"""
+    profile = _profile_or_403(req.permission)
+    registry = _registry(request)
+    entry = registry.acquire(req.session_id, profile, req.web_search)
+    if entry.lock.locked():
+        raise HTTPException(status_code=409, detail="session_busy")
+    # domain/model 由部署环境注入，观测数据才能反映真实运行上下文；
+    # 缺省保持 debug/空串，与 Echo 自检及既有测试兼容。
+    recorder = _recorder_for(entry, profile_key=profile.key, request_id=x_request_id or "")
+    await entry.lock.acquire()
+    return SessionLease(
+        entry=entry, recorder=recorder, registry=registry, session_id=req.session_id
+    )
+
+
+def _release_lease(lease: SessionLease) -> None:
+    """释放会话租约：断连兜底收尾 → 存快照 → 放锁 → 应用挂起的部署默认。
+
+    顺序不能换：save 必须在放锁前完成（否则新一轮可能先写进半截状态）；
+    flush_pending 会跳过仍持锁的会话，必须在放锁之后调用才会生效。
     """
-    async for frame in _frames(source, recorder):
-        yield frame
-    pending = pending_of(entry.runtime)
-    if pending and _bump_asks(recorder.run_id) > ASK_LIMIT:
-        # 超限：自动拒绝，让模型换思路，别再弹卡片
-        resume = getattr(entry.runtime, "resume", None)
-        if callable(resume):
-            async for frame in _frames(resume(_rejections(pending)), recorder):
-                yield frame
-            pending = pending_of(entry.runtime)
-    if pending:
-        yield _park(entry.runtime, recorder, pending)
+    try:
+        lease.recorder.finish(status="failed", error="ClientDisconnected: 客户端断开，本轮中止")
+    except Exception:  # noqa: BLE001 - 收尾失败也不能阻止释放会话锁
+        logger.warning("断连兜底收尾失败: %s", lease.session_id, exc_info=True)
+    lease.registry.save(lease.session_id)
+    lease.entry.lock.release()
+    # 这一轮跑着的时候改过部署默认的话，现在补上热替换（deferred → applied）
+    lease.registry.flush_pending(lease.session_id)
+
+
+async def _auto_reject_over_limit(
+    lease: SessionLease, pending: list[dict[str, Any]]
+) -> AsyncIterator[str]:
+    """超限：自动拒绝，让模型换思路，别再弹卡片。"""
+    resume = getattr(lease.entry.runtime, "resume", None)
+    if not callable(resume):
         return
+    async for frame in _frames(resume(_rejections(pending)), lease.recorder):
+        yield frame
+
+
+def _done_frame(recorder: RunRecorder) -> str:
+    """正常结束帧：run_id、token 汇总与最终文本。"""
     run_id = recorder.finish()
     in_tok, out_tok = recorder.token_usage
     cache_read, cache_write = recorder.cache_usage
-    yield _named_frame(
+    return _named_frame(
         "done",
         {
             "type": "RUN_DONE",
@@ -153,6 +219,26 @@ async def _stream_entry(
     )
 
 
+async def _finish_or_park(
+    lease: SessionLease, source: AsyncIterator[dict[str, Any]]
+) -> AsyncIterator[str]:
+    """共用的收尾逻辑：跑事件流 → 需要确认就挂起 → 否则正常结束。
+
+    三条收尾语义：正常 done、超限自动拒绝后再判、parked 不发 done。
+    """
+    async for frame in _frames(source, lease.recorder):
+        yield frame
+    pending = pending_of(lease.entry.runtime)
+    if pending and _bump_asks(lease.recorder.run_id) > ASK_LIMIT:
+        async for frame in _auto_reject_over_limit(lease, pending):
+            yield frame
+        pending = pending_of(lease.entry.runtime)
+    if pending:
+        yield _park(lease.entry.runtime, lease.recorder, pending)
+        return
+    yield _done_frame(lease.recorder)
+
+
 @router.post("/run/stream")
 async def run_stream(
     req: RunRequest,
@@ -166,40 +252,26 @@ async def run_stream(
     - 需要用户确认时发 `event: parked` 帧并结束这一条流（不发 done）；
     - X-Request-ID 提供幂等键，重试不会写入重复 run。
     """
-    profile = _profile_or_403(req.permission)
-    registry = _registry(request)
-    entry = registry.acquire(req.session_id, profile, req.web_search)
-    if entry.lock.locked():
-        raise HTTPException(status_code=409, detail="session_busy")
-    # domain/model 由部署环境注入，观测数据才能反映真实运行上下文；
-    # 缺省保持 debug/空串，与 Echo 自检及既有测试兼容。
-    recorder = _recorder_for(entry, profile_key=profile.key, request_id=x_request_id or "")
-    await entry.lock.acquire()
+    lease = await _acquire_lease(request, req, x_request_id)
+    entry, recorder = lease.entry, lease.recorder
 
     async def generate() -> AsyncIterator[str]:
         try:
-            # 首帧注释心跳：模型首 token 常需 2~3 秒，先让代理与浏览器确认流已建立，
-            # 避免这段推理空窗被当成空闲连接断开（SSE 注释帧前端会忽略）。
-            yield ": ping\n\n"
+            # 1) 建立流心跳并登记 run
+            yield ": ping\n\n"  # 模型首 token 前先有字节，别让代理把空窗当空闲连接
             recorder.start(req.session_id, req.user_input)
-            # 上一轮可能停在 ASKING（用户点了中断/关了页面），不结清就直接开跑
-            # 会撞上框架的「waiting for N tool calls but received no event」，
-            # 整轮变成 RUN_ERROR。先按拒绝结清，再开始这一轮。
+            # 2) 结清上一轮挂起：上一轮停在 ASKING 时不清，本轮会直接 RUN_ERROR
             if pending_of(entry.runtime) and not await _settle_abandoned(entry.runtime):
                 raise RuntimeError(
                     "上一次的确认还没结清（模型又被要求了一次确认），请先在卡片上作答再发新消息。"
                 )
-            # 输入解析在真正调用 Agent 之前完成：事件照常推给前端画轨迹，
-            # 但只有 prepared.text 会进入模型上下文——密钥与裁剪细节不外泄。
-            payload = req.user_input
-            prepared = _prepare_input(req.user_input, _load_attachments(req.attachments))
-            if prepared is not None:
-                payload = prepared.text
-                for frame in parse_events(prepared):
-                    recorder.consume(frame)  # 阶段缓存进 recorder，finish 时落库
-                    yield _sse_frame(frame)
-            async for chunk in _stream_entry(
-                entry, recorder, entry.runtime.stream(req.session_id, payload)
+            # 3) 取 prepared payload 并推阶段帧
+            prepared = _prepare_payload(req, recorder)
+            for frame in prepared.frames:
+                yield _sse_frame(frame)
+            # 4) 转发事件流（含收尾：done / 自动拒绝 / parked）
+            async for chunk in _finish_or_park(
+                lease, entry.runtime.stream(req.session_id, prepared.text)
             ):
                 yield chunk
         except HTTPException:
@@ -209,24 +281,9 @@ async def run_stream(
             recorder.finish(status="failed", error=f"{type(exc).__name__}: {exc}")
             yield _sse_frame({"type": "RUN_ERROR", "error": str(exc)})
         finally:
-            # 客户端断连抛的是 GeneratorExit / CancelledError，都不是 Exception 子类，
-            # 上面的 except 抓不到；不兜底就会留下永远 running 的 run。
-            # finish 幂等（正常路径已写过 success/failed 时直接早退），不会覆盖终态。
-            # 终态沿用 failed 而不是新增 aborted：runs.status 的 CHECK 是建表时定的，
-            # 老库不会因为改 DDL 而放宽，新写一个状态值会在旧库上直接 IntegrityError。
-            try:
-                recorder.finish(status="failed", error="ClientDisconnected: 客户端断开，本轮中止")
-            except Exception:  # noqa: BLE001 - 收尾失败也不能阻止释放会话锁
-                logger.warning("断连兜底收尾失败: %s", req.session_id, exc_info=True)
-            # 会话快照要包含这一轮结束后的完整状态，刷新后重建才不会丢历史
-            registry.save(req.session_id)
-            entry.lock.release()
-            # 这一轮跑着的时候改过部署默认的话，现在补上热替换（deferred → applied）
-            registry.flush_pending(req.session_id)
+            # 5) 统一收尾：断连（非 Exception）也在这里落库并释放锁
+            _release_lease(lease)
 
-    # 三个响应头都是流式能被"真的是流"看到的前提：
-    # - no-cache：避免中间层缓存整段响应
-    # - keep-alive：保持长连接，别在帧间隙被关闭
-    # - X-Accel-Buffering: no：关闭 nginx 等反向代理的响应缓冲，
-    #   否则代理会把整段流攒到结束才下发，前端又变回一次性渲染
+    # 三个响应头缺一不可：no-cache 防中间层缓存整段；keep-alive 保长连接；
+    # X-Accel-Buffering: no 关掉 nginx 缓冲，否则整段流会攒到结束才下发。
     return StreamingResponse(generate(), media_type="text/event-stream", headers=_SSE_HEADERS)

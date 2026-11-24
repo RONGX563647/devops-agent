@@ -230,6 +230,43 @@ def _score_with_judge(
     ), judged
 
 
+def _fixture_path_error(fixture: str, root: Path) -> str | None:
+    """校验 fixture 相对路径；合法返回 None，非法返回原因。
+
+    数据集是外部输入。`Path.__truediv__` 在右侧为绝对路径时会丢弃左侧，
+    `..` 也能跳出 fixture 根目录 —— 不校验就等于允许数据集指定
+    从文件系统任意位置复制内容。resolve() 比对还能挡住符号链接跳转。
+    """
+    candidate = Path(fixture)
+    if candidate.is_absolute():
+        return "不允许绝对路径"
+    if ".." in candidate.parts:
+        return "不允许包含 .."
+    resolved_root = root.resolve()
+    resolved = (resolved_root / candidate).resolve()
+    if resolved != resolved_root and resolved_root not in resolved.parents:
+        return f"解析后越出 fixture 根目录: {resolved}"
+    return None
+
+
+def _copy_fixture(fixture: str, root: Path, workdir: Path, state: dict[str, Any]) -> None:
+    """把 fixture 复制进工作区；非法路径或复制失败都写成一条 error 结论。
+
+    这里不抛异常：评测要把「数据集写错了」记成该用例的结论，
+    而不是让整批判卷崩掉。
+    """
+    invalid = _fixture_path_error(fixture, root)
+    if invalid is not None:
+        state["status"] = "error"
+        state["error"] = f"fixture 路径非法: {invalid}"
+        return
+    try:
+        shutil.copytree(root / fixture, workdir, dirs_exist_ok=True)
+    except OSError as exc:
+        state["status"] = "error"
+        state["error"] = f"fixture 复制失败: {exc}"
+
+
 async def execute_case(
     case: EvalCase,
     make_runtime: RuntimeFactory,
@@ -244,12 +281,7 @@ async def execute_case(
     started = time.monotonic()
     try:
         if case.fixture:
-            source = root / case.fixture
-            try:
-                shutil.copytree(source, workdir, dirs_exist_ok=True)
-            except OSError as exc:
-                state["status"] = "error"
-                state["error"] = f"fixture 复制失败: {exc}"
+            _copy_fixture(case.fixture, root, workdir, state)
         if state["status"] == "success":
             try:
                 runtime = make_runtime(case, workdir)

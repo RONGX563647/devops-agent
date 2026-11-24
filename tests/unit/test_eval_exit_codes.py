@@ -11,9 +11,16 @@
 
 from __future__ import annotations
 
+import json
+from argparse import Namespace
+from pathlib import Path
 from typing import Any
 
+import pytest
+
+import devops_agent.eval.cli as cli_mod
 from devops_agent.eval.cli import _BLOCKING_VERDICTS
+from devops_agent.eval.dataset import Manifest, Suite
 from devops_agent.eval.report import compare
 
 
@@ -79,3 +86,47 @@ def test_identical_reports_are_not_blocking() -> None:
     payload = _report(0.9, "p1")
     result = compare(payload, dict(payload))
     assert result["verdict"] not in _BLOCKING_VERDICTS
+
+
+def test_incomparable_baseline_returns_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """suite_sha 不同 -> not_comparable -> 必须 exit 2，而不是静默退 0。
+
+    走完整 `cmd_run` 流程，只把运行/落库/写报告换成桩：
+    真正要锁的是「不可比」这条结论的退出码。
+    """
+    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
+    suite = Suite(
+        manifest=Manifest(
+            suite="demo",
+            version="1",
+            sha256="head-sha",
+            counts={},
+            min_cases_for_gate=1,
+        ),
+        cases=[],
+    )
+    monkeypatch.setattr(cli_mod, "load_suite", lambda path: suite)
+    monkeypatch.setattr(cli_mod, "_init_judge", lambda enabled: (None, ""))
+    monkeypatch.setattr(cli_mod, "_runtime_factory", lambda profile: (lambda case, workdir: None))
+    monkeypatch.setattr(cli_mod, "_persist", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(cli_mod, "_write_outputs", lambda *args, **kwargs: None)
+
+    async def fake_run_suite(*args: Any, **kwargs: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(cli_mod, "run_suite", fake_run_suite)
+
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({"suite_sha": "base-sha"}), encoding="utf-8")
+    args = Namespace(
+        suite="suite.jsonl",
+        out=str(tmp_path / "out"),
+        judge=False,
+        judge_scope="all",
+        profile=None,
+        limit=None,
+        baseline=str(baseline),
+        db=None,
+        allow_warn=False,
+    )
+    assert cli_mod.cmd_run(args) == 2

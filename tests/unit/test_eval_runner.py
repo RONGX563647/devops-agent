@@ -7,6 +7,9 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+import devops_agent.eval.runner as runner_mod
 from devops_agent.eval.dataset import EvalCase, Manifest, Suite
 from devops_agent.eval.graders import TraceResult
 from devops_agent.eval.runner import execute_case, run_suite
@@ -204,6 +207,55 @@ def test_judge_failure_degrades_to_none() -> None:
     judge_check = next(check for check in score.checks if check.name == "judge")
     assert not judge_check.ok
     assert "judge down" in judge_check.detail
+
+
+def _run_invalid_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fixture: str
+) -> tuple[TraceResult, Path]:
+    """跑一条非法 fixture 用例，并保留工作区现场。
+
+    execute_case 默认会清理临时目录，没法事后断言「什么都没复制」；
+    这里固定 mkdtemp 的返回值并跳过 rmtree，只为了检查工作区。
+    """
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.setattr(runner_mod.tempfile, "mkdtemp", lambda prefix="": str(workdir))
+    monkeypatch.setattr(runner_mod.shutil, "rmtree", lambda *args, **kwargs: None)
+
+    def factory(_case: EvalCase, _workdir: Path) -> FakeRuntime:
+        raise AssertionError("非法 fixture 不应进入运行时装配")
+
+    case = make_case({"must_contain": ["x"]}, fixture=fixture)
+    _score, trace, _judge = asyncio.run(execute_case(case, factory))
+    return trace, workdir
+
+
+def test_absolute_fixture_path_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """绝对路径会丢弃 fixture_root，等于允许数据集从任意目录复制。"""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret", encoding="utf-8")
+
+    trace, workdir = _run_invalid_fixture(
+        tmp_path, monkeypatch, str(outside / "secret.txt")
+    )
+    assert trace.status == "error"
+    assert trace.error is not None and "路径非法" in trace.error
+    assert list(workdir.iterdir()) == []
+
+
+def test_parent_traversal_fixture_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`..` 能跳出 fixture_root，必须报路径非法且不复制任何内容。"""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret", encoding="utf-8")
+
+    trace, workdir = _run_invalid_fixture(tmp_path, monkeypatch, "../outside/secret.txt")
+    assert trace.status == "error"
+    assert trace.error is not None and "路径非法" in trace.error
+    assert list(workdir.iterdir()) == []
 
 
 def test_run_suite_respects_limit() -> None:

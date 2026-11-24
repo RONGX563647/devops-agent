@@ -20,6 +20,9 @@ venv/
 # 只忽略项目根下的运行期密钥目录：源码包 src/devops_agent/secrets 必须入库
 /secrets/
 
+# 「以后都这样」的沉淀规则与信任目录：写的是本机绝对路径，只在部署机生成
+config/permissions.local.yaml
+
 # tooling caches
 .pytest_cache/
 .mypy_cache/
@@ -27,7 +30,12 @@ venv/
 .coverage
 coverage.xml
 htmlcov/
-.mutmut-cache/
+# 不同 mutmut 版本对它要么落成文件、要么落成目录；尾斜杠只匹配目录，
+# 用通配同时盖住两种形态，避免换版本后缓存被误提交
+.mutmut-cache*
+
+# mutmut 3.x 的变异源码落盘目录（3.8 实测：不再用 .mutmut-cache，改为 mutants/）
+mutants/
 
 # IDE / OS
 .idea/

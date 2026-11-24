@@ -1,13 +1,16 @@
 """SSE 流式端点测试（用 EchoRuntime + 临时库，端到端验证流式与落库）。"""
 
+import asyncio
 import json
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
-from devops_agent.main import app
+from devops_agent.main import RunRequest, app, run_stream
 from devops_agent.observability import repository as repo
 from devops_agent.runtime.runtime import EchoRuntime
 
@@ -197,3 +200,40 @@ def test_run_stream_keeps_secret_out_of_model_input(
         assert vault_mod.get_vault().get("openai_key") == secret
     finally:
         vault_mod.reset_vault()
+
+
+def test_client_disconnect_marks_run_finished(
+    echo_runtime: None, monkeypatch: object, tmp_path: Path
+) -> None:
+    """客户端中途断连：run 必须收尾，不能永远停在 running。
+
+    直接驱动生成器模拟断连：GeneratorExit 不是 Exception，原来的 except 抓不到，
+    只会走 finally；这里断言 finally 的兜底 finish 真的把终态写进了库。
+    终态用 failed + 明确的 error 文案，而不是新增 status 值：runs.status 的 CHECK
+    是建表时定的，老库不会因为改 DDL 放宽，写新值会直接 IntegrityError。
+    """
+    db = tmp_path / "abort.db"
+    monkeypatch.setenv("DEVOPS_AGENT_DB_PATH", str(db))  # type: ignore[attr-defined]
+
+    async def drive() -> str:
+        request = Request({"type": "http", "headers": [], "app": app})
+        # 直接调路由不会经过 FastAPI 的依赖注入，X-Request-ID 要显式给 None，
+        # 否则拿到的是 Header 默认对象，写库时会绑定失败。
+        response = await run_stream(
+            RunRequest(session_id="s1", user_input="hi"), request, None
+        )
+        iterator = cast(AsyncIterator[str], response.body_iterator)
+        await iterator.__anext__()  # 首帧注释心跳
+        # 第二帧时 recorder.start 已执行，run 已经落库为 running
+        frame = await iterator.__anext__()
+        await iterator.aclose()  # 模拟客户端断开
+        return frame
+
+    first_data = asyncio.run(drive())
+    assert first_data.startswith("data: ")
+
+    with repo.connect(db) as conn:
+        runs = repo.list_runs(conn)
+    assert len(runs) == 1
+    assert runs[0].status == "failed"
+    assert "ClientDisconnected" in str(runs[0].error)

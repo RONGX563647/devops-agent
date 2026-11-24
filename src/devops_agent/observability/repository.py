@@ -1034,6 +1034,14 @@ def _eval_case_from_row(row: sqlite3.Row) -> dict[str, object]:
     }
 
 
+def _like_escape(text: str) -> str:
+    """转义 LIKE 元字符，让 tag 按字面匹配而不是当通配符。
+
+    必须先转反斜杠：若先转 `%`/`_`，它们补出来的反斜杠会被这一步再转一次。
+    """
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _eval_case_filter(
     batch_id: int, status: str | None, tag: str | None
 ) -> tuple[str, list[object]]:
@@ -1044,9 +1052,10 @@ def _eval_case_filter(
         clauses.append("status=?")
         params.append(status)
     if tag:
-        # 标签存在 detail_json.tags 数组里，用带引号的精确匹配避免子串误命中
-        clauses.append("detail_json LIKE ?")
-        params.append(f'%"{tag}"%')
+        # 标签存在 detail_json.tags 数组里，用带引号的精确匹配避免子串误命中；
+        # tag 里的 % / _ 是 LIKE 通配符，不转义会让 a_b 命中 axb、% 命中全部。
+        clauses.append("detail_json LIKE ? ESCAPE '\\'")
+        params.append(f'%"{_like_escape(tag)}"%')
     return " WHERE " + " AND ".join(clauses), params
 
 

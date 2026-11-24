@@ -186,4 +186,41 @@ describe('ModelConfigPopover', () => {
     fireEvent.click(screen.getByRole('button', { name: '恢复默认' }));
     await waitFor(() => expect(clearSession).toHaveBeenCalledWith('s1'));
   });
+
+  it('清空上下文窗口后保存：发 null 删覆盖，而不是写回继承值', async () => {
+    mount(config(), 0);
+    fireEvent.change(screen.getByLabelText('上下文窗口'), { target: { value: '' } });
+    // 改窗口属于危险项，要先勾确认；重点是请求体里不能出现继承来的 128000
+    fireEvent.click(screen.getByLabelText('我了解上面的影响'));
+    fireEvent.click(screen.getByRole('button', { name: '保存到本会话' }));
+    await waitFor(() => expect(saveSession).toHaveBeenCalledTimes(1));
+    expect(saveSession.mock.calls[0][1]).toEqual({ context_size: null });
+  });
+
+  it('Esc 关闭面板（键盘用户不能只能靠点外面）', () => {
+    mount(config());
+    expect(screen.queryByRole('dialog', { name: '模型设置' })).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: '模型设置' })).toBeNull();
+  });
+
+  it('模型名保存前 trim 掉首尾空格', async () => {
+    mount(config());
+    const input = screen.getByLabelText('模型名');
+    fireEvent.change(input, { target: { value: '  qwen3.8-flash  ' } });
+    // 离开输入框时才归一：空白消除后与生效值一致，危险提示也随之消失
+    fireEvent.blur(input);
+    fireEvent.click(screen.getByRole('button', { name: '保存到本会话' }));
+    await waitFor(() => expect(saveSession).toHaveBeenCalledTimes(1));
+    expect(saveSession.mock.calls[0][1]).toEqual({ model: 'qwen3.8-flash' });
+  });
+
+  it('清空模型名保存为 null（删覆盖，而不是写空模型名）', async () => {
+    mount(config());
+    fireEvent.change(screen.getByLabelText('模型名'), { target: { value: '' } });
+    fireEvent.click(screen.getByLabelText('我了解上面的影响'));
+    fireEvent.click(screen.getByRole('button', { name: '保存到本会话' }));
+    await waitFor(() => expect(saveSession).toHaveBeenCalledTimes(1));
+    expect(saveSession.mock.calls[0][1]).toEqual({ model: null });
+  });
 });

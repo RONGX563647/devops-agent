@@ -76,6 +76,15 @@ def test_put_new_value_replaces_ciphertext(store: SecretVault) -> None:
     assert store.get("token") == SECRET + "x"
 
 
+def test_hint_hides_chars_for_short_values() -> None:
+    """≤12 位只报长度：4 位露前 4 位就是整串，12 位也泄了三分之一。"""
+    for value in ("abcd", "abcdefghijkl"):
+        result = hint(value)
+        assert not set(result) & set(value), result
+        assert f"{len(value)} 位" in result
+    assert hint("abcdefghijklm").startswith("abcd")  # 13 位才允许露前 4 位
+
+
 def test_get_missing_returns_none(store: SecretVault) -> None:
     assert store.get("nope") is None
 

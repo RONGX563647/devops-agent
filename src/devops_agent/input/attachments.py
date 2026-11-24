@@ -29,6 +29,11 @@ from typing import Final
 
 # 单文件 10MB：再大就不是「贴一份材料」的场景，而且要防把磁盘当仓库镜像用
 MAX_UPLOAD_BYTES: Final = 10 * 1024 * 1024
+# 解压后总量上限：zip 的压缩比可达上千倍，只限压缩包体积挡不住 zip bomb
+_MAX_UNPACKED_BYTES: Final = 32 * 1024 * 1024
+# 流式读取的分块大小：边读边累加，不在判断前把整条条目读进内存
+_UNPACK_CHUNK: Final = 64 * 1024
+_UNPACK_LIMIT_PROBLEM: Final = "解压后体积超过上限，已中止"
 # 单份附件交给管线的字符上限：总预算由管线兜底，这里只挡「单个文件吃满一轮」
 MAX_ATTACH_CHARS: Final = 40_000
 # 一轮最多挂 8 个附件，与解析管线的引用上限保持同一量级
@@ -118,6 +123,41 @@ def _ooxml_entries(names: list[str], suffix: str) -> list[str]:
     return [target] if target is not None and target in names else []
 
 
+class _UnpackedTooLarge(Exception):
+    """解压后体积超限的内部信号：只在抽取层流转，不对外抛。"""
+
+
+def _read_entry(archive: zipfile.ZipFile, name: str, remaining: int) -> bytes:
+    """限流读取一个包内条目；超过剩余预算立即中止。
+
+    先看 zip 头声明的 `file_size`（省掉无谓的读取），再分块读并累加——
+    头里的值可以被伪造成很小，所以两者都要。
+    """
+    info = archive.getinfo(name)
+    if info.file_size > remaining:
+        raise _UnpackedTooLarge
+    chunks: list[bytes] = []
+    read = 0
+    with archive.open(info) as handle:
+        while chunk := handle.read(_UNPACK_CHUNK):
+            read += len(chunk)
+            if read > remaining:
+                raise _UnpackedTooLarge
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _unpack_parts(archive: zipfile.ZipFile, targets: list[str]) -> list[str]:
+    """按跨条目共享的总预算解压正文：pptx 多页也不允许总量叠加绕开上限。"""
+    remaining = _MAX_UNPACKED_BYTES
+    parts: list[str] = []
+    for name in targets:
+        raw = _read_entry(archive, name, remaining)
+        remaining -= len(raw)
+        parts.append(_xml_to_text(raw.decode("utf-8", "replace")))
+    return parts
+
+
 def _ooxml_text(data: bytes, suffix: str) -> tuple[str, str]:
     """从 OOXML 包里抽正文：docx/xlsx/pptx 本质都是 zip + xml。"""
     try:
@@ -125,9 +165,9 @@ def _ooxml_text(data: bytes, suffix: str) -> tuple[str, str]:
             targets = _ooxml_entries(archive.namelist(), suffix)
             if not targets:
                 return "", "包内未找到正文条目"
-            parts = [
-                _xml_to_text(archive.read(name).decode("utf-8", "replace")) for name in targets
-            ]
+            parts = _unpack_parts(archive, targets)
+    except _UnpackedTooLarge:
+        return "", _UNPACK_LIMIT_PROBLEM
     except (zipfile.BadZipFile, OSError):
         return "", "文件损坏，无法解压"
     text = "\n".join(part for part in parts if part)

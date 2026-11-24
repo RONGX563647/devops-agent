@@ -246,8 +246,13 @@ class SessionRegistry:
         entry = self._entries.get(session_id)
         if entry is None or not entry.pending_model or entry.lock.locked():
             return False
+        # 先应用、成功后才清标记：_apply_entry 失败或抛异常时若先清标记，
+        # 这一轮的部署默认就永久丢了，下一次 flush 也不会再补。
+        if not self._apply_entry(entry):
+            logger.warning("会话 %s 的挂起参数应用失败，下轮再试", session_id)
+            return False
         entry.pending_model = False
-        return self._apply_entry(entry)
+        return True
 
     def save(self, session_id: str) -> None:
         """把当前会话快照写回库里；运行时没有快照能力（如 Echo）则跳过。"""

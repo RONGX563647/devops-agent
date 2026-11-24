@@ -12,16 +12,31 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "check_manifest_sync.py"
 SUITE = "eval/suites/devops-core.v2.jsonl"
+
+
+def _load_script() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("check_manifest_sync", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["check_manifest_sync"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+check_manifest_sync = _load_script()
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -44,6 +59,20 @@ def test_current_suite_is_in_sync() -> None:
     proc = _run()
     assert proc.returncode == 0, proc.stderr
     assert "OK" in proc.stdout
+
+
+class TestChildEnv:
+    """子进程环境必须「前置」src，而不是整体替换调用方的 PYTHONPATH。"""
+
+    def test_prepends_to_existing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PYTHONPATH", "existing_entry")
+        env = check_manifest_sync._child_env()
+        assert env["PYTHONPATH"] == os.pathsep.join([str(ROOT / "src"), "existing_entry"])
+
+    def test_works_without_existing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+        env = check_manifest_sync._child_env()
+        assert env["PYTHONPATH"] == str(ROOT / "src")
 
 
 class TestDrift:
@@ -128,6 +157,30 @@ class TestDrift:
         proc = _run("--suite", self._relative(suite_copy))
         assert proc.returncode == 1
         assert "未知门禁" in proc.stderr
+
+    def test_missing_thresholds_still_checks_min_cases(self, suite_copy: Path) -> None:
+        """阈值整块缺失时仍要校验 min_cases_for_gate —— 最危险的组合不能只报一半。"""
+        manifest = suite_copy.with_name("devops-core.v2.manifest.json")
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        del data["thresholds"]
+        data["min_cases_for_gate"] = 0
+        manifest.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+        proc = _run("--suite", self._relative(suite_copy))
+        assert proc.returncode == 1
+        assert "thresholds: 缺失或为空" in proc.stderr
+        assert "min_cases_for_gate" in proc.stderr
+
+    def test_missing_one_threshold_key_fails(self, suite_copy: Path) -> None:
+        """悄悄删掉一个门禁阈值，等于把它从门禁里摘掉，必须报缺键。"""
+        manifest = suite_copy.with_name("devops-core.v2.manifest.json")
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        del data["thresholds"]["trajectory"]
+        manifest.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+        proc = _run("--suite", self._relative(suite_copy))
+        assert proc.returncode == 1
+        assert "缺少必需门禁阈值" in proc.stderr
 
     def test_formatting_only_difference_passes(self, suite_copy: Path) -> None:
         """只改缩进/换行不算过期 —— 闸门比较 JSON 语义，不是字节。"""

@@ -86,6 +86,8 @@ interface Entry {
   running: boolean;
   loading: boolean;
   hydrated: boolean;
+  /** 上次重建历史失败：置位后仍允许重试，避免一次抖动永久空白。 */
+  hydrateFailed: boolean;
   abort: AbortController | null;
   permission: PermissionKey;
   /** 代次：每次发起/停止 +1，旧流的回调据此丢弃，避免污染新会话。 */
@@ -131,6 +133,7 @@ function ensureEntry(sessionId: string): Entry {
     running: false,
     loading: false,
     hydrated: messages.length > 0,
+    hydrateFailed: false,
     abort: null,
     permission,
     generation: 0,
@@ -554,9 +557,12 @@ export async function ensureHistory(sessionId: string): Promise<void> {
       entry.messages = mine.flatMap(runToMessages);
     }
     entry.hydrated = true;
+    entry.hydrateFailed = false;
   } catch {
-    // 后端不可用：保留空历史，用户仍可发起新问题
-    entry.hydrated = true;
+    // 后端不可用：保留空历史，用户仍可发起新问题。
+    // 不置 hydrated——否则一次 500 就让这个会话在本次 tab 生命周期里再也拉不回来；
+    // loading 在 finally 里复位，下次选中会话时会自然重试。
+    entry.hydrateFailed = true;
   } finally {
     entry.loading = false;
     emit(entry);

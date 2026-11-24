@@ -158,6 +158,47 @@ describe('applyEvent', () => {
     expect(applyEvent(INITIAL, { type: 'RUN_ERROR' }).error).toBe('未知错误');
   });
 
+  it('RUN_ERROR 也收尾：转圈的步骤停下、挂起清空、耗时落终点', () => {
+    let s = applyEvent(INITIAL, {
+      type: 'TOOL_CALL_START',
+      tool_call_id: 't1',
+      tool_call_name: 'bash',
+    });
+    s = applyEvent(s, {
+      type: 'REQUIRE_USER_CONFIRM',
+      reply_id: 'r1',
+      tool_call_name: 'Bash',
+      tool_calls: CALLS,
+    });
+    expect(s.awaiting).not.toBeNull();
+
+    const failed = applyEvent(s, {
+      type: 'RUN_ERROR',
+      error: '模型超时',
+      created_at: '2026-11-25T10:00:00',
+    });
+    expect(failed.steps.some((step) => step.state === 'running')).toBe(false);
+    expect(failed.steps.find((step) => step.id === 'tool:t1')?.state).toBe('success');
+    expect(failed.steps.some((step) => step.id === 'run-error')).toBe(true);
+    expect(failed.error).toBe('模型超时');
+    expect(failed.running).toBe(false);
+    expect(failed.awaiting).toBeNull();
+    expect(failed.endedAt).toBe('2026-11-25T10:00:00');
+  });
+
+  it('RUN_DONE 缺 run_id 时保留已记录的 runId，确认/取消仍拿得到', () => {
+    const parked = applyEvent(INITIAL, {
+      type: 'RUN_PARKED',
+      run_id: 12,
+      expires_at: null,
+      tool_calls: CALLS,
+    });
+    expect(parked.runId).toBe(12);
+
+    const done = applyEvent(parked, { type: 'RUN_DONE', text: '做完了' });
+    expect(done.runId).toBe(12);
+  });
+
   it('确认请求不再当错误：仍算运行中，并把待确认调用摊出来', () => {
     const next = applyEvent(INITIAL, {
       type: 'REQUIRE_USER_CONFIRM',
@@ -649,6 +690,29 @@ describe('consumeStream', () => {
     );
     // 字节层保活：每个非空 chunk 都算一次活动，与帧能否解析无关
     expect(activity).toBe(4);
+  });
+
+  it('读流 reject 时释放 reader 锁，body 不再被占用', async () => {
+    const encoder = new TextEncoder();
+    let reads = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        reads += 1;
+        if (reads === 1) {
+          controller.enqueue(encoder.encode('data: {"type":"TEXT_BLOCK_DELTA","delta":"a"}\n\n'));
+          return;
+        }
+        // 第二次读开始失败：模拟传输中断
+        controller.error(new Error('stream boom'));
+      },
+    });
+    const events: StreamEvent[] = [];
+
+    await expect(consumeStream(body, (event) => events.push(event))).rejects.toThrow('stream boom');
+
+    expect(events.map((event) => event.type)).toEqual(['TEXT_BLOCK_DELTA']);
+    // 没有 finally 释放时这里会是 true，调用方连重读都做不到，UI 只能卡在 loading
+    expect(body.locked).toBe(false);
   });
 });
 

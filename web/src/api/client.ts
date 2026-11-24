@@ -15,7 +15,7 @@ import type {
   HealthMetrics,
   InputStage,
   ModelConfig,
-  ModelValues,
+  ModelPatch,
   PendingState,
   PermissionCatalog,
   Run,
@@ -320,7 +320,7 @@ export function fetchModelConfig(session?: string, domain?: string): Promise<Mod
 
 /** 改部署默认（影响所有会话）。patch 里给 null 表示「重置该项为下层默认」。 */
 export function patchModelConfig(
-  patch: Partial<ModelValues>,
+  patch: ModelPatch,
   version?: number,
 ): Promise<ModelConfig> {
   return sendJson<ModelConfig>('/api/model-config', 'PATCH', { patch, version });
@@ -336,7 +336,7 @@ export function resetModelConfig(
 /** 只改这个会话（合并语义）。运行中也能改：服务端原地热替换。 */
 export function patchSessionModelConfig(
   sessionId: string,
-  overrides: Partial<ModelValues>,
+  overrides: ModelPatch,
 ): Promise<SessionModelConfig> {
   return sendJson<SessionModelConfig>(
     `/api/session/${encodeURIComponent(sessionId)}/model-config`,

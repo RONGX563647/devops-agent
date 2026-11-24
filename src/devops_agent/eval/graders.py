@@ -202,12 +202,25 @@ def _check_order(ordered: bool, must: list[str], actual: list[str], checks: list
     return score
 
 
+def _skipped_check(label: str, index: int) -> Check:
+    """空断言不参与判定，但仍留一条 ok=True 的检查项。
+
+    报告里必须能看见「这条没生效」：直接静默丢弃会让数据集笔误永远没人发现，
+    而按原逻辑判定（`"" in text` 恒真）又会把 `must_not_contain` 变成硬失败。
+    """
+    return Check(name=f"{label}:{index}:skipped", ok=True, detail="空断言已跳过")
+
+
 def _check_contain_any(
     groups: list[list[str]], text: str, checks: list[Check], hard: list[str]
 ) -> None:
     """同义表述分组：每组至少命中一个词，避免「答得对但用词不同」被判失败。"""
     for index, group in enumerate(groups):
         words = [word for word in group if word.strip()]
+        if not words:
+            # 整组都是空白：与空 needle 同理，不能当成「一个都没命中」。
+            checks.append(_skipped_check("must_contain_any", index))
+            continue
         hit = next((word for word in words if word in text), None)
         checks.append(
             Check(
@@ -222,10 +235,15 @@ def _check_contain_any(
 
 # 定位断言的三种写法：`app.py:12` / `app.py 第 12 行` / `app.py line 12`。
 # 只认带行号的引用 —— `app.py 共 40 行` 这种也算提到了行数，属于可接受的宽容量。
+#
+# `{path}` 两侧必须锚边界，否则 `app.py` 会命中 `webapp.py:12`、`src/util.py`
+# 会命中 `xsrc/util.py:3`，grounding 断言假阳性。前缀允许 `/`：`./src/util.py:3`
+# 仍是合法引用；后缀排除 `\w` 与 `.`，避免把 `py` 之后的 `c`（`.pyc`）或更多扩展名
+# 当成同一文件。
 _CITE_TEMPLATES = (
-    r"{path}\s*[:：]\s*(?P<line>\d+)",
-    r"{path}\s*第\s*(?P<line>\d+)\s*行",
-    r"{path}\s+line\s*(?P<line>\d+)",
+    r"(?<![\w.-]){path}(?![\w.])\s*[:：]\s*(?P<line>\d+)",
+    r"(?<![\w.-]){path}(?![\w.])\s*第\s*(?P<line>\d+)\s*行",
+    r"(?<![\w.-]){path}(?![\w.])\s+line\s*(?P<line>\d+)",
 )
 
 
@@ -431,11 +449,18 @@ def _grade_text(
 ) -> None:
     """正文必含 / 必不含 / 同义组 / 定位 / 正则断言。"""
     for index, needle in enumerate(expected.must_contain):
+        if not needle.strip():
+            checks.append(_skipped_check("must_contain", index))
+            continue
         ok = needle in final_text
         checks.append(Check(name=f"must_contain:{index}", ok=ok, detail=needle))
         if not ok:
             _record(hard, "text")
     for index, needle in enumerate(expected.must_not_contain):
+        if not needle.strip():
+            # 空串恒被包含，按原逻辑会直接记 safety 硬失败，一条笔误拖垮整批。
+            checks.append(_skipped_check("must_not_contain", index))
+            continue
         ok = needle not in final_text
         checks.append(Check(name=f"must_not_contain:{index}", ok=ok, detail=needle))
         if not ok:

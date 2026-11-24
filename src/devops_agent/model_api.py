@@ -64,14 +64,15 @@ def _stored_now() -> tuple[dict[str, Any], int]:
     return saved if saved is not None else ({}, 0)
 
 
-def _invalid(exc: InvalidConfig) -> HTTPException:
-    """把校验失败翻译成前端可高亮的 400。"""
+def _invalid(exc: InvalidConfig, *, remedy: str | None = None) -> HTTPException:
+    """把校验失败翻译成前端可高亮的 400。`remedy` 附在 reason 后给出自救动作。"""
+    reason = exc.reason if remedy is None else f"{exc.reason}；{remedy}"
     return HTTPException(
         status_code=400,
         detail={
             "code": "invalid_model_config",
             "field": exc.field,
-            "reason": exc.reason,
+            "reason": reason,
             "bounds": model_settings.bound_payload(exc.field),
         },
     )
@@ -90,6 +91,7 @@ def _checked_values(
     session_layer: dict[str, Any] | None = None,
     *,
     domain: str = DEFAULT_DOMAIN,
+    remedy: str | None = None,
 ) -> dict[str, Any]:
     """解析 + 校验，返回完整参数值；非法时抛 400。"""
     resolved = model_settings.resolve(session_layer, stored_layer, domain=domain)
@@ -97,7 +99,7 @@ def _checked_values(
     try:
         model_settings.validate(values)
     except InvalidConfig as exc:
-        raise _invalid(exc) from None
+        raise _invalid(exc, remedy=remedy) from None
     return values
 
 
@@ -126,6 +128,9 @@ def _save_stored(merged: dict[str, Any], *, expected: int) -> int:
         )
     if saved is None:
         current, version = _stored_now()
+        # 冲突说明本进程缓存里的版本已过时（别的进程写过）。必须先失效再返回 409，
+        # 否则前端拿新版本重试时，本进程仍读旧缓存，可能陷入反复冲突直到 TTL 过期。
+        model_settings.invalidate()
         raise _conflict(version, model_settings.resolve(stored=current))
     model_settings.invalidate()
     return saved
@@ -155,6 +160,9 @@ def patch_model_config(req: PatchRequest, request: Request) -> dict[str, Any]:
     """改部署默认：写 DB → 让活跃会话热替换（跑着的记 deferred）。"""
     stored, version = _stored_now()
     if req.version is not None and req.version != version:
+        # 与 _save_stored 的冲突分支同理：版本对不上说明本进程缓存已过时，
+        # 不失效的话紧接着的重试仍会读到旧版本。
+        model_settings.invalidate()
         raise _conflict(version, model_settings.resolve(stored=stored))
     try:
         merged = model_settings.apply_patch(stored, req.patch)
@@ -171,6 +179,9 @@ def reset_model_config(req: ResetRequest, request: Request) -> dict[str, Any]:
     """清除部署默认里的覆盖项，回落到 yaml / env / 框架默认。"""
     stored, version = _stored_now()
     merged = {} if req.all else {k: v for k, v in stored.items() if k not in set(req.keys)}
+    # reset 也是写路径：库里若被手工写入非法值（运维改库 / 旧版本遗留），
+    # 删掉别的键后原样返回给前端就等于绕过校验。服务端是唯一裁判，非法照样 400。
+    _checked_values(merged, remedy='可用 {"all": true} 清空全部覆盖项以恢复默认')
     new_version = _save_stored(merged, expected=version)
     affected = registry_for(request).broadcast_model_defaults()
     return {**_body_payload(merged, new_version), "affected": affected}

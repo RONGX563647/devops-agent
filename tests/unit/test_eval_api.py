@@ -225,6 +225,26 @@ def test_case_filters_and_pagination(db: Path) -> None:
     assert [item["case_id"] for item in paged.json()["items"]] == ["a-1"]
 
 
+def test_tag_filter_escapes_like_wildcards(db: Path) -> None:
+    """tag 里的 _ / % 是 LIKE 元字符：不转义时 a_b 会命中 axb。"""
+
+    def detail(tag: str) -> dict[str, Any]:
+        return {"tags": [tag], "checks": [], "latency_ms": 10, "tokens": 5}
+
+    batch_id = seed_batch(
+        db,
+        started_at="2026-11-24T09:00:00+00:00",
+        summary_data=summary(),
+        case_rows=[
+            ("c-1", "success", True, detail("a_b")),
+            ("c-2", "success", True, detail("axb")),
+        ],
+    )
+    tagged = client.get(f"/api/eval/batches/{batch_id}/cases", params={"tag": "a_b"})
+    assert tagged.json()["total"] == 1
+    assert [item["case_id"] for item in tagged.json()["items"]] == ["c-1"]
+
+
 def test_compare_two_batches(db: Path) -> None:
     base_id = seed_batch(
         db,

@@ -43,6 +43,9 @@ PLACEHOLDER_RE: Final = re.compile(PLACEHOLDER_PATTERN)
 _NAME_RE: Final = re.compile(r"[^A-Za-z0-9_]+")
 # 指纹只用于「同一个值是否已经存过」，不参与解密
 _FINGERPRINT_CHARS: Final = 12
+# hint 露出的前几位与「可以露字符」的最小长度：短值露字符等于泄大半明文
+_HINT_KEEP_CHARS: Final = 4
+_HINT_MIN_LEN: Final = 12
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS secrets (
@@ -75,8 +78,15 @@ def fingerprint(value: str) -> str:
 
 
 def hint(value: str) -> str:
-    """只暴露前 4 位与长度：用户能认出是哪个凭据，旁人拿不到全部。"""
-    return f"{value[:4]}…（{len(value)} 位）"
+    """给人看的识别串：一律给长度，只有足够长时才额外露前 4 位。
+
+    短值不能露字符：≤4 位时前 4 位就是整串，5 位时露 80%，
+    都与「旁人拿不到全部」矛盾。阈值放在 12 位，让「认出是哪个」
+    对短值也只靠长度与名字实现。
+    """
+    if len(value) <= _HINT_MIN_LEN:
+        return f"（{len(value)} 位）"
+    return f"{value[:_HINT_KEEP_CHARS]}…（{len(value)} 位）"
 
 
 def key_file() -> Path:

@@ -5,6 +5,7 @@ import { eventAt, patchStep, upsertStep } from '../state';
 import { parseStepId, parseSummary, toParseStage } from '../parse';
 import { beginCompression, closeCompression } from '../compression';
 
+/** 事件注册表：新增该族事件类型在此登记，键为 SSE 事件的 type。 */
 export const INPUT_HANDLERS: Record<string, EventHandler> = {
   // 输入解析：先建父行，再逐阶段补明细，END 把总账写进 detail。
   INPUT_PARSE_START: (s, e) => ({

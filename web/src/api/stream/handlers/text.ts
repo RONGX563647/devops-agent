@@ -3,6 +3,7 @@
 import type { EventHandler } from '../state';
 import { appendToStep, blockStepId, eventAt, patchStep, upsertStep } from '../state';
 
+/** 事件注册表：新增该族事件类型在此登记，键为 SSE 事件的 type。 */
 export const TEXT_HANDLERS: Record<string, EventHandler> = {
   // 正文只累积到气泡文本，不再另存一份到步骤 detail（避免双份与 O(n²)）。
   TEXT_BLOCK_DELTA: (s, e) => ({ ...s, text: s.text + (e.delta ?? '') }),

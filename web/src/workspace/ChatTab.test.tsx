@@ -7,6 +7,7 @@ import type {
   Attachment,
   AwaitingState,
   ChatMessage,
+  CompressionRecord,
   PendingCall,
   PermissionKey,
 } from '../types';
@@ -60,6 +61,11 @@ const snapshot = {
   modelName: '',
   permission: 'workspace' as PermissionKey,
   awaiting: null as AwaitingState | null,
+  // 上下文链路：默认没有用量（圆环不画）、也没压过
+  contextTokens: null as number | null,
+  contextThreshold: null as number | null,
+  contextSize: null as number | null,
+  compressions: [] as CompressionRecord[],
 };
 
 vi.mock('./store', () => ({

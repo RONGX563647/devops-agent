@@ -4329,3 +4329,178 @@ a:hover {
   border-color: #ddd6fe;
 }
 
+/* ============================================================
+ * 上下文占用圆环 + 压缩时间线
+ *
+ * 圆环放在输入栏右侧，与发送按钮同一行：它描述的是「下一次发送会带多少上下文」，
+ * 属于输入侧的约束，不该跑到顶部工具栏去。
+ * 颜色只表达紧迫度（ok / warn / danger），与全站语义色一致。
+ * ============================================================ */
+.ctx-ring {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  color: var(--ink-muted);
+  cursor: default;
+}
+
+.ctx-ring svg {
+  display: block;
+  overflow: visible;
+}
+
+.ctx-ring-track {
+  fill: none;
+  stroke: var(--line-strong);
+}
+
+.ctx-ring-fill {
+  fill: none;
+  transition: stroke-dasharray 320ms ease, stroke 200ms ease;
+}
+
+.ctx-ring.is-ok .ctx-ring-fill {
+  stroke: var(--ok);
+}
+
+.ctx-ring.is-warn .ctx-ring-fill {
+  stroke: var(--warn);
+}
+
+.ctx-ring.is-danger .ctx-ring-fill {
+  stroke: var(--danger);
+}
+
+.ctx-ring.is-warn .ctx-ring-label {
+  color: var(--warn-ink);
+}
+
+.ctx-ring.is-danger .ctx-ring-label {
+  color: var(--danger-ink);
+}
+
+.ctx-ring-label {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+/* 压缩进行中：环体轻微呼吸，表示数字还会变 */
+.ctx-ring.is-busy svg {
+  animation: ctx-ring-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes ctx-ring-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.ctx-timeline {
+  margin: 0 auto var(--sp-4);
+  width: min(100%, 780px);
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.ctx-timeline.is-running {
+  border-left-color: var(--accent);
+  background: var(--accent-faint);
+}
+
+.ctx-timeline-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.ctx-timeline-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.ctx-timeline.is-running .ctx-timeline-title {
+  color: var(--accent-ink);
+}
+
+.ctx-timeline-meta {
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
+
+.ctx-timeline-list {
+  margin: var(--sp-3) 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.ctx-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+
+.ctx-item.is-done .ctx-dot {
+  background: var(--ok);
+}
+
+.ctx-item.is-running .ctx-dot {
+  background: var(--accent);
+  animation: ctx-ring-pulse 1.4s ease-in-out infinite;
+}
+
+.ctx-item-flow {
+  color: var(--ink);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-item-note {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-muted);
+}
+
+.ctx-item-time {
+  flex: none;
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ctx-ring.is-busy svg,
+  .ctx-item.is-running .ctx-dot {
+    animation: none;
+  }
+
+  .ctx-ring-fill {
+    transition: none;
+  }
+}
+

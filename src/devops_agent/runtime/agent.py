@@ -34,6 +34,11 @@ from pydantic import SecretStr
 from devops_agent.config import RuntimePolicy, load_policy
 from devops_agent.governance.policy import build_permission_context
 from devops_agent.governance.profiles import PermissionProfile, default_profile
+from devops_agent.runtime.compression import (
+    CompressionMiddleware,
+    CompressionSink,
+    context_budget,
+)
 from devops_agent.runtime.confirm import (
     ConfirmDecision,
     effective_scope,
@@ -242,6 +247,7 @@ class AgentScopeRuntime:
         workdir: Path | None = None,
         note_middleware: ProfileNoteMiddleware | None = None,
         toolkit_middlewares: Sequence[ToolMiddlewareBase] | None = None,
+        compression_sink: CompressionSink | None = None,
         web_search: bool = False,
     ) -> None:
         self._agent = agent
@@ -251,6 +257,9 @@ class AgentScopeRuntime:
         # 换档位时末尾的档位说明必须同步改，否则「切了但模型还按旧档写」。
         self._note_middleware = note_middleware
         self._toolkit_middlewares = list(toolkit_middlewares or [])
+        # 压缩钩子没有事件通道，只能由运行时把中间件攒下的帧 drain 进流里。
+        # Echo/测试替身没有 sink 时为 None，事件序列保持原样。
+        self._compression_sink = compression_sink
         self._web_search = web_search
 
     @property
@@ -302,14 +311,32 @@ class AgentScopeRuntime:
             role="user",
         )
 
+    def _drain_compression(self) -> list[dict[str, Any]]:
+        """取走压缩钩子攒下的帧；没有 sink 的运行时返回空列表。"""
+        return self._compression_sink.drain() if self._compression_sink is not None else []
+
+    def _budget_frame(self) -> dict[str, Any] | None:
+        """上下文预算帧：只在挂了压缩钩子的真实运行时发。
+
+        阈值由框架配置算出（trigger_ratio × context_size），前端拿它画占用率；
+        Echo/测试替身没有模型窗口概念，发出去只会是假的 128000。
+        """
+        return context_budget(self._agent) if self._compression_sink is not None else None
+
     async def stream(self, session_id: str, user_input: str) -> AsyncIterator[dict[str, Any]]:
         """消费 AgentScope reply_stream，逐个转成框架无关的 dict 往外吐。
 
         事件对象只在本方法内存在，越过边界的只有普通 dict：
         这是"agent.py 单一装配点"约束在流式路径上的延续。
+        压缩帧没有框架事件可依附，在每个框架事件之后按顺序补发。
         """
+        budget = self._budget_frame()
+        if budget is not None:
+            yield budget
         async for event in self._agent.reply_stream(self._make_msg(session_id, user_input)):
             yield event_to_dict(event)
+            for frame in self._drain_compression():
+                yield frame
 
     # --- 挂起与恢复 ---------------------------------------------------
     def snapshot(self) -> str:
@@ -371,9 +398,15 @@ class AgentScopeRuntime:
         )
 
     async def resume(self, decisions: Sequence[ConfirmDecision]) -> AsyncIterator[dict[str, Any]]:
-        """带着用户决策从挂起点继续，照常往外吐事件 dict。"""
+        """带着用户决策从挂起点继续，照常往外吐事件 dict。
+
+        不重发 CONTEXT_BUDGET：同一会话的窗口与阈值不变，前端已持有。
+        但压缩仍可能在续跑时触发，所以照常 drain。
+        """
         async for event in self._agent.reply_stream(self.confirm_event(decisions)):
             yield event_to_dict(event)
+            for frame in self._drain_compression():
+                yield frame
 
 
 def build_agentscope_runtime(
@@ -389,11 +422,16 @@ def build_agentscope_runtime(
     - 密钥：挂 SecretInjectionMiddleware —— 占位符在工具边界换成真值，
       返回里的真值再抹回占位符，模型全程看不到明文；
     - 权限：注入档位对应的权限上下文（mode + 白名单 + deny_rules）。
+    - 上下文压缩：挂 CompressionMiddleware，把「检查 / 触发 / 前后 token」
+      变成 SSE 帧 —— 框架的 on_compress_context 钩子没有事件通道。
     """
     resolved = profile if profile is not None else default_profile()
     base = resolve_workdir(workdir)
     secret_mw = build_secret_middleware()
     note_mw = ProfileNoteMiddleware(resolved)
+    # sink 由运行时持有、中间件写入：一次装配一份，会随会话快照重建。
+    compression_sink = CompressionSink()
+    compression_mw = CompressionMiddleware(compression_sink)
     toolkit_mws: list[ToolMiddlewareBase] = [secret_mw]
     effective_search = (
         web_search
@@ -405,7 +443,7 @@ def build_agentscope_runtime(
         system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),
         model=build_chat_model(enable_search=web_search),
         toolkit=build_toolkit_for(resolved.tools, base, middlewares=toolkit_mws),
-        middlewares=[note_mw],
+        middlewares=[note_mw, compression_mw],
         state=_state_for(resolved, state, base),
     )
     return AgentScopeRuntime(
@@ -414,6 +452,7 @@ def build_agentscope_runtime(
         workdir=base,
         note_middleware=note_mw,
         toolkit_middlewares=toolkit_mws,
+        compression_sink=compression_sink,
         web_search=effective_search,
     )
 

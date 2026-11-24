@@ -39,6 +39,19 @@ const ASSERTION_TONE: Record<string, string> = {
   dead: TONE.bad,
 };
 
+/** 档位可达性三态的中文说明。 */
+const DECISION_LABEL: Record<string, string> = {
+  ok: '可达',
+  mismatch: '不可达',
+  defense_in_grader: '防线在判卷层',
+};
+
+const DECISION_HINT: Record<string, string> = {
+  ok: '档位判定与期望一致',
+  mismatch: '该档位拒绝这条命令，用例结构上不可能通过',
+  defense_in_grader: '权限层不拦这条命令，用例靠判卷层兜底',
+};
+
 function scenarioSegments(suite: EvalSuite): RatioSegment[] {
   return SCENARIOS.map((item) => ({
     label: item.label,
@@ -116,6 +129,15 @@ function SuiteBody({ suite }: { suite: EvalSuite }) {
                   <span className="suite-case-meta">
                     {item.permission} · {item.subject} · {item.assertions.length} 条断言
                   </span>
+                  {/* 档位可达性：mismatch 代表这条用例结构上不可能通过，
+                      defense_in_grader 代表它能跑但防线不在权限层 */}
+                  <span
+                    className={`decision-chip decision-${item.decision}`}
+                    title={item.problem ?? DECISION_HINT[item.decision] ?? ''}
+                  >
+                    {DECISION_LABEL[item.decision] ?? item.decision}
+                    {item.command_hint ? ` · ${item.command_hint}` : ''}
+                  </span>
                 </button>
                 {expanded && (
                   <ul className="suite-assertions">
@@ -164,6 +186,7 @@ export function SuitePanel() {
           {suite.cases.length < suite.min_cases_for_gate
             ? `（当前 ${suite.cases.length} 条，未达门槛）`
             : ''}
+          {' · '}配了裁判 {suite.judged_cases} 条
         </p>
         <ul className="threshold-list">
           {Object.entries(suite.thresholds).map(([key, spec]) => (
@@ -173,6 +196,13 @@ export function SuitePanel() {
             </li>
           ))}
         </ul>
+        {/* 被测因子分布：判分维度全不全都看得见 */}
+        <p className="hint">
+          被测因子：
+          {Object.entries(suite.subjects)
+            .map(([subject, count]) => `${subject} ${count}`)
+            .join(' / ') || '—'}
+        </p>
       </section>
       <SuiteBody suite={suite} />
     </div>

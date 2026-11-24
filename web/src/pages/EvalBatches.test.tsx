@@ -9,7 +9,7 @@ import {
   fetchEvalCompare,
   fetchEvalMatrix,
 } from '../api/client';
-import type { EvalBatch, EvalCaseItem } from '../types';
+import type { EvalBatch, EvalCaseItem, EvalGate } from '../types';
 import { EvalBatches } from './EvalBatches';
 
 vi.mock('../api/client', () => ({
@@ -34,11 +34,35 @@ const CLEAN_COMPAT = {
   reasons: ['所有因子一致，可作为复测样本估计噪声'],
 };
 
+/** 7 类硬失败全 0：后端总是下发 7 键，测试夹具也保持一致。 */
+const NO_HARD = {
+  safety: 0,
+  forbidden_tool: 0,
+  status: 0,
+  tool: 0,
+  text: 0,
+  grounding: 0,
+  format: 0,
+} as const;
+
+function makeGate(over: Partial<EvalGate> & Pick<EvalGate, 'key'>): EvalGate {
+  return {
+    value: 0.9,
+    min: 0.8,
+    min_samples: 0,
+    samples: 100,
+    state: 'pass',
+    reason: null,
+    threshold_state: 'pass',
+    ...over,
+  };
+}
+
 function makeBatch(overrides: Partial<EvalBatch> = {}): EvalBatch {
   return {
     id: 1,
     suite: 'devops-core',
-    suite_version: 'v1',
+    suite_version: 'v2',
     suite_sha: 'abc123',
     prompt_id: 'p1',
     prompt_hash: '0123456789abcdef',
@@ -50,7 +74,10 @@ function makeBatch(overrides: Partial<EvalBatch> = {}): EvalBatch {
     n: 100,
     passed: 90,
     pass_rate: 0.9,
-    hard_failures: { safety: 0, forbidden_tool: 0, format: 0 },
+    hard_failures: { ...NO_HARD },
+    hard_blocking: 0,
+    hard_scoring: 0,
+    hard_labels: {},
     judge: { correctness: 4.2 },
     trajectory_score: 0.88,
     p95_ms: 1200,
@@ -59,8 +86,8 @@ function makeBatch(overrides: Partial<EvalBatch> = {}): EvalBatch {
     baseline_id: null,
     verdict: 'pass',
     gates: [
-      { key: 'pass_rate', value: 0.9, min: 0.8, min_samples: 0, samples: 100, state: 'pass' },
-      { key: 'judge_correctness', value: 4.2, min: 4, min_samples: 10, samples: 20, state: 'pass' },
+      makeGate({ key: 'pass_rate' }),
+      makeGate({ key: 'judge_correctness', value: 4.2, min: 4, min_samples: 10, samples: 20 }),
     ],
     min_cases_for_gate: 40,
     mde: 0.01,
@@ -82,6 +109,11 @@ function makeCase(overrides: Partial<EvalCaseItem> = {}): EvalCaseItem {
     tokens: 120,
     checks: [{ name: 'no_side_effect', ok: true, detail: '未产生副作用' }],
     run_id: 1,
+    tool_names: [],
+    executed_tools: [],
+    denied_tools: [],
+    hard_failures: [],
+    error: null,
     ...overrides,
   };
 }
@@ -150,23 +182,23 @@ describe('EvalBatches', () => {
 
     const row = (await screen.findByText('#1')).closest('tr');
     expect(row).not.toBeNull();
-    expect(within(row as HTMLElement).getByText('devops-core@v1')).toBeTruthy();
+    expect(within(row as HTMLElement).getByText('devops-core@v2')).toBeTruthy();
     expect(within(row as HTMLElement).getByText(/p1 · 01234567/)).toBeTruthy();
     expect(within(row as HTMLElement).getByText('✓')).toBeTruthy();
     expect(within(row as HTMLElement).getByText('通过')).toBeTruthy();
-    expect(screen.getByText('safety-suite@v1')).toBeTruthy();
+    expect(screen.getByText('safety-suite@v2')).toBeTruthy();
     expect(screen.getByText('警告')).toBeTruthy();
   });
 
   it('n<40 时指标卡标样本不足且不染色', async () => {
     const batch = makeBatch({ n: 10, passed: 8, pass_rate: 0.8 });
     mockBatches.mockResolvedValue({ items: [batch], total: 1 });
-    mockBatch.mockResolvedValue({ batch, tags: {}, cases: [] });
+    mockBatch.mockResolvedValue({ batch, tags: {}, subjects: {}, cases: [] });
     mockCases.mockResolvedValue({ items: [], total: 0 });
     renderBatches();
 
     fireEvent.click(await screen.findByText('#1'));
-    expect(await screen.findByText('硬门槛通过（0/0/0）')).toBeTruthy();
+    expect(await screen.findByText('全部硬失败分类均为 0')).toBeTruthy();
 
     expect(screen.getAllByText('样本不足')).toHaveLength(5);
     expect(document.querySelector('.eval-metrics .tone-good')).toBeNull();
@@ -175,11 +207,12 @@ describe('EvalBatches', () => {
 
   it('硬门槛 >0 时展示红色不建议合并横幅', async () => {
     const batch = makeBatch({
-      hard_failures: { safety: 1, forbidden_tool: 0, format: 0 },
+      hard_failures: { ...NO_HARD, safety: 1 },
+      hard_blocking: 1,
       verdict: 'fail',
     });
     mockBatches.mockResolvedValue({ items: [batch], total: 1 });
-    mockBatch.mockResolvedValue({ batch, tags: {}, cases: [] });
+    mockBatch.mockResolvedValue({ batch, tags: {}, subjects: {}, cases: [] });
     mockCases.mockResolvedValue({ items: [], total: 0 });
     renderBatches();
 
@@ -240,6 +273,7 @@ describe('EvalBatches', () => {
     mockBatch.mockResolvedValue({
       batch,
       tags: { safety: { n: 2, passed: 1 }, perf: { n: 3, passed: 3 } },
+      subjects: { prompt: { n: 2, passed: 1 } },
       cases: [passed, failed],
     });
     mockCases.mockResolvedValue({ items: [passed, failed], total: 2 });

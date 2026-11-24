@@ -17,6 +17,7 @@ import {
   fetchEvalMatrix,
 } from '../api/client';
 import type { EvalBatch, EvalCaseItem, EvalCompareMetric } from '../types';
+import { HARD_KIND_KEYS, HARD_KIND_META } from '../types';
 import { MetricCard } from '../components/MetricCard';
 import { formatDateTime, formatDuration } from '../workspace/time';
 import {
@@ -28,10 +29,8 @@ import {
 } from './quality/charts';
 
 const PAGE_SIZE = 50;
-/** 样本量低于该值时卡片标「样本不足」，且不做红绿染色。 */
-const SAMPLE_MIN = 40;
 const CLI_HINT =
-  'python -m devops_agent.eval run --suite eval/suites/devops-core.v1.jsonl --out workspace/evals/<batch>';
+  'python -m devops_agent.eval run --suite eval/suites/devops-core.v2.jsonl --out workspace/evals/<batch>';
 
 const VERDICT_LABEL: Record<string, string> = {
   pass: '通过',
@@ -58,9 +57,17 @@ const JUDGE_LABEL: Record<string, string> = {
   conciseness: '简洁性',
 };
 
+/** 硬失败总数：7 类全算。只加 3 类会让其余四类失败在界面上消失。 */
 function hardTotal(batch: EvalBatch): number {
-  const { safety, forbidden_tool, format } = batch.hard_failures;
-  return safety + forbidden_tool + format;
+  return Object.values(batch.hard_failures ?? {}).reduce((sum, value) => sum + (value ?? 0), 0);
+}
+
+/** 按严重度列出有计数的分类，用于横幅文案。 */
+function describeKinds(batch: EvalBatch, severity: 'blocking' | 'scoring'): string {
+  const parts = HARD_KIND_KEYS.filter(
+    (key) => HARD_KIND_META[key].severity === severity && (batch.hard_failures?.[key] ?? 0) > 0,
+  ).map((key) => `${HARD_KIND_META[key].label} ${batch.hard_failures[key]}`);
+  return parts.length > 0 ? parts.join(' / ') : '—';
 }
 
 function formatPercent(value: number | null): string | null {
@@ -98,6 +105,13 @@ function VerdictBadge({ verdict }: { verdict: string }) {
   );
 }
 
+/** 门禁「不能判」的成因：三种样本不足的处置完全不同，不能只写一句「样本不足」。 */
+const GATE_REASON_LABEL: Record<string, string> = {
+  n_below_gate: '题库样本不足',
+  no_samples: '裁判未运行',
+  samples_below_min: '裁判样本不足',
+};
+
 /** 门禁三态表：解释「为什么是 insufficient」，不在前端重算阈值。 */
 function GatesTable({ batch }: { batch: EvalBatch }) {
   const gates = batch.gates ?? [];
@@ -117,6 +131,7 @@ function GatesTable({ batch }: { batch: EvalBatch }) {
           <th>阈值</th>
           <th>样本</th>
           <th>结论</th>
+          <th>原因</th>
         </tr>
       </thead>
       <tbody>
@@ -133,6 +148,9 @@ function GatesTable({ batch }: { batch: EvalBatch }) {
             </td>
             <td className={`gate-state gate-${gate.state}`}>
               {GATE_STATE_LABEL[gate.state] ?? gate.state}
+            </td>
+            <td className="gate-reason">
+              {gate.reason ? (GATE_REASON_LABEL[gate.reason] ?? gate.reason) : '—'}
             </td>
           </tr>
         ))}
@@ -176,14 +194,44 @@ function CaseRow({
           <span className={`status-pill ${item.passed ? 'is-pass' : 'is-fail'}`}>
             {item.status || (item.passed ? 'passed' : 'failed')}
           </span>
+          {/* 三档轨迹：模型没试 / 试了但被拒 / 真的跑了，三者含义完全不同 */}
+          {item.denied_tools.length > 0 && (
+            <span className="tier-chip is-denied" title={`被权限拒绝：${item.denied_tools.join(', ')}`}>
+              被拒 {item.denied_tools.join(',')}
+            </span>
+          )}
+          {item.denied_tools.length === 0 && item.executed_tools.length > 0 && (
+            <span
+              className="tier-chip is-executed"
+              title={`真的执行了：${item.executed_tools.join(', ')}`}
+            >
+              已执行
+            </span>
+          )}
+          {item.status === 'pending' && <span className="tier-chip is-pending">待确认</span>}
         </td>
         <td className="case-checks">
-          {item.checks.map((check) => (
-            <span key={check.name} className={`check-chip ${check.ok ? 'ok' : 'bad'}`}>
-              {check.ok ? '✓' : '✗'} {check.name}
-            </span>
-          ))}
-          {item.checks.length === 0 && <span className="muted">—</span>}
+          {item.hard_failures.map((kind) => {
+            const meta = HARD_KIND_META[kind];
+            return (
+              <span
+                key={kind}
+                className={`check-chip ${meta?.severity === 'blocking' ? 'bad' : 'warn'}`}
+                title={`${meta?.label ?? kind}（${meta?.severity === 'blocking' ? '阻断' : '计分'}）`}
+              >
+                {meta?.label ?? kind}
+              </span>
+            );
+          })}
+          {item.hard_failures.length === 0 &&
+            item.checks.map((check) => (
+              <span key={check.name} className={`check-chip ${check.ok ? 'ok' : 'bad'}`}>
+                {check.ok ? '✓' : '✗'} {check.name}
+              </span>
+            ))}
+          {item.hard_failures.length === 0 && item.checks.length === 0 && (
+            <span className="muted">—</span>
+          )}
         </td>
         <td>{formatScore(item.trajectory_score) ?? '—'}</td>
         <td className="judge-cell">
@@ -328,11 +376,12 @@ export function EvalBatches() {
     .reverse()
     .map((item) => ({
       label: `#${item.id}`,
-      safety: item.hard_failures.safety,
-      forbidden_tool: item.hard_failures.forbidden_tool,
-      format: item.hard_failures.format,
+      // 7 类全传：只画 3 类会让其余失败在图里消失
+      values: item.hard_failures,
     }));
-  const enough = batch ? batch.n >= SAMPLE_MIN : false;
+  // 门槛来自后端，不在前端硬编码 —— 两套阈值会互相打脸
+  const sampleGate = batch?.min_cases_for_gate ?? 40;
+  const enough = batch ? batch.n >= sampleGate : false;
   const sampleBadge = enough ? undefined : '样本不足';
   const rateTone: 'default' | 'good' | 'bad' = enough
     ? batch && batch.pass_rate >= 0.9
@@ -404,10 +453,11 @@ export function EvalBatches() {
                   </td>
                   <td>{item.n}</td>
                   <td>{formatPercent(item.pass_rate) ?? '—'}</td>
-                  <td className={hardTotal(item) > 0 ? 'hard-fail' : 'hard-ok'}>
-                    {hardTotal(item) > 0
-                      ? `${item.hard_failures.safety}/${item.hard_failures.forbidden_tool}/${item.hard_failures.format}`
-                      : '✓'}
+                  <td className={item.hard_blocking > 0 ? 'hard-fail' : 'hard-ok'}>
+                    {item.hard_blocking > 0 ? `阻断 ${item.hard_blocking}` : '✓'}
+                    {item.hard_scoring > 0 && (
+                      <span className="hard-scoring-note"> · 计分 {item.hard_scoring}</span>
+                    )}
                   </td>
                   <td><VerdictBadge verdict={item.verdict} /></td>
                 </tr>
@@ -437,10 +487,17 @@ export function EvalBatches() {
       {batch && detail.data && (
         <Fragment>
           <section className="panel eval-detail">
-            <div className={`hard-gate-banner ${hard > 0 ? 'is-bad' : 'is-ok'}`} role="status">
-              {hard > 0
-                ? `不建议合并：硬门槛触发 ${hard} 次（安全 ${batch.hard_failures.safety} / 禁用工具 ${batch.hard_failures.forbidden_tool} / 格式 ${batch.hard_failures.format}）`
-                : '硬门槛通过（0/0/0）'}
+            {/* 阻断类才拦合并；只有计分失败时要说清「已计入通过率」，
+                否则读者会把「不计分」误读成「没有失败」 */}
+            <div
+              className={`hard-gate-banner ${batch.hard_blocking > 0 ? 'is-bad' : hard > 0 ? 'is-warn' : 'is-ok'}`}
+              role="status"
+            >
+              {batch.hard_blocking > 0
+                ? `不建议合并：阻断性失败 ${batch.hard_blocking} 条（${describeKinds(batch, 'blocking')}）`
+                : hard > 0
+                  ? `无阻断性失败；计分失败 ${batch.hard_scoring} 条已计入通过率（${describeKinds(batch, 'scoring')}）`
+                  : '全部硬失败分类均为 0'}
             </div>
 
             <div className="metrics-grid eval-metrics">

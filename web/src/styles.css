@@ -3824,9 +3824,62 @@ a:hover {
   color: var(--danger-ink);
   background: var(--danger-soft);
 }
+/* 只有计分失败：既不是「通过」也不是「阻断」，需要第三种配色 */
+.hard-gate-banner.is-warn {
+  color: var(--warn-ink, #92400e);
+  background: var(--warn-soft, #fef3c7);
+}
 .hard-gate-banner.is-ok {
   color: var(--ok-ink);
   background: var(--ok-soft);
+}
+/* 批次表里的「· 计分 N」：不染红，但要让读者知道有计分失败 */
+.hard-scoring-note {
+  color: var(--ink-muted);
+  font-weight: 400;
+}
+.gate-reason {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+/* 三档工具轨迹：被拒 / 已执行 / 待确认 */
+.tier-chip {
+  display: inline-block;
+  padding: 0 var(--sp-3);
+  margin-left: var(--sp-3);
+  font-size: var(--text-xs);
+  border-radius: var(--radius-sm);
+}
+.tier-chip.is-denied {
+  color: var(--danger-ink);
+  background: var(--danger-soft);
+}
+.tier-chip.is-executed {
+  color: var(--ok-ink);
+  background: var(--ok-soft);
+}
+.tier-chip.is-pending {
+  color: var(--warn-ink, #92400e);
+  background: var(--warn-soft, #fef3c7);
+}
+/* 档位可达性三态 */
+.decision-chip {
+  padding: 0 var(--sp-3);
+  margin-left: var(--sp-3);
+  font-size: var(--text-xs);
+  border-radius: var(--radius-sm);
+}
+.decision-ok {
+  color: var(--ok-ink);
+  background: var(--ok-soft);
+}
+.decision-mismatch {
+  color: var(--danger-ink);
+  background: var(--danger-soft);
+}
+.decision-defense_in_grader {
+  color: var(--warn-ink, #92400e);
+  background: var(--warn-soft, #fef3c7);
 }
 .eval-metrics {
   margin-bottom: var(--sp-6);

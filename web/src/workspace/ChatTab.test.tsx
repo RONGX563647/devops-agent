@@ -15,11 +15,14 @@ const onFirstSend = vi.fn();
 const uploadAttachment = vi.fn();
 const deleteAttachment = vi.fn();
 const fetchPermissions = vi.fn();
+const fetchHealth = vi.fn();
 
 vi.mock('../api/client', () => ({
   uploadAttachment: (file: File) => uploadAttachment(file),
   deleteAttachment: (id: string) => deleteAttachment(id),
   fetchPermissions: () => fetchPermissions(),
+  // 运行时模式：默认按真实模型返回，专门测 Echo 的用例再覆盖
+  fetchHealth: () => fetchHealth(),
   // 选择器里的规则增删在 ChatTab 这层不参与断言，但必须存在（否则渲染即报错）
   createPermissionRule: () => Promise.resolve([]),
   deletePermissionRule: () => Promise.resolve([]),
@@ -144,6 +147,11 @@ function reset() {
   uploadAttachment.mockReset();
   deleteAttachment.mockReset();
   deleteAttachment.mockResolvedValue(undefined);
+  fetchHealth.mockReset();
+  fetchHealth.mockResolvedValue({
+    status: 'ok',
+    runtime: { kind: 'agentscope', model: 'qwen3', notice: '' },
+  });
   fetchPermissions.mockReset();
   fetchPermissions.mockResolvedValue({
     default: 'workspace',
@@ -604,6 +612,28 @@ describe('联网搜索开关', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
     expect(send).toHaveBeenCalledWith('s-1', '解释下这段代码', [], 'workspace', false);
+  });
+});
+
+describe('运行时降级提示', () => {
+  it('Echo 模式挂横幅，把「回显」说成回显', async () => {
+    fetchHealth.mockResolvedValue({
+      status: 'ok',
+      runtime: {
+        kind: 'echo',
+        model: '',
+        notice: '未配置模型凭据（DEVOPS_AGENT_API_KEY），当前回复只是回显输入',
+      },
+    });
+    render(tab());
+    // 不提示的话，回显会被当成「模型答非所问」，用户只会反复重试
+    expect(await screen.findByText(/当前回复只是回显输入/)).toBeTruthy();
+  });
+
+  it('真实模型不挂横幅', async () => {
+    render(tab());
+    await waitFor(() => expect(fetchHealth).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/回显/)).toBeNull());
   });
 });
 

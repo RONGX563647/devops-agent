@@ -456,8 +456,12 @@ class RunRecorder:
         t0 = _pending_t0(pending)
         return max(0, (end_ns - t0) // 1_000_000)
 
-    def finish(self, status: str | None = None) -> int:
-        """回填 run 的终态与汇总，返回 run_id。重复调用幂等。"""
+    def finish(self, status: str | None = None, error: str | None = None) -> int:
+        """回填 run 的终态与汇总，返回 run_id。重复调用幂等。
+
+        error 只在失败时给：把异常原文落库，否则 status=failed 只是个标签，
+        刷新后既看不到原因也复现不了（实测出现过 span 全绿却 failed 的情况）。
+        """
         if self._run_id is None:
             return -1
         if self._finished:
@@ -499,6 +503,9 @@ class RunRecorder:
                 cache_creation_input_tokens=self._cache_creation_input_tokens,
                 work_ms=work_ms,
                 wall_ms=wall_ms,
+                # 失败时优先用显式传入的异常原文；没传但被标成 failed 时留一句兜底，
+                # 免得又出现「有状态没原因、只能靠猜」的记录
+                error=error or ("" if final_status == "success" else "未捕获到异常信息"),
             )
         self._input_stages = []
         self._finished = True

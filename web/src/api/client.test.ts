@@ -7,6 +7,7 @@ import {
   fetchEvalCases,
   fetchEvalCompare,
   fetchEvalTrends,
+  fetchHealth,
   fetchInputStages,
   fetchPending,
   fetchPermissions,
@@ -32,6 +33,13 @@ function mockJson(body: unknown = []) {
 }
 
 describe('client', () => {
+  it('fetchHealth 打 /health，用来判断是不是 Echo 兜底', async () => {
+    const spy = mockJson({ status: 'ok', runtime: { kind: 'echo', model: '', notice: '回显' } });
+    const data = await fetchHealth();
+    expect(spy).toHaveBeenCalledWith('/health');
+    expect(data.runtime?.kind).toBe('echo');
+  });
+
   it('fetchRuns 拼接全部查询参数', async () => {
     const spy = mockJson({ items: [], total: 0 });
     await fetchRuns({ domain: 'delivery', status: 'success', limit: 10, offset: 5 });

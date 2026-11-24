@@ -17,6 +17,27 @@ def test_health() -> None:
     assert body["status"] == "ok"
     # 工具依赖就绪状态一并返回：缺 rg 这类问题不该等到模型调用失败才暴露。
     assert "grep" in body["tools"]
+    # 运行时模式也要能看出来：Echo 兜底时前端据此挂横幅
+    assert body["runtime"]["kind"] in ("echo", "agentscope")
+
+
+def test_health_reports_echo_degradation() -> None:
+    """没配凭据时必须是 echo + 一句可读的说明，而不是默默回显。"""
+    original = app.state.runtime
+    app.state.runtime = EchoRuntime()
+    try:
+        body = client.get("/health").json()
+    finally:
+        app.state.runtime = original
+    assert body["runtime"]["kind"] == "echo"
+    assert "回显" in body["runtime"]["notice"]
+
+
+def test_runtime_status_reports_model_for_real_runtime() -> None:
+    """真实运行时给模型名、且没有告警文案（免得横幅一直挂着）。"""
+    status = main.runtime_status(object())  # type: ignore[arg-type]
+    assert status["kind"] == "agentscope"
+    assert status["notice"] == ""
 
 
 def test_run_endpoint_is_removed() -> None:

@@ -34,3 +34,9 @@ name = input 不得依赖 runtime
 type = forbidden
 source_modules = devops_agent.input
 forbidden_modules = devops_agent.runtime
+
+[importlinter:contract:runtime-no-gateway]
+name = runtime 不得反向依赖网关
+type = forbidden
+source_modules = devops_agent.runtime
+forbidden_modules = devops_agent.gateway

@@ -8,6 +8,8 @@
  * 读屏与截图场景下那行文字才是结论本身。
  */
 import type { ReactNode } from 'react';
+import { HARD_KIND_KEYS, HARD_KIND_META } from '../../types';
+import type { EvalHardFailures, HardKindKey } from '../../types';
 import {
   Bar,
   BarChart,
@@ -151,9 +153,8 @@ export function RatioBar({ segments, caption }: RatioBarProps) {
 
 export interface HardBarPoint {
   label: string;
-  safety: number;
-  forbidden_tool: number;
-  format: number;
+  /** 7 类硬失败计数，与后端 `eval/kinds.py` 同源。 */
+  values: EvalHardFailures;
 }
 
 interface HardFailureChartProps {
@@ -161,10 +162,26 @@ interface HardFailureChartProps {
   caption: string;
 }
 
-/** 硬失败构成：看失败是「安全越界」还是「格式没对上」。 */
+/** 每类的配色：阻断类用醒目色，计分类用收敛色。 */
+const HARD_BAR_TONE: Record<HardKindKey, string> = {
+  safety: TONE.bad,
+  forbidden_tool: '#dc2626',
+  status: TONE.warn,
+  tool: TONE.neutral,
+  text: TONE.accent,
+  grounding: '#0891b2',
+  format: TONE.muted,
+};
+
+/**
+ * 硬失败构成：看失败是「安全越界」还是「工具没执行」。
+ *
+ * 7 类全画。只画 3 类时，`tool` / `text` / `grounding` / `status` 四类失败
+ * 在图里完全不存在——一批 14/15 通过、结论 fail 的运行会显示成「没有硬失败」。
+ */
 export function HardFailureChart({ points, caption }: HardFailureChartProps) {
   const total = points.reduce(
-    (sum, item) => sum + item.safety + item.forbidden_tool + item.format,
+    (sum, item) => sum + HARD_KIND_KEYS.reduce((acc, key) => acc + (item.values?.[key] ?? 0), 0),
     0,
   );
   if (total === 0) {
@@ -180,9 +197,15 @@ export function HardFailureChart({ points, caption }: HardFailureChartProps) {
             <YAxis allowDecimals={false} fontSize={11} />
             <Tooltip />
             <Legend />
-            <Bar dataKey="safety" name="安全" stackId="hard" fill={TONE.bad} />
-            <Bar dataKey="forbidden_tool" name="禁用工具" stackId="hard" fill={TONE.warn} />
-            <Bar dataKey="format" name="格式" stackId="hard" fill={TONE.muted} />
+            {HARD_KIND_KEYS.map((key) => (
+              <Bar
+                key={key}
+                dataKey={`values.${key}`}
+                name={HARD_KIND_META[key].label}
+                stackId="hard"
+                fill={HARD_BAR_TONE[key]}
+              />
+            ))}
           </BarChart>
         </ResponsiveContainer>
       </div>

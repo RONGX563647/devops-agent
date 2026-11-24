@@ -216,7 +216,48 @@ export interface EvalGate {
   min_samples: number;
   samples: number;
   state: 'pass' | 'fail' | 'insufficient';
+  /** 三种「不能判」的成因；state=insufficient 时才有值。 */
+  reason: EvalGateReason;
+  /** 阈值本身的结论，与「样本够不够判」无关。 */
+  threshold_state: 'pass' | 'fail' | null;
 }
+
+/** 为什么判不了：题库太小 / 裁判没跑 / 裁判样本不够。 */
+export type EvalGateReason = 'n_below_gate' | 'no_samples' | 'samples_below_min' | null;
+
+/**
+ * 硬失败分类：与后端 `eval/kinds.py` 同源。
+ *
+ * 后端会产出 7 类，而这里曾只声明 3 类 —— `status` / `tool` / `text` / `grounding`
+ * 四类失败在界面上完全不可见：一批 14/15 通过、结论 fail 的运行，硬失败表显示全 0。
+ */
+export const HARD_KIND_KEYS = [
+  'safety',
+  'forbidden_tool',
+  'status',
+  'tool',
+  'text',
+  'grounding',
+  'format',
+] as const;
+
+export type HardKindKey = (typeof HARD_KIND_KEYS)[number];
+
+/** 严重度决定配色与是否阻断合并：`blocking` 一票否决，`scoring` 只进通过率。 */
+export const HARD_KIND_META: Record<
+  HardKindKey,
+  { label: string; severity: 'blocking' | 'scoring' }
+> = {
+  safety: { label: '安全越界', severity: 'blocking' },
+  forbidden_tool: { label: '禁用工具', severity: 'blocking' },
+  status: { label: '运行未完成', severity: 'blocking' },
+  tool: { label: '工具轨迹', severity: 'scoring' },
+  text: { label: '事实缺失', severity: 'scoring' },
+  grounding: { label: '缺少定位', severity: 'scoring' },
+  format: { label: '格式不符', severity: 'scoring' },
+};
+
+export type EvalHardFailures = Record<HardKindKey, number>;
 
 /** 可比性：变了哪一类因子，决定 delta 能说多硬。 */
 export interface EvalCompatibility {
@@ -250,7 +291,13 @@ export interface EvalBatch {
   n: number;
   passed: number;
   pass_rate: number;
-  hard_failures: { safety: number; forbidden_tool: number; format: number };
+  hard_failures: EvalHardFailures;
+  /** 阻断类失败数：>0 才拦合并。 */
+  hard_blocking: number;
+  /** 计分类失败数：已计入通过率，不单独否决。 */
+  hard_scoring: number;
+  /** {key: 中文标签}，由后端下发，前端不维护第二份映射。 */
+  hard_labels: Record<string, string>;
   judge: Record<string, number> | null;
   trajectory_score: number | null;
   p95_ms: number | null;
@@ -276,8 +323,27 @@ export interface EvalSuiteCase {
   tags: string[];
   permission: string;
   subject: string;
+  require_executed: boolean;
   assertions: EvalAssertion[];
+  /** 按题面要求动作时会跑的代表性命令；没有则 null。 */
+  command_hint: string | null;
+  /** 档位可达性三态：见 EvalCaseDecision。 */
+  decision: EvalCaseDecision;
+  /** decision 非 ok 时的说明。 */
+  problem: string | null;
 }
+
+/**
+ * 用例在它声明的档位下能否真的执行要求的命令。
+ *
+ * - `ok`：一致；
+ * - `mismatch`：档位与期望不符，用例结构上不可能通过；
+ * - `defense_in_grader`：用例能跑，但防线不在权限层（例如 explore 档的只读命令
+ *   自动放行，`cat /etc/shadow` 也会被判 allow）。
+ *
+ * 第三态必须能看见，否则「权限层挡住了」会被当成既有事实。
+ */
+export type EvalCaseDecision = 'ok' | 'mismatch' | 'defense_in_grader';
 
 /** 评测集目录：题库构成与断言分布。 */
 export interface EvalSuite {
@@ -289,6 +355,10 @@ export interface EvalSuite {
   grader_version: string;
   thresholds: Record<string, { min: number; min_samples: number }>;
   assertions: Record<string, number>;
+  /** 各 subject 的用例数：结论能归因到哪个被测因子。 */
+  subjects: Record<string, number>;
+  /** 配了裁判的用例数：回答「裁判样本够不够」。 */
+  judged_cases: number;
   cases: EvalSuiteCase[];
 }
 
@@ -306,6 +376,9 @@ export interface EvalSeriesPoint {
   trajectory_score: number | null;
   p95_ms: number | null;
   hard_total: number;
+  /** 阻断类与计分类分开：「阻断归零但计分上升」是完全不同的故事。 */
+  hard_blocking: number;
+  hard_scoring: number;
   verdict: EvalVerdict;
   prompt_hash: string;
 }
@@ -343,11 +416,22 @@ export interface EvalCaseItem {
   tokens: number;
   checks: EvalCaseCheck[];
   run_id: number | null;
+  /** 发过调用（含被拒）。 */
+  tool_names: string[];
+  /** 真的执行了。 */
+  executed_tools: string[];
+  /** 被权限拒绝。 */
+  denied_tools: string[];
+  /** 命中的硬失败分类。 */
+  hard_failures: HardKindKey[];
+  error: string | null;
 }
 
 export interface EvalBatchDetail {
   batch: EvalBatch;
   tags: Record<string, { n: number; passed: number }>;
+  /** 按 subject 归因：这次变化能算到哪个被测因子。 */
+  subjects: Record<string, { n: number; passed: number }>;
   cases: EvalCaseItem[];
 }
 

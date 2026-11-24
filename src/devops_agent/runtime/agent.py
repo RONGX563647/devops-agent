@@ -234,6 +234,40 @@ def build_agent(
     )
 
 
+# 联网检索「让谁决定搜不搜」：
+# 供应商的 `enable_search` 只是**授权**模型可以搜，搜不搜由模型自由裁量。
+# 实测同一份请求体（system prompt + 4 个工具定义 + 只读提示）：
+# 带 enable_search 与不带，prompt_tokens 完全一致（3150 vs 3150），
+# 即模型一次都没检索；补上 `search_options.forced_search` 后才变成 4436。
+# 也就是说只发 enable_search 时，前端的「联网」按钮是个空开关 —— 最糟的中间态。
+SEARCH_MODE_ENV = "DEVOPS_AGENT_SEARCH_MODE"
+
+# forced：无条件检索，结果由供应商塞进上下文（默认，符合「点了就该生效」）；
+# auto：把裁量权交回模型（省 token，但实测常常不搜）。
+_SEARCH_MODE_FORCED = "forced"
+_SEARCH_MODE_AUTO = "auto"
+
+_SEARCH_OPTIONS = {"forced_search": True, "search_strategy": "standard"}
+
+
+def _search_extra_body(enable_search: bool | None) -> dict[str, Any] | None:
+    """构造联网检索的请求体附加字段；不联网时返回 None（请求形状保持不变）。
+
+    `enable_search` 显式传入时优先于环境变量：前端逐请求的「联网」开关走这条路。
+    """
+    if enable_search is None:
+        enable_search = os.environ.get("DEVOPS_AGENT_ENABLE_SEARCH") == "1"
+    if not enable_search:
+        return None
+    body: dict[str, Any] = {"enable_search": True}
+    # 只有显式写 auto 才放弃强制检索；其余取值（含未设置）一律按 forced，
+    # 避免拼错一个环境变量就把「联网」退化成空开关且无人察觉。
+    mode = (os.environ.get(SEARCH_MODE_ENV) or _SEARCH_MODE_FORCED).strip().lower()
+    if mode != _SEARCH_MODE_AUTO:
+        body["search_options"] = dict(_SEARCH_OPTIONS)
+    return body
+
+
 def build_context_config(params: ModelParams) -> ContextConfig:
     """把三个比例装配给框架的 ContextConfig。
 
@@ -261,6 +295,9 @@ def build_chat_model(
     可选 env：
     - DEVOPS_AGENT_ENABLE_SEARCH：设为 1 时给模型请求体加 `enable_search=true`
       （DashScope 兼容接口的联网搜索开关）；默认关闭。
+    - DEVOPS_AGENT_SEARCH_MODE：`forced`（默认）连同 `search_options` 一起下发，
+      供应商无条件检索并把结果注入上下文；`auto` 只发 `enable_search`，
+      由模型自己决定搜不搜（实测多数情况下不搜）。
 
     `params` 是解析后的参数集（见 model_settings.ModelParams）：采样参数、
     两级重试、上下文窗口都在里面。**context_size 必须显式传**：换模型不同步窗口，
@@ -290,8 +327,6 @@ def build_chat_model(
     # AgentScope 才会逐块发出 TEXT_BLOCK_DELTA。若关闭，整段文本会作为单个 delta
     # 在回复结束时瞬间补发 —— 前端表现为「一次性渲染」，实测 SET 到 DELTA 仅差 0.07ms。
     # 联网搜索默认关闭：它会带来额外计费与供应商侧的不确定错误，必须显式开启。
-    if enable_search is None:
-        enable_search = os.environ.get("DEVOPS_AGENT_ENABLE_SEARCH") == "1"
     return OpenAIChatModel(
         credential=credential,
         model=model_name,
@@ -299,7 +334,7 @@ def build_chat_model(
         stream=True,
         max_retries=active.model_max_retries,
         context_size=active.context_size,
-        extra_body={"enable_search": True} if enable_search else None,
+        extra_body=_search_extra_body(enable_search),
     )
 
 
@@ -366,6 +401,15 @@ class AgentScopeRuntime:
     def profile(self) -> PermissionProfile:
         return self._profile
 
+    @property
+    def web_search(self) -> bool:
+        """这一轮到底联不联网（已解析部署默认）。
+
+        会话注册表要靠它记录「实际生效值」：请求里省略该字段时不能记成 False，
+        否则下一轮显式传 False 与「沿用默认」会被当成同一个配置，开关切换失效。
+        """
+        return self._web_search
+
     def apply_profile(
         self,
         profile: PermissionProfile,
@@ -400,6 +444,10 @@ class AgentScopeRuntime:
         if web_search is not None and web_search != self._web_search:
             self._agent.model = build_chat_model(enable_search=web_search)
             self._web_search = web_search
+            # 开关换了，末尾说明也要跟着换：否则检索结果已在上下文里，
+            # 模型却仍按「没有联网能力」作答。
+            if self._note_middleware is not None:
+                self._note_middleware.set_web_search(web_search)
         self._agent.state.middle_context[PROFILE_KEY] = profile.key
         self._profile = profile
 
@@ -566,17 +614,19 @@ def build_agentscope_runtime(
     resolved = profile if profile is not None else default_profile()
     base = resolve_workdir(workdir)
     active = params if params is not None else effective_params()
-    secret_mw = build_secret_middleware()
-    note_mw = ProfileNoteMiddleware(resolved)
-    # sink 由运行时持有、中间件写入：一次装配一份，会随会话快照重建。
-    compression_sink = CompressionSink()
-    compression_mw = CompressionMiddleware(compression_sink)
-    toolkit_mws: list[ToolMiddlewareBase] = [secret_mw]
+    # 先定下这一轮到底联不联网：模型请求体与末尾说明必须同源，
+    # 否则会出现「请求里带了检索结果、提示词却说没联网」的错位。
     effective_search = (
         web_search
         if web_search is not None
         else os.environ.get("DEVOPS_AGENT_ENABLE_SEARCH") == "1"
     )
+    secret_mw = build_secret_middleware()
+    note_mw = ProfileNoteMiddleware(resolved, web_search=effective_search)
+    toolkit_mws: list[ToolMiddlewareBase] = [secret_mw]
+    # sink 由运行时持有、中间件写入：一次装配一份，会随会话快照重建。
+    compression_sink = CompressionSink()
+    compression_mw = CompressionMiddleware(compression_sink)
     agent = build_agent(
         name="devops",
         system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),
@@ -614,7 +664,7 @@ def session_runtime_factory(base: object) -> Callable[..., Any]:
         session_id: str,
         profile: Any,
         state_json: str | None,
-        web_search: bool = False,
+        web_search: bool | None = None,
         model_config: dict[str, Any] | None = None,
     ) -> Any:
         if not isinstance(base, AgentScopeRuntime):

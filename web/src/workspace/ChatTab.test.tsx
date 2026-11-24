@@ -305,9 +305,10 @@ describe('ChatTab', () => {
     expect(document.querySelector('.md code')?.textContent).toBe('ruff');
   });
 
-  it('过程默认折叠；运行中在正文下方，跑完回到上方', async () => {
+  it('已完成过程在正文上方，进行中的步骤在正文下方；收尾后归并到上方', async () => {
     const { rerender } = render(tab());
     submit('hi');
+    snapshot.running = true;
     assistant().steps = [
       { id: 'reply:1', kind: 'lifecycle', label: '开始回复', detail: '', state: 'success' },
       {
@@ -317,30 +318,45 @@ describe('ChatTab', () => {
         detail: 'ls -la',
         state: 'success',
       },
+      { id: 'think:t2', kind: 'thinking', label: '思考', detail: '还在想…', state: 'running' },
     ];
     assistant().text = '看完了';
     rerender(tab());
 
-    const fold = document.querySelector('.chat-steps-fold') as HTMLDetailsElement;
-    expect(fold.open).toBe(false); // 默认折叠，摘要仍能看到最新一步
-    expect(fold.querySelector('.chat-steps-summary')?.textContent).toContain('调用工具 · bash');
-    const liveOrder = Array.from(
+    const folds = Array.from(
+      document.querySelectorAll('.chat-steps-fold'),
+    ) as HTMLDetailsElement[];
+    expect(folds.length).toBe(2);
+    expect(folds.every((fold) => !fold.open)).toBe(true); // 两组都默认折叠
+    expect(folds[0].querySelector('.step-kind')?.textContent).toBe('已完成过程');
+    expect(folds[1].querySelector('.step-kind')?.textContent).toBe('进行中');
+    expect(folds[0].querySelector('.chat-steps-summary')?.textContent).toContain('调用工具 · bash');
+    expect(folds[1].querySelector('.chat-steps-summary')?.textContent).toContain('思考');
+
+    const order = Array.from(
       (document.querySelector('.chat-msg.assistant') as HTMLElement).children,
     ).map((el) => el.className);
-    expect(liveOrder.indexOf('chat-bubble assistant-body')).toBeLessThan(
-      liveOrder.findIndex((name) => name.includes('chat-steps-fold')),
-    );
+    const bodyIndex = order.indexOf('chat-bubble assistant-body');
+    const foldIndexes = order
+      .map((name, index) => (name.includes('chat-steps-fold') ? index : -1))
+      .filter((index) => index >= 0);
+    expect(foldIndexes[0]).toBeLessThan(bodyIndex);
+    expect(foldIndexes[1]).toBeGreaterThan(bodyIndex);
 
-    // 展开后工具行可点开返回
-    fireEvent.click(fold.querySelector('.chat-steps-summary') as HTMLElement);
+    // 展开已完成组，工具行仍可点开返回
+    fireEvent.click(folds[0].querySelector('.chat-steps-summary') as HTMLElement);
     const line = screen.getByRole('button', { name: /调用工具 · bash/ });
     expect(line.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(line);
     expect(document.querySelector('.step-result')?.textContent).toBe('ls -la');
 
-    // 跑完：过程回到正文上方
+    // 思考步骤收尾后归并到正文上方，只剩一组过程
+    assistant().steps = assistant().steps.map((step) =>
+      step.state === 'running' ? { ...step, state: 'success' as const } : step,
+    );
     snapshot.running = false;
     rerender(tab());
+    expect(document.querySelectorAll('.chat-steps-fold').length).toBe(1);
     const doneOrder = Array.from(
       (document.querySelector('.chat-msg.assistant') as HTMLElement).children,
     ).map((el) => el.className);

@@ -184,22 +184,30 @@ export function StepRow({ step }: { step: ProcessEntry }) {
   return <ExpandableStep step={step} />;
 }
 
-/** 一次运行的全部过程行：整段默认折叠，摘要行仍显示最新一步在干什么。
+/** 一组过程行：默认折叠，摘要行仍显示最新一步在干什么。
 
-单独的步骤本来就可点开，但一长串日志会把正文顶走；把整段收起来，
-想看的人点一下摘要即可，运行中的进度也不必展开才看得见。
+调用方按步骤状态把一组拆成「已完成」「进行中」两栏——定稿的归档到正文
+上方，还在跑的留在正文下方。两组各自折叠，想看明细点摘要即可。
 */
-export function StepList({ steps, live = false }: { steps: ProcessEntry[]; live?: boolean }) {
+export function StepList({
+  steps,
+  live = false,
+  label = '过程',
+}: {
+  steps: ProcessEntry[];
+  live?: boolean;
+  label?: string;
+}) {
   if (steps.length === 0) return null;
   const last = steps[steps.length - 1];
   const latest = last.detail ? `${last.label} · ${last.detail}` : last.label;
   return (
-    <details className="chat-steps-fold" data-live={live || undefined}>
+    <details className="chat-steps-fold" data-live={live || undefined} data-label={label}>
       <summary className="chat-steps-summary">
         <span className="step-chev" aria-hidden="true">
           ›
         </span>
-        <span className="step-kind">过程</span>
+        <span className="step-kind">{label}</span>
         <span className="step-detail mono" title={latest}>
           {summarize(latest, 72)}
         </span>

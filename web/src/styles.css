@@ -3890,3 +3890,27 @@ a:hover {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
+/* ---- Echo 模式横幅：没配凭据时，回显必须被说成回显 ---- */
+.runtime-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.runtime-banner-tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid currentcolor;
+  border-radius: 4px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.runtime-banner-text {
+  min-width: 0;
+}

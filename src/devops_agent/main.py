@@ -75,6 +75,28 @@ app.state.runtime = select_runtime()
 app.state.sessions = None
 app.state.sessions_base = None
 
+
+def runtime_status(runtime: AgentRuntime | None = None) -> dict[str, str]:
+    """当前运行时的自述，供 `/health` 与前端横幅使用。
+
+    为什么必须暴露：Echo 兜底的回复是 `[<session>] <输入>`，看起来「像在回答
+    但答非所问」。没有这个字段时，「没配 key」和「agent 坏了」在界面上完全
+    无法区分，用户只能反复重试（实测就因此产生了同一条输入的两个 run）。
+    """
+    current = app.state.runtime if runtime is None else runtime
+    if isinstance(current, EchoRuntime):
+        return {
+            "kind": "echo",
+            "model": "",
+            "notice": "未配置模型凭据（DEVOPS_AGENT_API_KEY），当前回复只是回显输入，不会调用模型",
+        }
+    return {
+        "kind": "agentscope",
+        "model": os.environ.get("DEVOPS_AGENT_MODEL", ""),
+        "notice": "",
+    }
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -94,6 +116,19 @@ def _warn_missing_tools() -> None:
 
 
 _warn_missing_tools()
+
+
+def _warn_runtime() -> None:
+    """降级到 Echo 只打日志，不拒绝启动 —— 自检和测试都要用 Echo。
+
+    但绝不能一声不响：这条 warning 是排查「agent 突然变傻」时唯一的线索。
+    """
+    status = runtime_status()
+    if status["kind"] == "echo":
+        logger.warning("%s", status["notice"])
+
+
+_warn_runtime()
 app.include_router(observability_router)
 app.include_router(eval_router)
 app.include_router(attachments_router)
@@ -131,13 +166,16 @@ class ConfirmRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    """存活 + 工具外部依赖就绪状态。
+    """存活 + 运行时模式 + 工具外部依赖就绪状态。
 
     缺依赖**不返回 5xx**：探针看到 5xx 会重启容器，而重启治不好缺少的可执行
     文件，只会把一次可诊断的降级放大成重启循环。所以状态放在 body 的
     `tools` 里，由调用方判断要不要报警。
+
+    `runtime.kind` 是同一套逻辑的另一半：跑的是真模型还是 Echo 回显，
+    必须能从响应里看出来，否则前端只能把回显当成「模型答非所问」。
     """
-    return {"status": "ok", **health_payload()}
+    return {"status": "ok", "runtime": runtime_status(), **health_payload()}
 
 
 def _profile_or_403(name: str | None) -> PermissionProfile:
@@ -465,7 +503,8 @@ async def run_stream(
         except HTTPException:
             raise
         except Exception as exc:  # 异常也要落库，记录失败
-            recorder.finish(status="failed")
+            # 原因必须一起落库：只写 status 的话，刷新后没人能复原这次为什么失败
+            recorder.finish(status="failed", error=f"{type(exc).__name__}: {exc}")
             yield _sse_frame({"type": "RUN_ERROR", "error": str(exc)})
         finally:
             # 会话快照要包含这一轮结束后的完整状态，刷新后重建才不会丢历史
@@ -565,7 +604,7 @@ async def confirm_run(run_id: int, req: ConfirmRequest, request: Request) -> Str
             async for frame in _stream_entry(entry, recorder, source):
                 yield frame
         except Exception as exc:
-            recorder.finish(status="failed")
+            recorder.finish(status="failed", error=f"{type(exc).__name__}: {exc}")
             yield _sse_frame({"type": "RUN_ERROR", "error": str(exc)})
         finally:
             registry.save(req.session_id)

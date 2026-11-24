@@ -156,6 +156,9 @@ _RUN_COLUMNS: tuple[tuple[str, str], ...] = (
     # 双口径耗时：实测（span 并集）与墙钟（起止差），差值即用户空闲
     ("work_ms", "INTEGER NOT NULL DEFAULT 0"),
     ("wall_ms", "INTEGER NOT NULL DEFAULT 0"),
+    # 失败原因原文：只记 status=failed 时，「37 个 span 全 ok 却失败」这种
+    # 情况无法复盘，日志一滚就彻底丢了
+    ("error", "TEXT NOT NULL DEFAULT ''"),
 )
 
 # spans 上后加的列：逐调用的 token 分拆与缓存命中，用来回答「哪一步开始全冷」。
@@ -281,12 +284,14 @@ def finish_run(
     cache_creation_input_tokens: int = 0,
     work_ms: int = 0,
     wall_ms: int = 0,
+    error: str = "",
 ) -> None:
     """运行结束时回填结果与聚合指标（含 token 分拆、缓存命中与双口径耗时）。"""
     conn.execute(
         """UPDATE runs SET status=?, output=?, ended_at=?, duration_ms=?,
            total_tokens=?, health_score=?, input_tokens=?, output_tokens=?,
-           cache_input_tokens=?, cache_creation_input_tokens=?, work_ms=?, wall_ms=?
+           cache_input_tokens=?, cache_creation_input_tokens=?, work_ms=?, wall_ms=?,
+           error=?
            WHERE id=?""",
         (
             status,
@@ -301,6 +306,7 @@ def finish_run(
             cache_creation_input_tokens,
             work_ms,
             wall_ms,
+            error,
             run_id,
         ),
     )
@@ -422,6 +428,7 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         permission=row["permission"] or "",
         work_ms=row["work_ms"] or 0,
         wall_ms=row["wall_ms"] or 0,
+        error=row["error"] or "",
     )
 
 
@@ -583,7 +590,7 @@ def summary_rows(conn: sqlite3.Connection) -> list[RunRecord]:
         """SELECT id, session_id, domain, status, started_at, ended_at, duration_ms,
                   model, total_tokens, health_score, input_tokens, output_tokens, request_id,
                   cache_input_tokens, cache_creation_input_tokens, input, output, permission,
-                  work_ms, wall_ms
+                  work_ms, wall_ms, error
            FROM runs"""
     ).fetchall()
     return [_run_from_row(row) for row in rows]

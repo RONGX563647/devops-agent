@@ -571,3 +571,19 @@ export interface SecretMeta {
   last_used_at: string | null;
   uses: number;
 }
+
+/** 服务端运行时的自述（GET /health）。echo = 没配模型凭据，回复只是回显。 */
+export interface RuntimeStatus {
+  kind: 'echo' | 'agentscope';
+  /** 真实运行时用的模型名；echo 时为空串。 */
+  model: string;
+  /** 需要用户注意的说明，echo 时非空。 */
+  notice: string;
+}
+
+/** 存活探针的响应：runtime 与 tools 都是「能跑但不能干活」的降级信号。 */
+export interface Health {
+  status: string;
+  runtime?: RuntimeStatus;
+  tools?: Record<string, { available: boolean; binary: string }>;
+}

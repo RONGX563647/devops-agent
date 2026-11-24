@@ -1,6 +1,7 @@
 /** 对话 tab：订阅会话 store 渲染消息与过程时间线，SSE 生命周期由 store 托管。 */
+import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { deleteAttachment, uploadAttachment } from '../api/client';
+import { deleteAttachment, fetchHealth, uploadAttachment } from '../api/client';
 import type {
   Attachment,
   ChatMessage,
@@ -211,6 +212,15 @@ function AssistantMessage({
 
 export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
   const view = useSession(session);
+  // 运行时模式：Echo 兜底意味着没配模型凭据，回复只是把输入回显一遍。
+  // 不显式说出来，用户只会看到「模型答非所问」然后反复重试。
+  const health = useQuery({
+    queryKey: ['health'],
+    queryFn: fetchHealth,
+    staleTime: 60_000,
+    retry: 1,
+  });
+  const degraded = health.data?.runtime?.kind === 'echo';
   const [input, setInput] = useState('');
   // 联网搜索：跟 DeepSeek 一样做成输入框下方的显式开关，默认关，逐轮生效
   const [webSearch, setWebSearch] = useState(false);
@@ -382,6 +392,14 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
 
   return (
     <div className="chat-wrap">
+      {degraded && (
+        <div className="runtime-banner" role="status">
+          <span className="runtime-banner-tag mono">Echo</span>
+          <span className="runtime-banner-text">
+            {health.data?.runtime?.notice || '未配置模型凭据，当前回复只是回显输入'}
+          </span>
+        </div>
+      )}
       <div
         className={`chat-scroll${empty ? ' is-empty' : ''}`}
         ref={scrollRef}

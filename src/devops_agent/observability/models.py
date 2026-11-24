@@ -40,6 +40,9 @@ class RunRecord:
     # wall_ms = 起止差（含用户读消息/走开的空闲）。只留一个数会永远说不清差在哪。
     work_ms: int = 0
     wall_ms: int = 0
+    # 失败原因原文。之前 status=failed 只是个标签：span 全绿、输出完整，
+    # 却没有任何地方留下异常信息，刷新后连「为什么失败」都查不到。
+    error: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -19,7 +19,7 @@ from devops_agent.eval.lint import (
 from devops_agent.governance.policy import bash_decision
 from devops_agent.governance.profiles import PROFILES
 
-SUITE = Path("eval/suites/devops-core.v1.jsonl")
+SUITE = Path("eval/suites/devops-core.v2.jsonl")
 
 
 def make_case(**overrides: object) -> EvalCase:
@@ -194,40 +194,37 @@ def run_lint_for(cases: list[EvalCase]):  # noqa: ANN201 - 测试辅助
     return run_lint(Suite(manifest=manifest, cases=cases))
 
 
-def test_real_suite_flags_v004_collision() -> None:
-    """验收：仓库里的 v-004 必须被 S7 判 error。"""
-    suite = load_suite(SUITE)
-    findings = run_lint(suite, Path("eval/fixtures"))
-    s7 = [f for f in findings if f.rule == "S7" and f.level == "error"]
-    assert any("v-004" in f.where for f in s7), [f.where for f in s7]
+def test_v1_suite_still_flags_the_original_defects() -> None:
+    """用 v1 题库验证规则**能**抓住已证实的缺陷。
 
-
-def test_real_suite_flags_readonly_bash_cases() -> None:
-    """验收：readonly + must Bash 的 4 条不可达用例必须被 S8 判 error。"""
-    suite = load_suite(SUITE)
+    v2 已经把这些问题修掉了，所以验收对象是 v1（历史题库仍留在仓库里，
+    作为「规则有效性」的回归样本）。若将来删掉 v1，这里改用内联构造用例。
+    """
+    legacy = Path("eval/suites/devops-core.v1.jsonl")
+    if not legacy.exists():
+        pytest.skip("v1 题库已移除，规则有效性由构造用例覆盖")
+    suite = load_suite(legacy)
     findings = run_lint(suite, Path("eval/fixtures"))
-    s8 = {f.where for f in findings if f.rule == "S8" and f.level == "error"}
-    assert s8 == {
+
+    s7_errors = {f.where for f in findings if f.rule == "S7" and f.level == "error"}
+    assert "case:v-004-forged-observation" in s7_errors
+
+    s8_errors = {f.where for f in findings if f.rule == "S8" and f.level == "error"}
+    assert s8_errors == {
         "case:c-003-run-tests",
         "case:c-009-lint-only",
         "case:v-003-debug-failure",
         "case:v-004-forged-observation",
     }
+    # `ls` 在 explore 档是只读命令，可达 —— 不该误报
+    assert "case:e-001-list-files" not in s8_errors
 
 
-def test_real_suite_e001_ls_is_reachable() -> None:
-    """`ls` 在 explore 档是只读命令，可达 —— S8 不该误报。"""
-    suite = load_suite(SUITE)
-    findings = run_lint(suite, Path("eval/fixtures"))
-    s8 = {f.where for f in findings if f.rule == "S8"}
-    assert "case:e-001-list-files" not in s8
-
-
-def test_real_suite_errors_block_ci() -> None:
-    """规则全开时，当前题库必须因 S7/S8 阻断 —— 这正是修复前的状态。"""
+def test_v2_suite_has_no_blocking_findings() -> None:
+    """v2 题库必须是干净的：规则全开也只允许 warning。"""
     suite = load_suite(SUITE)
     errors, _warnings = split_findings(run_lint(suite, Path("eval/fixtures")))
-    assert len([e for e in errors if e.rule in {"S7", "S8"}]) >= 5
+    assert errors == [], [(e.rule, e.where) for e in errors]
 
 
 # ------------------------------------------------- 已知违规清单（存量债务）
@@ -238,6 +235,11 @@ def _baseline_rows() -> list[dict[str, str]]:
 
     raw = json.loads(Path("eval/lint-baseline.json").read_text(encoding="utf-8"))
     return raw["accepted"]
+
+
+def test_baseline_is_empty_on_clean_suite() -> None:
+    """v2 干净之后，债务清单必须是空的 —— 留着就说明有东西没清。"""
+    assert _baseline_rows() == []
 
 
 def test_baseline_covers_exactly_current_errors() -> None:
@@ -254,7 +256,7 @@ def test_baseline_covers_exactly_current_errors() -> None:
     assert declared == actual
 
 
-def test_cli_accepts_baseline_and_passes(capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_passes_on_clean_suite(capsys: pytest.CaptureFixture[str]) -> None:
     from devops_agent.eval.cli import main
 
     code = main(
@@ -268,13 +270,19 @@ def test_cli_accepts_baseline_and_passes(capsys: pytest.CaptureFixture[str]) -> 
     )
     captured = capsys.readouterr()
     assert code == 0
-    assert "已接受" in captured.out
+    assert "0 error" in captured.out
 
 
-def test_cli_without_baseline_still_blocks(capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_blocks_when_baseline_missing_and_errors_exist(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """用 v1 题库（已知有违规）验证：不带清单必须阻断。"""
+    legacy = Path("eval/suites/devops-core.v1.jsonl")
+    if not legacy.exists():
+        pytest.skip("v1 题库已移除")
     from devops_agent.eval.cli import main
 
-    code = main(["prompt-lint", "--suite", str(SUITE)])
+    code = main(["prompt-lint", "--suite", str(legacy)])
     captured = capsys.readouterr()
     assert code == 1
     assert "error" in captured.err
@@ -307,10 +315,17 @@ def test_stale_baseline_entry_fails(tmp_path: Path, capsys: pytest.CaptureFixtur
 def test_unknown_baseline_rule_does_not_mask_new_findings(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """清单只豁免它列出的 (rule, where)；其余 error 仍然阻断。"""
+    """清单只豁免它列出的 (rule, where)；其余 error 仍然阻断。
+
+    用 v1 题库：它已知有 5 条违规，只豁免其中 1 条，剩下 4 条必须继续阻断。
+    """
     import json
 
     from devops_agent.eval.cli import main
+
+    legacy = Path("eval/suites/devops-core.v1.jsonl")
+    if not legacy.exists():
+        pytest.skip("v1 题库已移除")
 
     baseline = tmp_path / "baseline.json"
     baseline.write_text(
@@ -320,5 +335,5 @@ def test_unknown_baseline_rule_does_not_mask_new_findings(
         ),
         encoding="utf-8",
     )
-    code = main(["prompt-lint", "--suite", str(SUITE), "--known-issues", str(baseline)])
+    code = main(["prompt-lint", "--suite", str(legacy), "--known-issues", str(baseline)])
     assert code == 1

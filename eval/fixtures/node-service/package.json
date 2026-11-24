@@ -1,0 +1,18 @@
+{
+  "name": "node-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "最小的 Node 服务，用于评测跨语言读取与执行",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "lint": "node --check index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "supertest": "^7.0.0"
+  }
+}

@@ -1,0 +1,10 @@
+site_name: docs-only
+nav:
+  - 首页: index.md
+  - 使用指南: guide/usage.md
+  - 贡献: ../CONTRIBUTING.md
+theme:
+  name: material
+markdown_extensions:
+  - tables
+  - toc

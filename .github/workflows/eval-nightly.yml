@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
       - name: validate suite
-        run: python -m devops_agent.eval validate --suite eval/suites/devops-core.v1.jsonl
+        run: python -m devops_agent.eval validate --suite eval/suites/devops-core.v2.jsonl
       - name: run eval with judge
         env:
           DEVOPS_AGENT_API_KEY: ${{ secrets.DEVOPS_AGENT_API_KEY }}
@@ -39,7 +39,7 @@ jobs:
           # 退出码语义：verdict == fail 时 CLI 返回 1，让 nightly 直接变红；
           # insufficient（样本未达门禁量）不算失败，否则天天红就没人看了。
           python -m devops_agent.eval run \
-            --suite eval/suites/devops-core.v1.jsonl \
+            --suite eval/suites/devops-core.v2.jsonl \
             --out workspace/evals/nightly \
             --judge $BASE_ARGS
       - name: upload report

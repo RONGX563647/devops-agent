@@ -1,0 +1,129 @@
+/** 健康分、全局指标与运行时自述：与后端 Pydantic 响应对齐的前端类型。 */
+
+/** 一条扣分项：回答「这 8 分扣在哪」。 */
+export interface HealthItem {
+  label: string;
+  delta: number;
+  detail: string;
+}
+
+/** 单个维度：value 为 null 表示证据不足，不参与加权。 */
+export interface HealthDimension {
+  key: string;
+  label: string;
+  value: number | null;
+  weight: number;
+  confidence: number;
+  note: string;
+  items: HealthItem[];
+}
+
+export interface RunHealth {
+  run_id: number;
+  score: number;
+  grade: string;
+  /** 有权重覆盖的比例：缺维度时 < 1，说明这个总分只代表部分信号。 */
+  coverage: number;
+  confidence: number;
+  version: string;
+  /** 按步数算出的耗时预算与实际耗时，前端画「花了多少 / 本该花多少」。 */
+  budget_ms: number;
+  actual_ms: number;
+  model_calls: number;
+  dimensions: Record<string, HealthDimension>;
+}
+
+/** 健康分直方图的一桶。 */
+export interface HealthBucket {
+  bucket: string;
+  from: number;
+  count: number;
+}
+
+/** 看板用的健康分聚合（最近 N 次运行按当前口径重算）。 */
+export interface HealthMetrics {
+  version: string;
+  runs: number;
+  scored: number;
+  avg_score: number | null;
+  p50: number | null;
+  p90: number | null;
+  distribution: HealthBucket[];
+  grades: Record<string, number>;
+  dimensions: Record<string, { label: string; avg: number | null; samples: number }>;
+  deficits: { key: string; label: string; avg: number; loss: number }[];
+  weights: Record<string, number>;
+  coverage_avg: number | null;
+  confidence_avg: number | null;
+}
+
+/** 全局指标拆解：工具/权限/缓存/失败聚类。 */
+export interface Breakdown {
+  version: string;
+  outcome: { total: number; success: number; failed: number; running: number };
+  tool: { calls: number; failed: number; failure_rate: number | null };
+  permission: { decisions: number; denied: number; deny_rate: number | null };
+  model: { calls: number; tokens: number; avg_tokens_per_call: number | null };
+  tokens: {
+    input: number;
+    output: number;
+    cache_hit: number;
+    cache_hit_rate: number | null;
+    cache_recorded: boolean;
+  };
+  failures: { reason: string; count: number }[];
+}
+
+export interface Summary {
+  total_runs: number;
+  success_count: number;
+  failed_count: number;
+  success_rate: number | null;
+  avg_health_score: number | null;
+  p95_duration_ms: number | null;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  token_proxy: number;
+  tool_call_count: number;
+  tool_failed_count: number;
+}
+
+export interface TimePoint {
+  date: string;
+  total: number;
+  success: number;
+  failed: number;
+}
+
+/** 保险箱里的一条凭据（GET /api/secrets）：只给元信息，没有值。 */
+export interface SecretMeta {
+  name: string;
+  hint: string;
+  source: string;
+  created_at: string;
+  last_used_at: string | null;
+  uses: number;
+}
+
+/** 一次受控明文读回的结果；found=false 表示解不开或不存在。 */
+export interface SecretValue {
+  name: string;
+  value: string;
+  found: boolean;
+}
+
+/** 服务端运行时的自述（GET /health）。echo = 没配模型凭据，回复只是回显。 */
+export interface RuntimeStatus {
+  kind: 'echo' | 'agentscope';
+  /** 真实运行时用的模型名；echo 时为空串。 */
+  model: string;
+  /** 需要用户注意的说明，echo 时非空。 */
+  notice: string;
+}
+
+/** 存活探针的响应：runtime 与 tools 都是「能跑但不能干活」的降级信号。 */
+export interface Health {
+  status: string;
+  runtime?: RuntimeStatus;
+  tools?: Record<string, { available: boolean; binary: string }>;
+}

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,103 @@ def _state_for(
     return state
 
 
+@dataclass(frozen=True)
+class RuntimeParts:
+    """装配期的分步产物：每步只补齐自己负责的字段，最后一次性交给运行时。
+
+    `note_mw` / `toolkit_mws` / `compression_sink` / `agent` 由后续步骤填充，
+    因此先留空 —— 这样「解析输入 → 建中间件 → 建 Agent」才能各成一步。
+    """
+
+    profile: PermissionProfile
+    workdir: Path
+    params: ModelParams
+    web_search: bool
+    system_prompt: str
+    state: AgentState
+    note_mw: ProfileNoteMiddleware | None = None
+    toolkit_mws: list[ToolMiddlewareBase] = field(default_factory=list)
+    compression_sink: CompressionSink | None = None
+    agent: Agent | None = None
+
+
+def _resolve_runtime_inputs(
+    system_prompt: str | None,
+    workdir: str | os.PathLike[str] | None,
+    profile: PermissionProfile | None,
+    state: AgentState | None,
+    web_search: bool | None,
+    params: ModelParams | None,
+) -> RuntimeParts:
+    """解析装配输入：系统提示、工作目录、档位、跨轮状态、参数与联网开关。
+
+    联网开关在这里定为最终值（而不是建模型时再读 env）：模型请求体与末尾
+    档位说明必须同源，否则会出现「请求里带了检索结果、提示词却说没联网」。
+    `params` 省略时按「会话覆盖 > 部署默认 > yaml > env」解析。
+    """
+    resolved = profile if profile is not None else default_profile()
+    base = resolve_workdir(workdir)
+    return RuntimeParts(
+        profile=resolved,
+        workdir=base,
+        params=params if params is not None else effective_params(),
+        web_search=(
+            web_search
+            if web_search is not None
+            else os.environ.get("DEVOPS_AGENT_ENABLE_SEARCH") == "1"
+        ),
+        system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),
+        state=_state_for(resolved, state, base),
+    )
+
+
+def _build_middlewares(parts: RuntimeParts) -> RuntimeParts:
+    """建工具中间件、档位说明与压缩 sink（一次装配一份，随会话快照重建）。"""
+    return replace(
+        parts,
+        note_mw=ProfileNoteMiddleware(parts.profile, web_search=parts.web_search),
+        toolkit_mws=[build_secret_middleware()],
+        compression_sink=CompressionSink(),
+    )
+
+
+def _build_agent(parts: RuntimeParts) -> RuntimeParts:
+    """按档位建 Agent：工具、密钥中间件、档位说明与压缩钩子一并挂上。"""
+    note_mw = parts.note_mw
+    sink = parts.compression_sink
+    assert note_mw is not None and sink is not None
+    agent = build_agent(
+        name="devops",
+        system_prompt=parts.system_prompt,
+        model=build_chat_model(enable_search=parts.web_search, params=parts.params),
+        toolkit=build_toolkit_for(
+            parts.profile.tools, parts.workdir, middlewares=parts.toolkit_mws
+        ),
+        middlewares=[note_mw, CompressionMiddleware(sink)],
+        context_config=build_context_config(parts.params),
+        max_iters=parts.params.max_iters,
+        max_retries=parts.params.agent_max_retries,
+        state=parts.state,
+    )
+    return replace(parts, agent=agent)
+
+
+def _wrap_runtime(parts: RuntimeParts) -> AgentScopeRuntime:
+    """把分步产物收口成对外的运行时对象（中间件与参数由运行时持有）。"""
+    agent = parts.agent
+    assert agent is not None
+    return AgentScopeRuntime(
+        agent,
+        profile=parts.profile,
+        workdir=parts.workdir,
+        note_middleware=parts.note_mw,
+        toolkit_middlewares=parts.toolkit_mws,
+        compression_sink=parts.compression_sink,
+        web_search=parts.web_search,
+        params=parts.params,
+    )
+
+
 def build_agentscope_runtime(
     system_prompt: str | None = None,
     workdir: str | os.PathLike[str] | None = None,
@@ -114,43 +212,14 @@ def build_agentscope_runtime(
       `context_config` 与 `context_size` 必须与之一致，否则会出现
       「窗口是新的、压缩阈值还是旧的」。
     """
-    resolved = profile if profile is not None else default_profile()
-    base = resolve_workdir(workdir)
-    active = params if params is not None else effective_params()
-    # 先定下这一轮到底联不联网：模型请求体与末尾说明必须同源，
-    # 否则会出现「请求里带了检索结果、提示词却说没联网」的错位。
-    effective_search = (
-        web_search
-        if web_search is not None
-        else os.environ.get("DEVOPS_AGENT_ENABLE_SEARCH") == "1"
-    )
-    secret_mw = build_secret_middleware()
-    note_mw = ProfileNoteMiddleware(resolved, web_search=effective_search)
-    toolkit_mws: list[ToolMiddlewareBase] = [secret_mw]
-    # sink 由运行时持有、中间件写入：一次装配一份，会随会话快照重建。
-    compression_sink = CompressionSink()
-    compression_mw = CompressionMiddleware(compression_sink)
-    agent = build_agent(
-        name="devops",
-        system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),
-        model=build_chat_model(enable_search=web_search, params=active),
-        toolkit=build_toolkit_for(resolved.tools, base, middlewares=toolkit_mws),
-        middlewares=[note_mw, compression_mw],
-        context_config=build_context_config(active),
-        max_iters=active.max_iters,
-        max_retries=active.agent_max_retries,
-        state=_state_for(resolved, state, base),
-    )
-    return AgentScopeRuntime(
-        agent,
-        profile=resolved,
-        workdir=base,
-        note_middleware=note_mw,
-        toolkit_middlewares=toolkit_mws,
-        compression_sink=compression_sink,
-        web_search=effective_search,
-        params=active,
-    )
+    # 1) 解析输入：提示词、目录、档位、跨轮状态、参数与本轮联网开关
+    parts = _resolve_runtime_inputs(system_prompt, workdir, profile, state, web_search, params)
+    # 2) 建中间件与压缩 sink：密钥注入、档位说明、压缩帧收集
+    parts = _build_middlewares(parts)
+    # 3) 建 Agent：工具按档位装配，模型参数与上下文窗口同源
+    parts = _build_agent(parts)
+    # 4) 包成运行时：中间件、sink 与当前参数交给运行时持有
+    return _wrap_runtime(parts)
 
 
 def session_runtime_factory(base: object) -> Callable[..., Any]:

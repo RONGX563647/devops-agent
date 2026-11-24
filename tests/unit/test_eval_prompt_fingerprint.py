@@ -65,9 +65,9 @@ def test_semantic_fingerprint_ignores_real_workdir() -> None:
     assert "<workdir>" in agent_mod._render_system_prompt("<workdir>", "<shell>")
 
 
-def test_version_bumped_to_v3() -> None:
-    """指纹语义变了，版本必须递增，否则新旧批次会被当成可比。"""
-    assert PROMPT_VERSION == "v3"
+def test_version_bumped_to_v4() -> None:
+    """提示词文案变了，版本必须递增，否则新旧批次会被当成可比（v4：补停止重试规则）。"""
+    assert PROMPT_VERSION == "v4"
 
 
 # ------------------------------------------------------------- 字节指纹

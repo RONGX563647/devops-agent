@@ -4,7 +4,7 @@
 
 ```
                      ┌──────────────────────────────────────────┐
-  HTTP / SSE   →     │ main.py  网关：会话、权限、SSE、挂起续跑   │
+  HTTP / SSE   →     │ gateway/  网关：会话、权限、SSE、挂起续跑    │
                      └───────────────┬──────────────────────────┘
                                      │ 只依赖协议
                      ┌───────────────▼──────────────────────────┐
@@ -26,7 +26,7 @@
 
 三层硬约束：
 
-1. **网关不 import 框架**：`main.py` 只认 `AgentRuntime` 协议与普通 dict 事件。
+1. **网关不 import 框架**：`gateway/` 只认 `AgentRuntime` 协议与普通 dict 事件。
 2. **编排与执行分离**：`runtime/` 决定「下一步做什么」，`executor/boundary.py`
    决定「在哪执行」（目前只用 `LocalWorkspace`）。
 3. **框架隔离边界 9 个文件**：`executor/boundary.py`、`governance/policy.py`、

@@ -27,7 +27,7 @@ allow_indirect_imports = True
 name = observability 不得反向依赖网关
 type = forbidden
 source_modules = devops_agent.observability
-forbidden_modules = devops_agent.main
+forbidden_modules = devops_agent.gateway
 
 [importlinter:contract:input-no-runtime]
 name = input 不得依赖 runtime

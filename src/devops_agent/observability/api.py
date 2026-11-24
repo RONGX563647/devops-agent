@@ -1,7 +1,7 @@
 """观测 API —— FastAPI 路由，读取 SQLite 中的运行数据供前端消费。
 
 设计：
-- 用 APIRouter 独立成模块，main.py 只做 include_router，避免入口膨胀；
+- 用 APIRouter 独立成模块，gateway/app.py 只做 include_router，避免入口膨胀；
 - 每次请求用 repository.connect() 开短连接（WAL 下读不阻塞写），路径由环境变量决定，
   测试可通过 DEVOPS_AGENT_DB_PATH 覆盖；
 - 响应是普通 dict / Pydantic 模型，不暴露内部对象。

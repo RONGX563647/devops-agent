@@ -10,7 +10,9 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from devops_agent.main import RunRequest, app, run_stream
+from devops_agent.gateway.app import app
+from devops_agent.gateway.schemas import RunRequest
+from devops_agent.gateway.stream import run_stream
 from devops_agent.observability import repository as repo
 from devops_agent.runtime.runtime import EchoRuntime
 

@@ -5,7 +5,7 @@
 测试对 `pipeline._fetch_text` / `pipeline.MAX_TOTAL_CHARS` 的 monkeypatch 也照旧生效。
 
 设计取舍：
-- 纯 stdlib、不 import 任何框架：网关（main.py）与测试都能直接用；
+- 纯 stdlib、不 import 任何框架：网关（gateway/）与测试都能直接用；
 - 每个阶段都产出一条 Stage 记录（before / after / 耗时 / 是否真的改动），
   网关按记录发事件并落库，前端据此把「这条输入被做了什么」画成轨迹；
 - 阶段失败一律降级成该阶段的 status=error / skip，绝不抛异常打断对话：

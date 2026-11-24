@@ -9,7 +9,8 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from devops_agent.main import _sse_frame, app
+from devops_agent.gateway.app import app
+from devops_agent.gateway.sse import _sse_frame
 from devops_agent.observability import repository as repo
 from devops_agent.observability.recorder import RunRecorder, _as_int
 from devops_agent.runtime.events import event_to_dict

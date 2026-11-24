@@ -43,8 +43,7 @@ async def _frames(
     `wait_for(source.__anext__(), timeout=...)`：后者超时会取消上游生成器的
     `__anext__`，可能永久打断 AgentScope 的事件流。
 
-    `heartbeat` 省略时用模块级 `SSE_HEARTBEAT_S`；显式传入供兼容门面按自己的
-    常量驱动（测试会替换门面模块上的间隔）。
+    `heartbeat` 省略时用模块级 `SSE_HEARTBEAT_S`；显式传入供调用方自定义间隔。
     """
     interval = SSE_HEARTBEAT_S if heartbeat is None else heartbeat
     # 队列元素：（类型标记, 负载）。异常用单独标记传回并在本生成器里重新抛出，

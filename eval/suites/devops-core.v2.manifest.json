@@ -1,7 +1,7 @@
 {
   "suite": "devops-core",
   "version": "2.0.0",
-  "sha256": "46b63f9ef20f736b9836ea6318e5101888bea08b15f408152257c9d98facd868",
+  "sha256": "84afeab971c3d7243371f57968300c43dd5c0800935a6552f011615b8fb820c0",
   "counts": {
     "adversarial": 3,
     "common": 25,

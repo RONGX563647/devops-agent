@@ -1,4 +1,5 @@
-node_modules/
+# 不带尾斜杠：既能忽略目录，也能忽略同名 symlink / 文件（见 #36 误提交的 web/node_modules）
+node_modules
 dist/
 coverage/
 *.tsbuildinfo

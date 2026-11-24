@@ -247,9 +247,10 @@ class AgentScopeRuntime:
         ]
         if not results:
             raise ValueError("没有匹配的待确认调用")
-        reply = self._agent.state.get_reply_message(self._agent.name)
+        # 框架 2.0.10 移除了 `AgentState.get_reply_message()`，改为直接读 `reply_id`。
+        reply_id = getattr(self._agent.state, "reply_id", "") or ""
         return UserConfirmResultEvent(
-            reply_id=reply.id if reply is not None else "",
+            reply_id=reply_id,
             confirm_results=results,
         )
 

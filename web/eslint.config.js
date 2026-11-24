@@ -25,4 +25,32 @@ export default tseslint.config(
       complexity: ['error', frontendGates.complexity_threshold ?? 10],
     },
   },
+  {
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/**/*.test.{ts,tsx}'],
+    rules: {
+      // 新文件硬上限；存量超标文件在下方显式豁免，拆分后逐条删除。
+      'max-lines': [
+        'error',
+        {
+          max: frontendGates.max_lines ?? 500,
+          skipBlankLines: true,
+          skipComments: true,
+        },
+      ],
+    },
+  },
+  {
+    files: [
+      'src/types.ts',
+      'src/api/useRunStream.ts',
+      'src/pages/EvalBatches.tsx',
+      'src/workspace/TraceList.tsx',
+      'src/workspace/ChatTab.tsx',
+      'src/workspace/store.ts',
+      'src/workspace/trace.ts',
+      'src/workspace/ModelConfigPopover.tsx',
+    ],
+    rules: { 'max-lines': 'off' },
+  },
 );

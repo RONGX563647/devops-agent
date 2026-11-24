@@ -63,7 +63,7 @@ devops-agent/
 │   └── check_manifest_sync.py# 题库清单与 JSONL 是否同步
 ├── docs/
 │   ├── adr/                  # 0001 可观测前端 / 0002 权限模型 / 0003 模型参数
-│   ├── specs/                # 0001 模型参数配置
+│   ├── specs/                # 0001 模型参数配置 / 0002 评测 UI 控制台
 │   └── wiki/                 # 分层讲解（Home / Architecture / Permissions / …）
 ├── .github/workflows/        # ci.yml（quality + frontend）、eval-nightly.yml
 ├── src/devops_agent/
@@ -76,7 +76,7 @@ devops-agent/
 │   │   ├── agent.py          #   build_agent / AgentScopeRuntime（系统提示、工具、中间件）
 │   │   ├── sessions.py       #   SessionRegistry：LRU + DB 快照重建 + 参数热替换
 │   │   ├── confirm.py        #   确认协议：风险分级、作用域、前缀沉淀规则
-│   │   ├── profile_note.py   #   档位说明追加在消息末尾（保前缀缓存）
+│   │   ├── profile_note.py   #   档位说明 + 联网说明追加在消息末尾（保前缀缓存）
 │   │   ├── compression.py    #   压缩中间件 → SSE 帧
 │   │   ├── events.py         #   框架事件 → 普通 dict
 │   │   ├── supervisor.py     #   TeamPipeline / GoalPipeline 装配（仅单测引用）
@@ -193,7 +193,7 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 - `DEVOPS_AGENT_SEARCH_MODE=forced`（默认）：如上，点了就一定搜。
 - `DEVOPS_AGENT_SEARCH_MODE=auto`：只发 `enable_search`，把裁量权交回模型（省 token，但多数情况下不会搜）。写成其他值一律按 `forced` 处理，避免拼错一个环境变量就把联网退化成空开关。
 
-开关实现在 [agent.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/agent.py#L241-L266) 的 `_search_options()`。
+开关实现在 [agent.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/agent.py) 的 `_search_extra_body()`。
 
 开启联网的那一轮，末条消息会追加一段说明：检索结果**若存在**，会以带来源的引用块出现在上下文里，看到就用、看不到就直说没有检索到；并明确「不需要再用工具抓网页，同一地址失败两次就停」。这句话与档位说明一样放在消息末尾而不是系统提示里——系统提示在请求最前面，改一个字后面的工具 schema 与整段历史全部缓存失效。
 
@@ -271,9 +271,26 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 | `attach` | 附件读取 | 按 id 取回附件正文 |
 | `redact` | 密钥脱敏 | 识别 aws/openai/github/slack/jwt/私钥等，替换为 `{{secret:NAME}}` 并交给 `on_secret` 落库 |
 | `budget` | 预算裁剪 | 总字符上限 `MAX_TOTAL_CHARS=24000`，超出按优先级丢弃 |
-| `compose` | 组装 | 正文 + 材料拼成最终文本 |
+| `compose` | 组装 | 正文 + 已取到的材料 + **未取到的材料清单**，拼成最终文本 |
 
 **任何阶段都不抛异常**：解析失败只影响该阶段状态与材料完整性，对话照常进行（`main._prepare_input` 再兜一层，异常即退回原始输入）。
+
+### 为什么「取不到」也要写进上下文
+
+引用抓取失败时，把原因只写进阶段详情（前端能看、模型看不到）会引发非常昂贵的行为：
+模型不知道自己手里缺了什么，于是自己去 `curl` 同一个地址，被 shell 拆参数、被网络重置，
+再换 PowerShell、换 python 脚本、换代理设置——实测一次会话烧掉 **21 步工具调用**
+才承认拿不到。
+
+所以 `_expand` / `_attach` 除了材料块还返回 `misses`，由 `_render_misses()` 渲染成
+「本轮未能取到的材料」清单 + 停止规则（同一目标失败两次就停、基于已有材料回答并
+说明缺什么）。两个细节：
+
+- **`远程抓取未开启` 不进 `misses`**：这只是服务端没代为抓取，不是内容不可得。
+  写进去等于替模型宣布放弃，反而劝退它用 shell 自己取。
+- **`misses` 也要过一遍脱敏**：失败说明里会带原始 URL，URL 里可能含 token。
+
+补充：
 
 - 只有 `prepared.text` 进模型上下文，密钥明文与裁剪细节不外泄。
 - token 估算用 `len(text) // 4`（`CHARS_PER_TOKEN`），用于与模型回报的 `input_tokens` 对账。
@@ -336,7 +353,8 @@ model:
 | GET | `/run/{run_id}/pending` | 刷新后恢复挂起卡片（必须带 `session_id` 校验归属） |
 | POST | `/run/{run_id}/confirm` | 带决策续跑；用条件更新保证只执行一次 |
 
-`POST /run/stream` 请求体：`{"session_id", "user_input", "attachments": [], "permission": null, "web_search": false}`。
+`POST /run/stream` 请求体：`{"session_id", "user_input", "attachments": [], "permission": null, "web_search": null}`。
+`web_search` 省略或传 `null` = 按部署默认（`DEVOPS_AGENT_ENABLE_SEARCH`）；显式 `true`/`false` = 这一轮就按它来。默认值不能写 `False` —— 那样「没带字段」会被当成「关」，环境变量永远不生效。
 
 SSE 帧约定：
 

@@ -14,13 +14,17 @@ import type {
   Health,
   HealthMetrics,
   InputStage,
+  ModelConfig,
+  ModelValues,
   PendingState,
   PermissionCatalog,
   Run,
   RunHealth,
   RunList,
   SecretMeta,
+  SecretValue,
   Span,
+  SessionModelConfig,
   Summary,
   TimePoint,
 } from '../types';
@@ -74,6 +78,11 @@ export function fetchSecrets(): Promise<SecretMeta[]> {
 export async function deleteSecret(name: string): Promise<void> {
   const resp = await fetch(`/api/secrets/${encodeURIComponent(name)}`, { method: 'DELETE' });
   if (!resp.ok) throw new Error(`删除失败 ${resp.status}`);
+}
+
+/** 受控读回一条凭据明文；每次调用服务端都会记一次使用。 */
+export function fetchSecretValue(name: string): Promise<SecretValue> {
+  return getJson<SecretValue>(`/api/secrets/${encodeURIComponent(name)}/value`);
 }
 
 export function fetchRun(id: number): Promise<Run> {
@@ -269,4 +278,77 @@ export async function switchSessionPermission(
 /** 运行时模式：Echo 兜底时前端要把它显式说出来，否则回显会被当成「答非所问」 */
 export function fetchHealth(): Promise<Health> {
   return getJson<Health>('/health');
+}
+
+// --- 模型参数 -----------------------------------------------------------
+
+/** 带状态码与结构化 detail 的错误：400 要能定位到具体字段，409 要能带回当前版本。 */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+
+  constructor(message: string, status: number, detail: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+/** 统一写请求：非 2xx 时把 FastAPI 的 detail 原样抛出来，交给调用方解读。 */
+async function sendJson<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const resp = await fetch(path, {
+    method,
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const payload = (await resp.json().catch(() => null)) as { detail?: unknown } | null;
+    throw new ApiError(`请求失败 ${resp.status}`, resp.status, payload?.detail ?? null);
+  }
+  return (await resp.json()) as T;
+}
+
+/** 当前生效参数 + 逐项来源。带 session 时把该会话的覆盖一起算进来。 */
+export function fetchModelConfig(session?: string, domain?: string): Promise<ModelConfig> {
+  const params = new URLSearchParams();
+  if (session) params.set('session', session);
+  if (domain) params.set('domain', domain);
+  const suffix = params.toString();
+  return getJson<ModelConfig>(`/api/model-config${suffix ? `?${suffix}` : ''}`);
+}
+
+/** 改部署默认（影响所有会话）。patch 里给 null 表示「重置该项为下层默认」。 */
+export function patchModelConfig(
+  patch: Partial<ModelValues>,
+  version?: number,
+): Promise<ModelConfig> {
+  return sendJson<ModelConfig>('/api/model-config', 'PATCH', { patch, version });
+}
+
+/** 清除部署默认里的覆盖项，回落到 yaml / env / 框架默认。 */
+export function resetModelConfig(
+  body: { keys?: string[]; all?: boolean },
+): Promise<ModelConfig> {
+  return sendJson<ModelConfig>('/api/model-config/reset', 'POST', body);
+}
+
+/** 只改这个会话（合并语义）。运行中也能改：服务端原地热替换。 */
+export function patchSessionModelConfig(
+  sessionId: string,
+  overrides: Partial<ModelValues>,
+): Promise<SessionModelConfig> {
+  return sendJson<SessionModelConfig>(
+    `/api/session/${encodeURIComponent(sessionId)}/model-config`,
+    'PATCH',
+    { overrides, session_id: sessionId },
+  );
+}
+
+/** 清空该会话的全部覆盖。 */
+export function clearSessionModelConfig(sessionId: string): Promise<SessionModelConfig> {
+  return sendJson<SessionModelConfig>(
+    `/api/session/${encodeURIComponent(sessionId)}/model-config`,
+    'DELETE',
+  );
 }

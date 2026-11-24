@@ -262,6 +262,27 @@ def _count_by(items: Sequence[CaseRun], predicate: Callable[[CaseRun], bool]) ->
     return sum(1 for run in items if predicate(run))
 
 
+def _cache_stats(items: Sequence[CaseRun]) -> dict[str, float | int | None]:
+    """前缀缓存的命中情况。
+
+    命中率 = 命中量 / (命中量 + 未命中量)。未命中量用「总输入 − 命中」近似：
+    事件里没有单独的 miss 字段，但 `cache_input_tokens` 是 input 的子集。
+
+    这些数字此前完全不存在，于是「把档位说明从系统提示挪到消息末尾」
+    （前缀命中 21% → 96%）这个改动在报告里没有任何位置可以观察。
+    """
+    cached = sum(run.trace.cache_input_tokens for run in items)
+    created = sum(run.trace.cache_creation_tokens for run in items)
+    total = sum(run.tokens for run in items)
+    if total <= 0:
+        return {"cache_input": cached, "cache_creation": created, "cache_hit_rate": None}
+    return {
+        "cache_input": cached,
+        "cache_creation": created,
+        "cache_hit_rate": round(cached / total, 4),
+    }
+
+
 def _summary_payload(
     items: Sequence[CaseRun],
     *,
@@ -289,6 +310,7 @@ def _summary_payload(
         "trajectory_score": trajectory,
         "p95_ms": _p95([run.latency_ms for run in items]),
         "tokens_total": sum(run.tokens for run in items),
+        **_cache_stats(items),
         "tags": _tag_counts(items),
         "subjects": _subject_counts(items),
         "min_cases_for_gate": min_cases_for_gate,
@@ -423,6 +445,9 @@ _FACTOR_FIELDS: tuple[str, ...] = (
     "suite_sha",
     "grader_version",
     "prompt_sha",
+    # 模型参数指纹（temperature / max_tokens / 窗口 / 迭代上限…）。
+    # 参数可配之后，「同一提示词分数变了」既可能是提示词也可能是参数，必须能分开。
+    "params_sha",
     "model",
     "profile",
     "judge_model",
@@ -484,6 +509,9 @@ def _classify(changed: list[str], missing: list[str]) -> tuple[str, list[str]]:
         return "clean", ["所有因子一致，可作为复测样本估计噪声"]
     if set(changed) <= {"prompt_sha"}:
         return "clean", ["只有 prompt_sha 变化，delta 可归因到提示词"]
+    if set(changed) <= {"params_sha"}:
+        # 参数变了仍可比（同一题库、同一提示词），但结论只能落到参数上
+        return "clean", ["只有 params_sha 变化，delta 可归因到模型参数"]
     if set(changed) <= _INFORMATIONAL_FACTORS:
         # 只有平台/字节差异：提示词没改，但前缀缓存不可复用。
         # 这不该拦住对比（不是提示词变更），也不该说成「可归因到提示词」。
@@ -735,9 +763,18 @@ def render_markdown(summary: dict[str, Any]) -> str:
     """把聚合报告（或对比报告）渲染成可提交到 PR 的 Markdown。"""
     lines = _render_header(summary)
     lines.extend(_render_sections(summary))
+    rate = summary.get("cache_hit_rate")
+    cache_text = (
+        f"；前缀缓存命中 {rate * 100:.1f}%"
+        f"（命中 {_fmt(summary.get('cache_input'))}"
+        f" / 写入 {_fmt(summary.get('cache_creation'))}）"
+        if isinstance(rate, (int, float))
+        else "；前缀缓存：无数据"
+    )
     lines.append(
         f"- 轨迹分：{_fmt(summary.get('trajectory_score'))}；"
         f"p95：{_fmt(summary.get('p95_ms'))} ms；"
         f"tokens：{_fmt(summary.get('tokens_total'))}"
+        f"{cache_text}"
     )
     return "\n".join(lines).rstrip() + "\n"

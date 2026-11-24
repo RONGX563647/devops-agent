@@ -118,9 +118,11 @@ def test_profile_note_sha_unknown_profile_is_stable() -> None:
 
 def test_prompt_factors_has_three_keys() -> None:
     factors = prompt_factors("E:/code/devops-agent")
-    assert set(factors) == {"prompt_sha", "prompt_bytes_sha", "shell_platform"}
+    # 四项：前三个描述提示词，params_sha 描述模型参数（参数可配后必须能归因）
+    assert set(factors) == {"prompt_sha", "prompt_bytes_sha", "shell_platform", "params_sha"}
     assert factors["prompt_sha"] == prompt_fingerprint()
     assert factors["prompt_bytes_sha"] == prompt_bytes_sha("E:/code/devops-agent")
+    assert len(factors["params_sha"]) == 64
 
 
 # -------------------------------------------------------- 可比性归因

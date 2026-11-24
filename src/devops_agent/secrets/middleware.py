@@ -7,8 +7,9 @@
 
 设计细节：
 - 递归替换入参里的字符串（命令、URL、请求体都可能是嵌套结构），非字符串原样透传；
-- 只抹回**本次真正注入过**的密钥，不做全库扫描：否则工具输出里偶然出现的
-  相似串会被误伤，且库越大越慢；
+- 回抹只处理**本次真正注入过**的密钥（避免误伤偶然相似串、库越大越慢）；
+- 但工具**自己从磁盘读到**的明文（`cat config.yaml`、`printenv`）不在注入集合里，
+  由 `capture_output` 兜底：识别后**登记进保险箱**并换成占位符，人可在密钥页查看；
 - 解不出的占位符原样保留，让工具自己报「没有这个变量」，而不是让中间件炸掉。
 """
 
@@ -21,10 +22,13 @@ from typing import Any
 from agentscope.message import TextBlock
 from agentscope.tool import ToolChunk, ToolMiddlewareBase
 
+from devops_agent.secrets.capture import Captured, capture_output
 from devops_agent.secrets.vault import inject, mask, resolver
 
 # 「名字 → 明文」的解析函数；解不出返回 None
 Resolver = Callable[[str], str | None]
+# 输出捕获的登记函数：接收一条捕获项，返回最终入库名；保箱不可用时可降级
+Capture = Callable[[Captured], str]
 
 # 只在 debug 级别记一行「哪个工具用掉了几个占位符」，便于排查注入没生效的场景
 logger = logging.getLogger(__name__)
@@ -53,22 +57,69 @@ def _inject_value(value: Any, resolve: Resolver) -> Any:
     return value
 
 
-def _mask_chunk(chunk: ToolChunk, resolved: Mapping[str, str]) -> ToolChunk:
-    """把一个返回块里的真值抹回占位符；非文本块（图片等）原样透传。"""
+def _make_capture(capture: Capture | None) -> Capture:
+    """默认登记函数：复用已入库同值的名字，否则写入 source=output。
+
+    保箱不可用时退化为「用确定性名字、不入库」——明文仍被换成占位符，
+    模型上下文先保住，人查看时再看不到的代价由降级提示承担，不让工具调用失败。
+    """
+    if capture is not None:
+        return capture
+
+    def _register(item: Captured) -> str:
+        try:
+            from devops_agent.secrets.vault import get_vault
+
+            vault = get_vault()
+            existing = vault.name_for_value(item.value)
+            if existing:
+                return existing
+            vault.put(item.name, item.value, source="output")
+        except Exception:  # 保箱损坏：明文仍换占位符，只是不入库
+            logger.warning("输出捕获登记失败：凭据 %s 未入库", item.name)
+        return item.name
+
+    return _register
+
+
+def _mask_chunk(chunk: ToolChunk, resolved: Mapping[str, str], capture: Capture) -> ToolChunk:
+    """回抹本次注入的真值 + 捕获输出里新出现的明文；非文本块递归处理 text 字段。
+
+    非文本块（结构化/附件）也常带 `text` 字段，不能默默透传——递归处理
+    一层已知字段，其余原样保留，避免破坏框架自有块类型。
+    """
     content: list[Any] = []
+    changed = False
     for block in chunk.content:
         if isinstance(block, TextBlock):
-            content.append(block.model_copy(update={"text": mask(block.text, dict(resolved))}))
+            text = mask(block.text, dict(resolved))
+            text, captured = capture_output(text, register=capture)
+            if text != block.text:
+                changed = True
+            content.append(block.model_copy(update={"text": text}))
+            if captured:
+                logger.debug("输出捕获 %d 条凭据：%s", len(captured), [c.name for c in captured])
         else:
+            # 结构化块里的 text 字段递归处理；无该字段则原样透传
+            raw = getattr(block, "text", None)
+            if isinstance(raw, str):
+                text = mask(raw, dict(resolved))
+                text, _ = capture_output(text, register=capture)
+                if text != raw:
+                    changed = True
+                    block = block.model_copy(update={"text": text})
             content.append(block)
+    if not changed:
+        return chunk
     return chunk.model_copy(update={"content": content})
 
 
 class SecretInjectionMiddleware(ToolMiddlewareBase):
     """工具调用边界上的密钥注入 / 回抹。"""
 
-    def __init__(self, resolve: Resolver | None = None) -> None:
+    def __init__(self, resolve: Resolver | None = None, capture: Capture | None = None) -> None:
         self._resolve = resolve if resolve is not None else resolver()
+        self._capture = _make_capture(capture)
 
     async def on_tool_call(  # type: ignore[override]
         self,
@@ -91,9 +142,12 @@ class SecretInjectionMiddleware(ToolMiddlewareBase):
         if resolved:
             logger.debug("向工具 %s 注入 %d 个密钥", getattr(tool, "name", "?"), len(resolved))
         async for chunk in next_handler(**replaced):
-            yield _mask_chunk(chunk, resolved) if resolved else chunk
+            # 无条件过一遍：即便本次没注入任何密钥，工具也可能自己读到明文。
+            yield _mask_chunk(chunk, resolved, self._capture)
 
 
-def build_secret_middleware(resolve: Resolver | None = None) -> SecretInjectionMiddleware:
-    """装配入口：默认用进程级保险箱，测试可注入自己的解析函数。"""
-    return SecretInjectionMiddleware(resolve)
+def build_secret_middleware(
+    resolve: Resolver | None = None, capture: Capture | None = None
+) -> SecretInjectionMiddleware:
+    """装配入口：默认用进程级保险箱，测试可注入自己的解析/登记函数。"""
+    return SecretInjectionMiddleware(resolve, capture)

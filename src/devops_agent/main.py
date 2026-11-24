@@ -26,14 +26,15 @@ from devops_agent.input.api import router as attachments_router
 from devops_agent.input.attachments import Attachment, AttachmentStore
 from devops_agent.input.events import events as parse_events
 from devops_agent.input.pipeline import PreparedInput, prepare
+from devops_agent.model_api import router as model_config_router
 from devops_agent.observability import repository as repo
 from devops_agent.observability.api import router as observability_router
 from devops_agent.observability.eval_api import router as eval_router
 from devops_agent.observability.recorder import RunRecorder, utc_now
-from devops_agent.runtime.agent import build_agentscope_runtime, session_runtime_factory
+from devops_agent.runtime.agent import build_agentscope_runtime
 from devops_agent.runtime.confirm import ConfirmDecision, parse_decisions
 from devops_agent.runtime.runtime import AgentRuntime, EchoRuntime
-from devops_agent.runtime.sessions import SessionEntry, SessionRegistry
+from devops_agent.runtime.sessions import SessionEntry, SessionRegistry, registry_for
 from devops_agent.secrets.api import router as secrets_router
 from devops_agent.secrets.vault import get_vault
 from devops_agent.tools.api import router as tools_router
@@ -131,6 +132,8 @@ app.include_router(attachments_router)
 app.include_router(secrets_router)
 app.include_router(tools_router)
 app.include_router(context_router)
+# 模型参数三层可配（SPEC-0001）：部署默认 / 会话覆盖 / 只读凭据
+app.include_router(model_config_router)
 
 
 class RunRequest(BaseModel):
@@ -186,18 +189,25 @@ def _profile_or_403(name: str | None) -> PermissionProfile:
 
 
 def _registry(request: Request) -> SessionRegistry:
-    """取会话注册表；首次访问时按当前 app.state.runtime 建工厂。
+    """取会话注册表（实现见 runtime/sessions.registry_for，模型配置端点共用）。"""
+    return registry_for(request)
 
-    注册表与「它基于哪个 runtime 实例」一起记住：测试/部署替换
-    app.state.runtime 后必须重建，否则会一直用旧实例的工厂。
+
+def _recorder_for(entry: SessionEntry, *, profile_key: str, request_id: str = "") -> RunRecorder:
+    """建一次运行的记录器，并把本轮实际下发的参数快照一起带上。
+
+    参数不进 run 记录，一旦可配就不可归因：健康分与评测批次会把
+    「参数变化点前后」混在一起算。取不到（Echo）时留空。
     """
-    base = getattr(request.app.state, "runtime", None)
-    registry = getattr(request.app.state, "sessions", None)
-    if registry is None or getattr(request.app.state, "sessions_base", None) is not base:
-        registry = SessionRegistry(session_runtime_factory(base))
-        request.app.state.sessions = registry
-        request.app.state.sessions_base = base
-    return registry
+    params_of = getattr(entry.runtime, "model_params_record", None)
+    record = params_of() if callable(params_of) else None
+    return RunRecorder(
+        domain=os.environ.get("DEVOPS_AGENT_DOMAIN", "debug"),
+        model=os.environ.get("DEVOPS_AGENT_MODEL", ""),
+        request_id=request_id,
+        permission=profile_key,
+        model_params=record or {},
+    )
 
 
 # 心跳间隔：静默超过该秒数仍在流中时补一帧注释，避免前端 watchdog 误判假死。
@@ -474,14 +484,7 @@ async def run_stream(
         raise HTTPException(status_code=409, detail="session_busy")
     # domain/model 由部署环境注入，观测数据才能反映真实运行上下文；
     # 缺省保持 debug/空串，与 Echo 自检及既有测试兼容。
-    domain = os.environ.get("DEVOPS_AGENT_DOMAIN", "debug")
-    model = os.environ.get("DEVOPS_AGENT_MODEL", "")
-    recorder = RunRecorder(
-        domain=domain,
-        model=model,
-        request_id=x_request_id or "",
-        permission=profile.key,
-    )
+    recorder = _recorder_for(entry, profile_key=profile.key, request_id=x_request_id or "")
     await entry.lock.acquire()
 
     async def generate() -> AsyncIterator[str]:
@@ -520,6 +523,8 @@ async def run_stream(
             # 会话快照要包含这一轮结束后的完整状态，刷新后重建才不会丢历史
             registry.save(req.session_id)
             entry.lock.release()
+            # 这一轮跑着的时候改过部署默认的话，现在补上热替换（deferred → applied）
+            registry.flush_pending(req.session_id)
 
     # 三个响应头都是流式能被"真的是流"看到的前提：
     # - no-cache：避免中间层缓存整段响应
@@ -603,11 +608,7 @@ async def confirm_run(run_id: int, req: ConfirmRequest, request: Request) -> Str
         repo.init_db(conn)
         if not repo.unpark_run(conn, run_id, now=utc_now()):
             raise HTTPException(status_code=409, detail="already_resolved")
-    recorder = RunRecorder(
-        domain=os.environ.get("DEVOPS_AGENT_DOMAIN", "debug"),
-        model=os.environ.get("DEVOPS_AGENT_MODEL", ""),
-        permission=profile.key,
-    )
+    recorder = _recorder_for(entry, profile_key=profile.key)
     recorder.attach(run_id, req.session_id)
     await entry.lock.acquire()
 
@@ -623,5 +624,6 @@ async def confirm_run(run_id: int, req: ConfirmRequest, request: Request) -> Str
         finally:
             registry.save(req.session_id)
             entry.lock.release()
+            registry.flush_pending(req.session_id)
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers=_SSE_HEADERS)

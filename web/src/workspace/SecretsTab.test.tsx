@@ -2,17 +2,19 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { deleteSecret, fetchSecrets } from '../api/client';
+import { deleteSecret, fetchSecretValue, fetchSecrets } from '../api/client';
 import type { SecretMeta } from '../types';
 import { SecretsTab } from './SecretsTab';
 
 vi.mock('../api/client', () => ({
   fetchSecrets: vi.fn(),
   deleteSecret: vi.fn(),
+  fetchSecretValue: vi.fn(),
 }));
 
 const fetchMock = vi.mocked(fetchSecrets);
 const deleteMock = vi.mocked(deleteSecret);
+const valueMock = vi.mocked(fetchSecretValue);
 
 function secret(over: Partial<SecretMeta> = {}): SecretMeta {
   return {
@@ -41,6 +43,7 @@ function renderTab() {
 beforeEach(() => {
   fetchMock.mockReset();
   deleteMock.mockReset();
+  valueMock.mockReset();
   deleteMock.mockResolvedValue(undefined);
 });
 
@@ -55,19 +58,41 @@ describe('SecretsTab', () => {
     expect(screen.queryByRole('table')).toBeNull();
   });
 
-  it('只展示元信息，不出现明文列', async () => {
+  it('默认只展示元信息，明文需显式点击查看', async () => {
     fetchMock.mockResolvedValue([secret({ uses: 3, last_used_at: '2026-11-23T10:30:00' })]);
     renderTab();
 
     expect(await screen.findByText('openai_key')).toBeTruthy();
     expect(screen.getByText('sk-…f3a9')).toBeTruthy();
     expect(screen.getByText('3')).toBeTruthy();
-    // 表头固定六列：名字 / 提示 / 来源 / 使用次数 / 最近使用 / 操作
     const heads = [...document.querySelectorAll('.secrets-table thead th')].map((th) =>
       th.textContent?.trim(),
     );
-    expect(heads).toEqual(['名字', '提示', '来源', '使用次数', '最近使用', '']);
-    expect(screen.queryByText(/明文值/)).toBeNull();
+    expect(heads).toEqual(['名字', '提示 / 明文', '来源', '使用次数', '最近使用', '']);
+    // 未点击时不请求明文，也不渲染
+    expect(valueMock).not.toHaveBeenCalled();
+  });
+
+  it('点查看读取明文，再点隐藏；读取经受控端点并留痕', async () => {
+    fetchMock.mockResolvedValue([secret()]);
+    valueMock.mockResolvedValue({ name: 'openai_key', value: 'sk-full-secret-value', found: true });
+    renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: '查看' }));
+    expect(await screen.findByText('sk-full-secret-value')).toBeTruthy();
+    expect(valueMock.mock.calls[0]?.[0]).toBe('openai_key');
+
+    fireEvent.click(screen.getByRole('button', { name: '隐藏' }));
+    expect(screen.queryByText('sk-full-secret-value')).toBeNull();
+  });
+
+  it('明文读回未命中时给出失效提示', async () => {
+    fetchMock.mockResolvedValue([secret()]);
+    valueMock.mockResolvedValue({ name: 'openai_key', value: '', found: false });
+    renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: '查看' }));
+    expect(await screen.findByText('（已失效或解不开）')).toBeTruthy();
   });
 
   it('从未使用过的密钥在「最近使用」显示占位符', async () => {

@@ -53,12 +53,23 @@ def _print_errors(messages: Sequence[str]) -> None:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    """校验数据集；有错误退出 1，warning 不阻断。"""
+    """校验数据集；有错误退出 1，warning 默认不阻断。
+
+    `--strict` 把 warning 也当阻断：题库扩到门禁量之后，`n < min_cases_for_gate`
+    这类「只是提示」的问题不该再被放行 —— 否则一个 39 条的题库会安静地永远拿
+    `insufficient`，评测看起来一直在跑，但从不给结论。
+    """
     suite = load_suite(args.suite)
     messages = validate_suite(suite)
     _print_errors(messages)
-    errors, _warnings = split_warnings(messages)
+    errors, warnings = split_warnings(messages)
     if errors:
+        return 1
+    if args.strict and warnings:
+        print(
+            f"错误: --strict 下 {len(warnings)} 条 warning 视为阻断",
+            file=sys.stderr,
+        )
         return 1
     print(f"ok {len(suite.cases)} cases")
     return 0
@@ -448,6 +459,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = sub.add_parser("validate", help="校验数据集")
     validate.add_argument("--suite", required=True)
+    # 题库达到门禁量之后，CI 应带 --strict：让「样本不足」这类 warning 也成为阻断，
+    # 否则题库会安静地停在 insufficient。
+    validate.add_argument(
+        "--strict",
+        action="store_true",
+        help="warning 也视为阻断（题库达门禁量后 CI 应开启）",
+    )
     validate.set_defaults(func=cmd_validate)
 
     lint = sub.add_parser("prompt-lint", help="静态检查提示词/档位/题库是否自洽")

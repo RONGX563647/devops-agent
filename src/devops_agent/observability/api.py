@@ -52,6 +52,8 @@ class RunOut(BaseModel):
     # 双口径耗时：work_ms 是 span 并集（真正在干活），wall_ms 是起止差（含用户空闲）
     work_ms: int = 0
     wall_ms: int = 0
+    # 本轮实际下发的模型参数（JSON，只含非默认值）；空串 = 老记录，显示「未记录」
+    model_params: str = ""
 
 
 class SpanOut(BaseModel):
@@ -442,6 +444,7 @@ def _run_out(run: RunRecord) -> RunOut:
         permission=run.permission,
         work_ms=run.work_ms,
         wall_ms=run.wall_ms,
+        model_params=run.model_params,
     )
 
 

@@ -17,7 +17,7 @@ import { buildLanes, turnsFromMessages } from './traceData/build';
 import { traceStats } from './traceData/stats';
 import { TraceInspector } from './TraceInspector';
 import { TraceLanes } from './TraceLanes';
-import { TraceList, type TraceMode } from './TraceList';
+import { TraceList, type TraceMode } from './traceViews/TraceList';
 import { formatClock, formatDateTime, formatDuration } from './time';
 
 interface Props {

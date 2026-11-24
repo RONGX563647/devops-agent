@@ -5,7 +5,7 @@ import { SessionSidebar, useSessionList } from './SessionSidebar';
 import { Dashboard } from '../pages/Dashboard';
 import { Quality } from '../pages/Quality';
 import { Cost } from '../pages/Cost';
-import { ChatTab } from './ChatTab';
+import { ChatTab } from './chat/ChatTab';
 import { SecretsTab } from './SecretsTab';
 import { TraceTab } from './TraceTab';
 import { send } from './store/actions';

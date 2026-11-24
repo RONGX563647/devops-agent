@@ -357,6 +357,24 @@ def test_search_note_only_appended_when_enabled() -> None:
     assert "已开启联网检索" in on[-1]
 
 
+def test_search_note_does_not_assert_results_arrived() -> None:
+    """说明只能写「若存在」，不能断言「已附带」。
+
+    应用侧没有证据：框架不透出 `search_info`，事件流也没有检索 span。
+    写死「已附带搜索结果」时，模型会去核对一段无法辨认的内容，进而自己抓网页核实——
+    一次真实会话因此跑了 21 步工具调用，最后仍回答「我没收到检索结果」。
+    """
+    from devops_agent.runtime.profile_note import search_note
+
+    note = search_note(True)
+    assert "若检索结果存在" in note
+    assert "没看到就直说" in note
+    assert "已附带搜索结果" not in note
+    # 并且要明确劝阻「自己抓一遍」：本环境抓取常因网络策略失败
+    assert "不需要你再用工具去抓网页" in note
+    assert "失败两次就停止" in note
+
+
 def test_search_note_hot_swaps_with_toggle() -> None:
     """运行中开关变化：下一轮请求末尾立即跟着变，不必重建中间件（保住前缀缓存）。"""
     from agentscope.message import UserMsg

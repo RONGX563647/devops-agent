@@ -128,9 +128,21 @@ def _score_with_judge(
     trace: TraceResult,
     score: CaseScore,
     judge: Judge | None,
+    scope: str = "all",
 ) -> tuple[CaseScore, dict[str, float] | None]:
-    """规则判卷通过后才调用裁判；裁判故障降级为 None，不否定规则结论。"""
-    if judge is None or case.judge is None or not score.passed:
+    """按 scope 调用裁判；裁判故障降级为 None，不否定规则结论。
+
+    `scope` 决定裁判跑在哪些用例上：
+    - `all`（默认）：所有配了裁判的用例都打分；
+    - `passed`：只在规则判卷通过的用例上打分。
+
+    `passed` 是有偏的：退化会让难用例先被规则判死、退出裁判分母，
+    于是 `judge_correctness` 在质量下降时反而上升（实测 pass_rate −13pp、
+    judge +1.6）。默认取 `all` 保证均值覆盖全体，`passed` 仅作省额度的可选项。
+    """
+    if judge is None or case.judge is None:
+        return score, None
+    if scope == "passed" and not score.passed:
         return score, None
     try:
         judged = judge.score(case, trace)
@@ -160,6 +172,7 @@ async def execute_case(
     make_runtime: RuntimeFactory,
     fixture_root: str | Path | None = None,
     judge: Judge | None = None,
+    judge_scope: str = "all",
 ) -> tuple[CaseScore, TraceResult, dict[str, float] | None]:
     """执行一条用例并返回 (规则分数, 轨迹, judge 分数)。"""
     root = Path(fixture_root) if fixture_root is not None else DEFAULT_FIXTURE_ROOT
@@ -197,7 +210,7 @@ async def execute_case(
             error=state["error"] if isinstance(state["error"], str) else None,
         )
         score = grade(case, trace)
-        score, judge_scores = _score_with_judge(case, trace, score, judge)
+        score, judge_scores = _score_with_judge(case, trace, score, judge, judge_scope)
         return score, trace, judge_scores
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -209,13 +222,14 @@ async def run_suite(
     fixture_root: str | Path | None = None,
     judge: Judge | None = None,
     limit: int | None = None,
+    judge_scope: str = "all",
 ) -> list[CaseRun]:
     """顺序执行用例集（限制并发，避免评测把真实模型配额打满）。"""
     cases = suite.cases[:limit] if limit is not None else suite.cases
     runs: list[CaseRun] = []
     for case in cases:
         score, trace, judge_scores = await execute_case(
-            case, make_runtime, fixture_root=fixture_root, judge=judge
+            case, make_runtime, fixture_root=fixture_root, judge=judge, judge_scope=judge_scope
         )
         runs.append(
             CaseRun(

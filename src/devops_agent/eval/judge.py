@@ -166,6 +166,19 @@ def _parse_scores(content: str, required: set[str]) -> dict[str, float]:
     return scores
 
 
+# 裁判模型的解析顺序：显式指定 > 专用变量 > 主模型。
+# 放在这里作为唯一事实源：`cli._factors` 也要记录同一个值，两处各写一份
+# 曾导致报告里的 `judge_model` 恒等于主模型（读的是不存在的 `JUDGE_MODEL`），
+# 而 `judge_model` 是可比性检查的阻断因子 —— 换了裁判模型仍判「可比」。
+JUDGE_MODEL_ENV = "DEVOPS_AGENT_JUDGE_MODEL"
+MODEL_ENV = "DEVOPS_AGENT_MODEL"
+
+
+def resolve_judge_model(model: str | None = None) -> str:
+    """裁判实际会用的模型名；缺省时依次回落到专用变量与主模型。"""
+    return model or os.environ.get(JUDGE_MODEL_ENV) or os.environ.get(MODEL_ENV, "")
+
+
 def _rubric_for(case: EvalCase) -> tuple[str, set[str]]:
     """取用例指定的 rubric 与维度；未指定时要求全部六维。"""
     if case.judge is None:
@@ -202,11 +215,7 @@ class OpenAIJudge:
     ) -> None:
         self._base_url = (base_url or os.environ.get("DEVOPS_AGENT_BASE_URL", "")).rstrip("/")
         self._api_key = api_key or os.environ.get("DEVOPS_AGENT_API_KEY", "")
-        self._model = (
-            model
-            or os.environ.get("DEVOPS_AGENT_JUDGE_MODEL")
-            or os.environ.get("DEVOPS_AGENT_MODEL", "")
-        )
+        self._model = resolve_judge_model(model)
         self._timeout = timeout
         if not self._base_url:
             raise JudgeError("缺少 DEVOPS_AGENT_BASE_URL")

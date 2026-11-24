@@ -426,9 +426,13 @@ _FACTOR_FIELDS: tuple[str, ...] = (
     "model",
     "profile",
     "judge_model",
+    # 裁判覆盖范围变了，judge 均值就换了分母，两批的 judge 不可直接比
+    "judge_scope",
 )
 # 这些因子变了就不是同一个实验，delta 不能归因。
-_BLOCKING_FACTORS: frozenset[str] = frozenset({"suite_sha", "grader_version", "judge_model"})
+_BLOCKING_FACTORS: frozenset[str] = frozenset(
+    {"suite_sha", "grader_version", "judge_model", "judge_scope"}
+)
 
 
 def _factor(summary: dict[str, Any], key: str) -> str:

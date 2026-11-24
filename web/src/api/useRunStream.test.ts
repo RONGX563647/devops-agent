@@ -8,9 +8,9 @@ import {
   parseSummary,
   streamConfirm,
   streamRun,
-} from './useRunStream';
-import { INITIAL_STATE } from './useRunStream';
-import type { StreamState } from './useRunStream';
+} from './stream';
+import { INITIAL_STATE } from './stream';
+import type { StreamState } from './stream';
 
 const INITIAL: StreamState = {
   ...INITIAL_STATE,

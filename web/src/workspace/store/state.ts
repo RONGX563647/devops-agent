@@ -4,7 +4,7 @@
  */
 
 import { useCallback, useSyncExternalStore } from 'react';
-import { INITIAL_STATE, type StreamState } from '../../api/useRunStream';
+import { INITIAL_STATE, type StreamState } from '../../api/stream';
 import type { AwaitingState, ChatMessage, CompressionRecord, PermissionKey } from '../../types';
 import { loadMessages, loadPermission, saveMessages } from '../history';
 

@@ -1,6 +1,6 @@
 /** 输入框侧的上下文占用圆环 + 压缩过程时间线。
  *
- * 数据来源只有三类帧（见 api/useRunStream.ts）：
+ * 数据来源只有三类帧（见 api/stream）：
  *   CONTEXT_BUDGET            → 阈值与模型窗口，流开始时一次
  *   CONTEXT_COMPRESSION_START → 压缩开始，带检查前 token
  *   CONTEXT_COMPRESSION_END   → 压缩结束，带前后 token / 是否真压了 / 摘要长度

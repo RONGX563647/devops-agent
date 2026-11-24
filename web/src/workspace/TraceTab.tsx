@@ -12,8 +12,9 @@ import { fetchContext, fetchRuns } from '../api/client';
 import { StatusBadge } from '../components/StatusBadge';
 import type { Run, TraceStep, TraceTurn } from '../types';
 import { RunTrace } from './RunTrace';
-import { useSession } from './store';
-import { buildLanes, traceStats, turnsFromMessages } from './trace';
+import { useSession } from './store/state';
+import { buildLanes, turnsFromMessages } from './traceData/build';
+import { traceStats } from './traceData/stats';
 import { TraceInspector } from './TraceInspector';
 import { TraceLanes } from './TraceLanes';
 import { TraceList, type TraceMode } from './TraceList';
@@ -497,4 +498,3 @@ export function TraceTab({ session, onAsk }: Props) {
 }
 
 export { formatClock };
-

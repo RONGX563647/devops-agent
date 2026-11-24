@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { fetchInputStages, fetchRun, fetchRunHealth, fetchSpans } from '../api/client';
 import { StatusBadge } from '../components/StatusBadge';
 import type { Span, TraceStep } from '../types';
-import { summarizeArgs, summarizeResult } from './trace';
+import { summarizeArgs, summarizeResult } from './traceData/format';
 import { TraceInspector } from './TraceInspector';
 import { HealthPanel } from './HealthPanel';
 import { formatDuration } from './time';

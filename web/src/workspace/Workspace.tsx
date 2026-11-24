@@ -8,7 +8,8 @@ import { Cost } from '../pages/Cost';
 import { ChatTab } from './ChatTab';
 import { SecretsTab } from './SecretsTab';
 import { TraceTab } from './TraceTab';
-import { ensureHistory, send } from './store';
+import { send } from './store/actions';
+import { ensureHistory } from './store/history';
 import { newId } from './id';
 
 const TABS = [

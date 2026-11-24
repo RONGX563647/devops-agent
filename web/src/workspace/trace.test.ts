@@ -1,14 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Attachment, ChatMessage, ParseStage } from '../types';
-import {
-  buildLanes,
-  durationRows,
-  percentile,
-  topShare,
-  traceStats,
-  turnsFromMessages,
-  unionLength,
-} from './trace';
+import { buildLanes, turnsFromMessages } from './traceData/build';
+import { unionLength } from './traceData/format';
+import { durationRows, percentile, topShare, traceStats } from './traceData/stats';
 
 function user(id: string, text: string, at: string): ChatMessage {
   return { id, role: 'user', text, at, steps: [] };

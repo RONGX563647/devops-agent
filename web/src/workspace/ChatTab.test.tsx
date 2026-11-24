@@ -70,8 +70,11 @@ const snapshot = {
   compressions: [] as CompressionRecord[],
 };
 
-vi.mock('./store', () => ({
+vi.mock('./store/state', () => ({
   useSession: () => snapshot,
+}));
+
+vi.mock('./store/actions', () => ({
   send: (
     session: string,
     text: string,

@@ -32,6 +32,11 @@ jobs:
         run: python scripts/check_gates.py
       - name: eval suite validate
         run: python -m devops_agent.eval validate --suite eval/suites/devops-core.v2.jsonl
+      # 清单必须与题库同步：`sha256` 是 `compare` 判断「同一套题」的依据，
+      # 改了 JSONL 却忘了跑 `eval manifest` 会让新旧批次的 delta 无声失效。
+      # 比对 JSON 语义而非字节，避免 CRLF/缩进差异造成假红。
+      - name: eval manifest in sync
+        run: python scripts/check_manifest_sync.py
       # 静态契约检查：工具名闭包 / 占位符机器无关 / 文案承诺=能力矩阵 / 题库自洽 /
       # 断言有效性 / 判卷口径版本 / 断言撞车（S7）/ 档位可达性（S8）。
       # 不跑模型，纯静态，几毫秒；S8 会真跑一次权限引擎。

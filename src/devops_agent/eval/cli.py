@@ -31,7 +31,7 @@ from devops_agent.eval.dataset import (
     suite_sha256,
     validate_suite,
 )
-from devops_agent.eval.judge import JudgeError, OpenAIJudge
+from devops_agent.eval.judge import JudgeError, OpenAIJudge, resolve_judge_model
 from devops_agent.eval.lint import Finding, run_lint, split_findings
 from devops_agent.eval.runner import DEFAULT_FIXTURE_ROOT, CaseRun, case_run_payload, run_suite
 from devops_agent.observability import repository as repo
@@ -239,8 +239,14 @@ def _init_judge(enabled: bool) -> tuple[OpenAIJudge | None, str]:
         return None, f"错误: 裁判初始化失败: {exc}"
 
 
-def _factors(suite: Suite, profile: str, judge_enabled: bool) -> dict[str, Any]:
-    """写进报告的实验因子。没有它，compare 无法判断两批是不是同一个实验。"""
+def _factors(
+    suite: Suite, profile: str, judge_enabled: bool, judge_scope: str = "all"
+) -> dict[str, Any]:
+    """写进报告的实验因子。没有它，compare 无法判断两批是不是同一个实验。
+
+    `judge_model` 必须与裁判实际使用的模型一致：它是可比性检查的阻断因子，
+    记录错了会让「换了裁判模型」被判成同一实验（delta 被误当成结论）。
+    """
     model = os.environ.get("DEVOPS_AGENT_MODEL", "")
     return {
         "suite_sha": suite.manifest.sha256,
@@ -248,7 +254,9 @@ def _factors(suite: Suite, profile: str, judge_enabled: bool) -> dict[str, Any]:
         "prompt_sha": prompt_fingerprint(),
         "model": model,
         "profile": profile,
-        "judge_model": (os.environ.get("JUDGE_MODEL") or model) if judge_enabled else "",
+        "judge_model": resolve_judge_model() if judge_enabled else "",
+        # 裁判覆盖范围会直接改变 judge 均值，两批不同就不可比
+        "judge_scope": judge_scope if judge_enabled else "",
     }
 
 
@@ -291,6 +299,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 fixture_root=_fixture_root_for(args.suite),
                 judge=judge,
                 limit=args.limit,
+                judge_scope=args.judge_scope,
             )
         )
     except Exception as exc:  # 运行时装配失败（凭据/档位/工作区）需要可读错误
@@ -302,7 +311,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         suite.manifest.min_cases_for_gate,
         thresholds=_thresholds(suite),
     )
-    summary.update(_factors(suite, profile, args.judge))
+    summary.update(_factors(suite, profile, args.judge, args.judge_scope))
     if args.baseline:
         baseline_error = _apply_baseline(summary, args.baseline)
         if baseline_error:
@@ -376,6 +385,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--suite", required=True)
     run.add_argument("--out", required=True)
     run.add_argument("--judge", action="store_true")
+    # 默认 all：只在规则通过的用例上打分会让难用例退出分母，
+    # 退化时 judge 均值反而上升。passed 仅用于省额度。
+    run.add_argument(
+        "--judge-scope",
+        choices=("all", "passed"),
+        default="all",
+        help="裁判覆盖范围：all=所有配了裁判的用例（默认，无偏）；passed=仅规则通过的用例（省额度但有偏）",
+    )
     run.add_argument("--profile", default=None)
     run.add_argument("--limit", type=int, default=None)
     run.add_argument("--baseline", default=None)

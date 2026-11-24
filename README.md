@@ -38,7 +38,7 @@ runtime/assembly.py      runtime/compression.py    runtime/profile_note.py
 runtime/supervisor.py    secrets/middleware.py     tools/catalog.py
 ```
 
-这些模块构成隔离层；`main.py`、`runtime/runtime.py`（协议）、`observability/`、`input/`、`eval/`
+这些模块构成隔离层；`gateway/`、`runtime/runtime.py`（协议）、`observability/`、`input/`、`eval/`
 一律不 import 框架。`runtime/events.py` 刻意靠 duck typing 转译事件，因此可以用假事件测试。
 
 ---
@@ -69,7 +69,7 @@ devops-agent/
 ├── src/devops_agent/
 │   ├── config.py             # config/*.yaml 的唯一加载入口（@cache 强类型）
 │   ├── env.py                # 进程启动加载 .env（override=False）
-│   ├── main.py               # FastAPI 入口：会话/权限/SSE/挂起确认
+│   ├── gateway/              # FastAPI 入口：会话/权限/SSE/挂起确认
 │   ├── model_api.py          # 模型参数端点（部署默认 + 会话覆盖）
 │   ├── model_settings.py     # 参数五层解析与 derived 推算
 │   ├── runtime/
@@ -135,13 +135,13 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
 # 未配模型凭据时自动走 EchoRuntime，便于自检
-uvicorn devops_agent.main:app --port 8000
+uvicorn devops_agent.gateway.app:app --port 8000
 # GET  http://127.0.0.1:8000/health → {"status":"ok","runtime":{"kind":"echo",...},"tools":[...]}
 # POST http://127.0.0.1:8000/run/stream  {"session_id":"s1","user_input":"hello"}
 #   → SSE 事件流，Echo 模式回显 "[s1] hello"
 ```
 
-未安装包时可临时用 `PYTHONPATH=src uvicorn devops_agent.main:app`。
+未安装包时可临时用 `PYTHONPATH=src uvicorn devops_agent.gateway.app:app`。
 
 ### 接入真实模型（OpenAI 兼容接口）
 
@@ -340,7 +340,7 @@ model:
 
 ## HTTP 接口
 
-### 会话与运行（`main.py`）
+### 会话与运行（`gateway/`）
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
@@ -532,7 +532,7 @@ PYTHONPATH=src E:/code/devops-agent/.venv/Scripts/python.exe -m pytest --cov=dev
 
 共用装配入口 [build_agent(name, system_prompt, model, toolkit, middlewares, max_iters, max_retries, context_config, state)](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/assembly.py)。
 但**各域的 system_prompt 与真实业务工具函数尚未实现**：目前每次对话用的都是一个通用 Agent，
-`TeamPipeline` / `GoalPipeline` 只被单测调用，没有接到 `main.py` 的请求链路上。
+`TeamPipeline` / `GoalPipeline` 只被单测调用，没有接到 `gateway/app.py` 的请求链路上。
 
 ## Roadmap（尚未实现）
 

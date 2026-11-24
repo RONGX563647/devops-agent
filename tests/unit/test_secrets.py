@@ -15,7 +15,7 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 import devops_agent.secrets.vault as vault_mod
-from devops_agent.main import app
+from devops_agent.gateway.app import app
 from devops_agent.observability.repository import connect
 from devops_agent.secrets.vault import (
     SecretVault,

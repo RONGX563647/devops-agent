@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
-from devops_agent import main
+import devops_agent.gateway.sse as sse
 
 
 class _Recorder:
@@ -26,11 +26,11 @@ async def _slow_source() -> AsyncIterator[dict[str, Any]]:
 
 
 def test_frames_emits_periodic_heartbeat_during_silence(monkeypatch: Any) -> None:
-    monkeypatch.setattr(main, "SSE_HEARTBEAT_S", 0.02)
+    monkeypatch.setattr(sse, "SSE_HEARTBEAT_S", 0.02)
     recorder = _Recorder()
 
     async def run() -> list[str]:
-        return [frame async for frame in main._frames(_slow_source(), recorder)]  # type: ignore[arg-type]
+        return [frame async for frame in sse._frames(_slow_source(), recorder)]  # type: ignore[arg-type]
 
     frames = asyncio.run(run())
     pings = [f for f in frames if f == ": ping\n\n"]
@@ -42,14 +42,14 @@ def test_frames_emits_periodic_heartbeat_during_silence(monkeypatch: Any) -> Non
 
 def test_frames_propagates_source_error(monkeypatch: Any) -> None:
     """上游异常必须冒泡，由外层 generate 记 failed，不能被心跳逻辑吞掉。"""
-    monkeypatch.setattr(main, "SSE_HEARTBEAT_S", 0.02)
+    monkeypatch.setattr(sse, "SSE_HEARTBEAT_S", 0.02)
 
     async def broken_source() -> AsyncIterator[dict[str, Any]]:
         yield {"type": "OK"}
         raise RuntimeError("boom")
 
     async def run() -> list[str]:
-        return [frame async for frame in main._frames(broken_source(), _Recorder())]  # type: ignore[arg-type]
+        return [frame async for frame in sse._frames(broken_source(), _Recorder())]  # type: ignore[arg-type]
 
     import pytest
 

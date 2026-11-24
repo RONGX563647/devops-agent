@@ -36,6 +36,10 @@ class RunRecord:
     request_id: str = ""
     # 本轮的权限档位（readonly / workspace / execute / unrestricted / auto）
     permission: str = ""
+    # 两个耗时口径：work_ms = span 并集（真正在干活的时间），
+    # wall_ms = 起止差（含用户读消息/走开的空闲）。只留一个数会永远说不清差在哪。
+    work_ms: int = 0
+    wall_ms: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +63,11 @@ class SpanRecord:
     # 这一次调用的缓存命中/写入量：逐调用可见，才回答得了「哪一步开始全冷」
     cache_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    # run 内单调序号：泳道与列表按同一顺序排，才不会再出现「泳道有、列表无」。
+    # 老记录为 0，读取时退化为按 start_offset_ms 排序。
+    seq: int = 0
+    # 发起这次调用的模型 span id（工具 → 模型）：回答得了「哪个模型轮次调了它」。
+    parent_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

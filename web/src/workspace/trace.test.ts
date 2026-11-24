@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { Attachment, ChatMessage, ParseStage } from '../types';
-import { buildLanes, traceStats, turnsFromMessages } from './trace';
+import {
+  buildLanes,
+  durationRows,
+  percentile,
+  topShare,
+  traceStats,
+  turnsFromMessages,
+  unionLength,
+} from './trace';
 
 function user(id: string, text: string, at: string): ChatMessage {
   return { id, role: 'user', text, at, steps: [] };
@@ -254,5 +262,107 @@ describe('traceStats 缓存口径', () => {
     const stats = traceStats(turns, buildLanes(turns));
     expect(stats.cacheRate).toBeNull();
     expect(stats.firstCallRate).toBeNull();
+  });
+});
+
+describe('计时口径与三个视图的数据', () => {
+  /** 一轮：10s 模型 + 2s 工具 + 最终正文。 */
+  const timedTurn = () =>
+    turnsFromMessages([
+      user('u1', '为什么部署失败？', '2026-11-23T10:00:00.000Z'),
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '镜像拉取超时。',
+        at: '2026-11-23T10:00:01.000Z',
+        endedAt: '2026-11-23T10:00:13.000Z',
+        steps: [
+          {
+            id: 'model:1',
+            kind: 'model',
+            label: '模型调用 · qwen3.8',
+            detail: '',
+            state: 'success',
+            at: '2026-11-23T10:00:01.000Z',
+            endedAt: '2026-11-23T10:00:11.000Z',
+          },
+          {
+            id: 'tool:t1',
+            kind: 'tool',
+            label: '调用工具 · Bash',
+            detail: '',
+            state: 'success',
+            toolName: 'Bash',
+            at: '2026-11-23T10:00:11.000Z',
+            endedAt: '2026-11-23T10:00:13.000Z',
+          },
+        ],
+      },
+    ]);
+
+  it('模型调用进入步骤列表，计时来源分三档', () => {
+    const [turn] = timedTurn();
+    const model = turn.items.find((item) => item.id === 'model:1');
+    expect(model?.kind).toBe('model');
+    expect(model?.title).toBe('qwen3.8');
+    expect(model?.timing).toEqual({
+      start: new Date('2026-11-23T10:00:01.000Z').getTime(),
+      end: new Date('2026-11-23T10:00:11.000Z').getTime(),
+      durationMs: 10_000,
+      source: 'measured',
+    });
+    // 最终正文是合成行：读答案用，不参与耗时排名
+    expect(turn.items.find((item) => item.title === '模型输出')?.synthetic).toBe(true);
+  });
+
+  it('占比分母只算真实步骤，估算值与正文不占份额', () => {
+    const [turn] = timedTurn();
+    const model = turn.items.find((item) => item.id === 'model:1')!;
+    const tool = turn.items.find((item) => item.id === 'tool:t1')!;
+    expect(model.share).toBeCloseTo(10 / 12, 5);
+    expect(tool.share).toBeCloseTo(2 / 12, 5);
+    expect(Math.round(topShare(durationRows([turn], () => true), 1) * 100)).toBe(83);
+  });
+
+  it('实测是 span 并集，墙钟是起止差，两者不相等时差值就是用户空闲', () => {
+    const turns = turnsFromMessages([
+      user('u1', 'q1', '2026-11-23T10:00:00.000Z'),
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '',
+        at: '2026-11-23T10:00:01.000Z',
+        endedAt: '2026-11-23T10:00:03.000Z',
+        steps: [
+          {
+            id: 'model:1',
+            kind: 'model',
+            label: '模型调用 · qwen',
+            detail: '',
+            state: 'success',
+            at: '2026-11-23T10:00:01.000Z',
+            endedAt: '2026-11-23T10:00:03.000Z',
+          },
+        ],
+      },
+      // 用户隔了 1 分钟才发下一条：墙钟要涨，实测不该涨
+      user('u2', 'q2', '2026-11-23T10:01:03.000Z'),
+    ]);
+    const stats = traceStats(turns, buildLanes(turns));
+    expect(stats.measuredMs).toBe(2_000);
+    expect(stats.wallMs).toBe(63_000);
+    expect(stats.modelCalls).toBe(1);
+  });
+
+  it('unionLength 把嵌套/重叠区间合并成一段', () => {
+    expect(unionLength([])).toBe(0);
+    expect(unionLength([[0, 100], [50, 150]])).toBe(150);
+    expect(unionLength([[0, 100], [200, 260]])).toBe(160);
+  });
+
+  it('percentile 不足两个样本时返回 null，不假装有分位数', () => {
+    expect(percentile([5], 0.95)).toBeNull();
+    expect(percentile([1, 2, 3, 4], 0.5)).toBe(2);
+    expect(percentile([1, 2, 3, 4], 0.95)).toBe(4);
   });
 });

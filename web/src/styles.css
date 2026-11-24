@@ -1950,8 +1950,9 @@ a:hover {
 .trace-toolbar {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--sp-2) var(--sp-3);
 }
 .trace-modes {
   display: inline-flex;
@@ -1978,6 +1979,34 @@ a:hover {
   width: 240px;
   margin: 0 0 0 auto;
   height: 30px;
+}
+
+/* ---- 轮次操作：全部折叠/展开、仅看异常、显示轮数 ---- */
+.trace-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.trace-actions button,
+.trace-actions select {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+}
+.trace-actions button:hover,
+.trace-actions select:hover {
+  border-color: var(--accent-ring);
+  color: var(--ink);
+}
+.trace-actions button.active {
+  border-color: var(--accent-ring);
+  background: var(--accent-faint);
+  color: var(--accent-ink);
 }
 
 /* ---- 泳道 ---- */
@@ -2214,7 +2243,7 @@ a:hover {
 .trace-step {
   display: grid;
   width: 100%;
-  grid-template-columns: 20px 32px minmax(0, 1fr) auto 52px 8px 12px;
+  grid-template-columns: 20px 32px minmax(0, 1fr) auto 96px 52px 8px 12px;
   gap: 8px;
   align-items: center;
   padding: 8px 12px;
@@ -2532,6 +2561,97 @@ a:hover {
 }
 .trace-calls {
   padding: 2px 0;
+}
+/* 占比条：宽度就是占比，等宽布局让「谁吃时间」扫一眼就出来 */
+.trace-share {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.trace-share-track {
+  flex: 1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--surface-muted);
+}
+.trace-share-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--lane-model);
+}
+.trace-foot {
+  margin: 0;
+  padding: 6px 12px 10px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+}
+
+/* ---- 调用视图：分组行 + 就地展开的每一次调用 ---- */
+.trace-call-sort {
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.trace-call-sort button {
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+}
+.trace-call-sort button:hover {
+  color: var(--ink);
+}
+.trace-call-sort button.active {
+  border-color: var(--line);
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+/* 分组行比步骤行少「序号/占比」，单独一套列宽，避免错位 */
+.trace-call-head {
+  grid-template-columns: 32px minmax(0, 1fr) auto 52px 12px;
+}
+.trace-call-items {
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-muted);
+}
+.trace-call-item {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 56px minmax(0, 1fr) 8px 52px;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 12px 5px 46px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.trace-call-item:hover {
+  background: var(--surface-hover);
+}
+.trace-call-item.active {
+  background: var(--accent-faint);
+}
+.trace-cache-fail {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+}
+/* 空占位：没有缓存/失败时也要占住那一格，否则整行会左移错位 */
+.trace-cache-slot {
+  display: block;
+}
+.trace-turn-slowest {
+  color: var(--ink-faint);
 }
 
 /* ---- 详情检查面板 ---- */

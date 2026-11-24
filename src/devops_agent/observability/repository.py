@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS runs (
     output_tokens INTEGER NOT NULL DEFAULT 0,
     cache_input_tokens INTEGER NOT NULL DEFAULT 0,
     cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+    work_ms       INTEGER NOT NULL DEFAULT 0,
+    wall_ms       INTEGER NOT NULL DEFAULT 0,
     request_id    TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_request ON runs(request_id)
@@ -67,7 +69,9 @@ CREATE TABLE IF NOT EXISTS spans (
     input_tokens    INTEGER NOT NULL DEFAULT 0,
     output_tokens   INTEGER NOT NULL DEFAULT 0,
     cache_input_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0
+    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+    seq             INTEGER NOT NULL DEFAULT 0,
+    parent_id       INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_spans_run ON spans(run_id);
 CREATE TABLE IF NOT EXISTS input_stages (
@@ -149,6 +153,9 @@ _RUN_COLUMNS: tuple[tuple[str, str], ...] = (
     # 缓存命中/写入：老库补列后旧记录读出来是 0，界面据此显示「无数据」而不是 0%
     ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("cache_creation_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    # 双口径耗时：实测（span 并集）与墙钟（起止差），差值即用户空闲
+    ("work_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ("wall_ms", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 # spans 上后加的列：逐调用的 token 分拆与缓存命中，用来回答「哪一步开始全冷」。
@@ -157,6 +164,9 @@ _SPAN_COLUMNS: tuple[tuple[str, str], ...] = (
     ("output_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("cache_creation_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    # run 内单调序号与父 span：列表与泳道共用同一份顺序，工具能追溯到发起它的模型
+    ("seq", "INTEGER NOT NULL DEFAULT 0"),
+    ("parent_id", "INTEGER"),
 )
 
 
@@ -227,8 +237,8 @@ def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
            (session_id, domain, status, input, output, started_at, ended_at,
             duration_ms, model, total_tokens, health_score,
             input_tokens, output_tokens, request_id, permission,
-            cache_input_tokens, cache_creation_input_tokens)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            cache_input_tokens, cache_creation_input_tokens, work_ms, wall_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run.session_id,
             run.domain,
@@ -247,6 +257,8 @@ def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
             run.permission,
             run.cache_input_tokens,
             run.cache_creation_input_tokens,
+            run.work_ms,
+            run.wall_ms,
         ),
     )
     assert cur.lastrowid is not None  # INSERT 成功时 sqlite3 保证有 lastrowid
@@ -267,12 +279,15 @@ def finish_run(
     output_tokens: int = 0,
     cache_input_tokens: int = 0,
     cache_creation_input_tokens: int = 0,
+    work_ms: int = 0,
+    wall_ms: int = 0,
 ) -> None:
-    """运行结束时回填结果与聚合指标（含 token 分拆与缓存命中）。"""
+    """运行结束时回填结果与聚合指标（含 token 分拆、缓存命中与双口径耗时）。"""
     conn.execute(
         """UPDATE runs SET status=?, output=?, ended_at=?, duration_ms=?,
            total_tokens=?, health_score=?, input_tokens=?, output_tokens=?,
-           cache_input_tokens=?, cache_creation_input_tokens=? WHERE id=?""",
+           cache_input_tokens=?, cache_creation_input_tokens=?, work_ms=?, wall_ms=?
+           WHERE id=?""",
         (
             status,
             output,
@@ -284,6 +299,8 @@ def finish_run(
             output_tokens,
             cache_input_tokens,
             cache_creation_input_tokens,
+            work_ms,
+            wall_ms,
             run_id,
         ),
     )
@@ -295,8 +312,8 @@ def add_span(conn: sqlite3.Connection, span: SpanRecord) -> int:
         """INSERT INTO spans
            (run_id, type, name, start_offset_ms, duration_ms, input, output,
             tokens, status, error, input_tokens, output_tokens,
-            cache_input_tokens, cache_creation_input_tokens)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            cache_input_tokens, cache_creation_input_tokens, seq, parent_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             span.run_id,
             span.type,
@@ -312,6 +329,8 @@ def add_span(conn: sqlite3.Connection, span: SpanRecord) -> int:
             span.output_tokens,
             span.cache_input_tokens,
             span.cache_creation_input_tokens,
+            span.seq,
+            span.parent_id,
         ),
     )
     assert cur.lastrowid is not None  # INSERT 成功时 sqlite3 保证有 lastrowid
@@ -401,6 +420,8 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         cache_creation_input_tokens=row["cache_creation_input_tokens"],
         request_id=row["request_id"],
         permission=row["permission"] or "",
+        work_ms=row["work_ms"] or 0,
+        wall_ms=row["wall_ms"] or 0,
     )
 
 
@@ -421,6 +442,8 @@ def _span_from_row(row: sqlite3.Row) -> SpanRecord:
         output_tokens=row["output_tokens"],
         cache_input_tokens=row["cache_input_tokens"],
         cache_creation_input_tokens=row["cache_creation_input_tokens"],
+        seq=row["seq"] or 0,
+        parent_id=row["parent_id"],
     )
 
 
@@ -471,9 +494,13 @@ def list_runs(conn: sqlite3.Connection, limit: int = 50) -> list[RunRecord]:
 
 
 def list_spans(conn: sqlite3.Connection, run_id: int) -> list[SpanRecord]:
-    """按时间偏移列出一次运行的全部步骤。"""
+    """按 run 内序号列出一次运行的全部步骤。
+
+    `seq` 是 recorder 落库时的单调序号（泳道与列表共用同一顺序）；老记录没有 seq
+    （全为 0），退化为按 start_offset_ms 排，行为与旧版一致。
+    """
     rows = conn.execute(
-        "SELECT * FROM spans WHERE run_id=? ORDER BY start_offset_ms, id", (run_id,)
+        "SELECT * FROM spans WHERE run_id=? ORDER BY seq, start_offset_ms, id", (run_id,)
     ).fetchall()
     return [_span_from_row(row) for row in rows]
 
@@ -555,7 +582,8 @@ def summary_rows(conn: sqlite3.Connection) -> list[RunRecord]:
     rows = conn.execute(
         """SELECT id, session_id, domain, status, started_at, ended_at, duration_ms,
                   model, total_tokens, health_score, input_tokens, output_tokens, request_id,
-                  cache_input_tokens, cache_creation_input_tokens, input, output, permission
+                  cache_input_tokens, cache_creation_input_tokens, input, output, permission,
+                  work_ms, wall_ms
            FROM runs"""
     ).fetchall()
     return [_run_from_row(row) for row in rows]

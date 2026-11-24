@@ -1,10 +1,14 @@
 /** 轨迹步骤列表：轮次为分隔节点，步骤一行一条，异常与 diff 就地展开。
  *
- * 三种排布对应顶部切换：按时长（按发生顺序）、按轮次（可折叠）、按调用（工具聚合）。
+ * 三种排布共用同一份 TraceStep 与同一份计时：
+ * - 时长：全局降序，估算值沉底，行尾给占比条与帕累托合计；
+ * - 轮次：按轮分组，可折叠（折叠态由上层持有，便于「全部折叠/展开」与持久化）；
+ * - 调用：按 model/tool 聚合，点一行就地展开每一次调用。
  */
 import { useState } from 'react';
 import type { AgentContext } from '../api/client';
 import type { TraceStep, TraceTurn } from '../types';
+import { durationRows, percentile, topShare, type TraceRow } from './trace';
 import { formatDuration } from './time';
 
 export type TraceMode = 'time' | 'turn' | 'call';
@@ -16,14 +20,21 @@ interface Props {
   activeStepId: string | null;
   activeTurnId: string | null;
   context: AgentContext | null;
+  /** 轮次折叠态（上层已算好默认值与持久化）：true = 收起。 */
+  collapsed: Record<string, boolean>;
+  /** 只渲染最近 N 轮；null = 全部轮次。 */
+  visibleTurns: number | null;
+  onToggleTurn: (turnId: string) => void;
+  /** 把「只看最近 N 轮」放开成全部。 */
+  onLoadMore: () => void;
   onSelectStep: (step: TraceStep) => void;
   onSelectTurn: (turn: TraceTurn) => void;
 }
 
 const CAPTIONS: Record<TraceMode, string> = {
-  time: '按耗时降序：全局最慢的步骤排最前，右侧标出它属于第几轮',
+  time: '按耗时降序（模型、思考、工具、解析全都在内）：估算值沉底，最慢的排最前',
   turn: '按对话轮次分组：点轮次标题折叠整轮，点任一步骤行收起或展开原文',
-  call: '按工具聚合：被调用几次、合计多久、最慢一条',
+  call: '按调用聚合：模型与工具分开，点一行展开每一次调用',
 };
 
 const BADGE: Record<TraceStep['kind'], string> = {
@@ -229,6 +240,9 @@ function ContextRow({ turn, context }: { turn: TraceTurn; context: AgentContext 
               {files ? ` · 附件 ${files}` : ''}
             </span>
           </span>
+          {/* 缓存 / 占比两列：占位也要渲染，否则整行会错位 */}
+          <span className="trace-cache-slot" aria-hidden="true" />
+          <span className="trace-share" aria-hidden="true" />
           <span className="trace-dur mono">—</span>
           <span className="trace-dot" aria-hidden="true" />
           <span className="trace-caret" aria-hidden="true">{open ? '⌄' : '›'}</span>
@@ -308,12 +322,33 @@ function ContextRow({ turn, context }: { turn: TraceTurn; context: AgentContext 
   );
 }
 
+/** 占比条：宽度就是这个步骤吃掉全会话实测耗时的比例，比只看毫秒直观。 */
+function ShareCell({ step }: { step: TraceStep }) {
+  if (step.timing.source === 'estimated') {
+    return (
+      <span className="trace-share" title="按相邻步骤估算，不参与占比统计">
+        —
+      </span>
+    );
+  }
+  const pct = Math.round(step.share * 100);
+  return (
+    <span className="trace-share" title={`占全会话实测 ${pct}%`}>
+      <span className="trace-share-track" aria-hidden="true">
+        <span className="trace-share-fill" style={{ width: `${Math.min(100, pct)}%` }} />
+      </span>
+      <span className="mono">{pct}%</span>
+    </span>
+  );
+}
+
 function StepRow({
   step,
   query,
   active,
   expanded,
   turnIndex,
+  showShare,
   onSelect,
   onToggle,
 }: {
@@ -323,12 +358,13 @@ function StepRow({
   expanded: boolean;
   /** 平铺视图里标出这一步属于第几轮；分组视图里用不着。 */
   turnIndex?: number;
+  showShare: boolean;
   onSelect: (step: TraceStep) => void;
   onToggle: () => void;
 }) {
   const duration =
     step.durationMs > 0
-      ? `${step.measured ? '' : '≈'}${formatDuration(step.durationMs)}`
+      ? `${step.timing.source === 'estimated' ? '≈' : ''}${formatDuration(step.durationMs)}`
       : '—';
   const summary = step.argsSummary || step.resultSummary || step.text;
   const canExpand = expandable(step);
@@ -371,12 +407,18 @@ function StepRow({
               </span>
             )}
           </span>
-          {cache !== null && (
+          {cache !== null ? (
             <span className="trace-cache" title="缓存命中：缓存令牌 ÷ 入参令牌">
               缓存 {cache}%
             </span>
+          ) : (
+            <span className="trace-cache-slot" aria-hidden="true" />
           )}
-          <span className="trace-dur mono" title={step.measured ? '事件时间戳' : '按相邻步骤估算'}>
+          {showShare ? <ShareCell step={step} /> : <span className="trace-share" aria-hidden="true" />}
+          <span
+            className="trace-dur mono"
+            title={step.timing.source === 'estimated' ? '按相邻步骤估算' : '真实起止'}
+          >
             {duration}
           </span>
           <span className={`trace-dot ${step.status ?? 'success'}`} aria-hidden="true" />
@@ -389,6 +431,16 @@ function StepRow({
       {canExpand && expanded && <StepDetail step={step} />}
     </>
   );
+}
+
+/** 折叠态也要能判断「值不值得展开」：步数、工具数、耗时、最慢一步、异常、缓存。 */
+function turnSlowest(turn: TraceTurn): TraceStep | null {
+  let best: TraceStep | null = null;
+  for (const step of turn.items) {
+    if (step.synthetic || step.timing.source === 'estimated') continue;
+    if (!best || step.durationMs > best.durationMs) best = step;
+  }
+  return best;
 }
 
 function TurnHeader({
@@ -404,7 +456,6 @@ function TurnHeader({
   onToggle: () => void;
   onSelect: () => void;
 }) {
-  const duration = formatDuration(turn.endedAt - turn.startedAt);
   // 附件数取用户实际挂上的文件数；历史回放没有消息级附件时回落到解析阶段读到的份数
   const files = turn.attachments ?? turn.parse?.attachments ?? 0;
   // 这一轮模型的缓存命中率：缓存令牌 ÷ 入参令牌，没有字段就不显示
@@ -412,6 +463,7 @@ function TurnHeader({
     turn.tokens.in > 0 && turn.tokens.cache > 0
       ? Math.round((turn.tokens.cache / turn.tokens.in) * 100)
       : null;
+  const slowest = turnSlowest(turn);
   return (
     <div className={`trace-turn-head${active ? ' active' : ''}`}>
       <button type="button" className="trace-turn-toggle" aria-expanded={!collapsed} onClick={onToggle}>
@@ -424,7 +476,12 @@ function TurnHeader({
         </span>
       </button>
       <button type="button" className="trace-turn-meta mono" onClick={onSelect}>
-        {turn.steps} 步 · {turn.tools} 工具 · {duration}
+        {turn.steps} 步 · {turn.tools} 工具 · {formatDuration(turn.measuredMs)}
+        {slowest && (
+          <span className="trace-turn-slowest">
+            {' '}· 最慢 {slowest.toolName || slowest.title} {formatDuration(slowest.durationMs)}
+          </span>
+        )}
         {turn.errorCount > 0 && <span className="trace-turn-fail"> · {turn.errorCount} 异常</span>}
         {cachePct !== null && <span className="trace-turn-cache"> · 缓存 {cachePct}%</span>}
         {files ? <span> · {files} 附件</span> : null}
@@ -435,7 +492,68 @@ function TurnHeader({
   );
 }
 
-/** 按调用聚合：哪个工具被喊得最多、总共吃掉多少时间。 */
+/** 调用分组：模型与工具分开聚合，避免「模型调用」盖住真正要看的工具。 */
+interface CallGroup {
+  key: string;
+  type: 'model' | 'tool';
+  name: string;
+  calls: TraceRow[];
+  total: number;
+  failed: number;
+  slowest: TraceStep;
+}
+
+type CallSort = 'total' | 'count' | 'fail';
+
+const CALL_SORTS: { key: CallSort; label: string }[] = [
+  { key: 'total', label: '合计耗时' },
+  { key: 'count', label: '次数' },
+  { key: 'fail', label: '失败率' },
+];
+
+function groupCalls(turns: TraceTurn[]): CallGroup[] {
+  const groups = new Map<string, CallGroup>();
+  for (const turn of turns) {
+    for (const step of turn.items) {
+      if (step.synthetic) continue;
+      if (step.kind !== 'tool' && step.kind !== 'model') continue;
+      const type = step.kind;
+      const name = step.toolName || step.title || (type === 'model' ? '模型' : '工具');
+      const key = `${type}:${name}`;
+      const group = groups.get(key);
+      const row: TraceRow = { step, turnIndex: turn.index };
+      if (!group) {
+        groups.set(key, {
+          key,
+          type,
+          name,
+          calls: [row],
+          total: step.durationMs,
+          failed: step.status === 'error' ? 1 : 0,
+          slowest: step,
+        });
+        continue;
+      }
+      group.calls.push(row);
+      group.total += step.durationMs;
+      if (step.status === 'error') group.failed += 1;
+      if (step.durationMs > group.slowest.durationMs) group.slowest = step;
+    }
+  }
+  return [...groups.values()];
+}
+
+function sortGroups(groups: CallGroup[], sort: CallSort): CallGroup[] {
+  return [...groups].sort((a, b) => {
+    if (sort === 'count') return b.calls.length - a.calls.length || b.total - a.total;
+    if (sort === 'fail') {
+      const rate = (group: CallGroup) => (group.calls.length ? group.failed / group.calls.length : 0);
+      return rate(b) - rate(a) || b.total - a.total;
+    }
+    return b.total - a.total;
+  });
+}
+
 function CallRows({
   turns,
   query,
@@ -447,49 +565,101 @@ function CallRows({
   activeStepId: string | null;
   onSelect: (step: TraceStep) => void;
 }) {
-  const groups = new Map<
-    string,
-    { name: string; count: number; total: number; slowest: TraceStep }
-  >();
-  for (const turn of turns) {
-    for (const step of turn.items) {
-      if (step.kind !== 'tool') continue;
-      const name = step.toolName || step.title;
-      const group = groups.get(name);
-      if (!group) {
-        groups.set(name, { name, count: 1, total: step.durationMs, slowest: step });
-        continue;
-      }
-      group.count += 1;
-      group.total += step.durationMs;
-      if (step.durationMs > group.slowest.durationMs) group.slowest = step;
-    }
+  const [sort, setSort] = useState<CallSort>('total');
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const needle = query.trim().toLowerCase();
+  const groups = sortGroups(
+    groupCalls(turns).filter(
+      (group) =>
+        !needle ||
+        group.name.toLowerCase().includes(needle) ||
+        group.calls.some((call) => matchesStep(call.step, query)),
+    ),
+    sort,
+  );
+  if (groups.length === 0) {
+    return (
+      <p className="trace-empty">
+        {needle ? `没有匹配「${query}」的调用。` : '还没有模型或工具调用。'}
+      </p>
+    );
   }
-  const rows = [...groups.values()]
-    .filter((row) => !query || row.name.toLowerCase().includes(query.toLowerCase()))
-    .sort((a, b) => b.total - a.total);
-  if (rows.length === 0) return <p className="trace-empty">还没有工具调用。</p>;
   return (
     <div className="trace-calls">
-      {rows.map((row) => (
-        <button
-          type="button"
-          key={row.name}
-          className={`trace-step${row.slowest.id === activeStepId ? ' active' : ''}`}
-          onClick={() => onSelect(row.slowest)}
-        >
-          <span className="trace-badge" data-kind="tool">工具</span>
-          <span className="trace-main">
-            <span className="trace-title mono">{row.name}</span>
-            <span className="trace-summary mono">
-              {row.count} 次 · 合计 {formatDuration(row.total)} · 最慢一条 {formatDuration(row.slowest.durationMs)}
-            </span>
-          </span>
-          <span className="trace-dur mono" title="平均耗时">
-            {formatDuration(row.total / row.count)}
-          </span>
-        </button>
-      ))}
+      <div className="trace-call-sort" role="group" aria-label="调用排序">
+        {CALL_SORTS.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            className={sort === item.key ? 'active' : ''}
+            aria-pressed={sort === item.key}
+            onClick={() => setSort(item.key)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      {groups.map((group) => {
+        const durations = group.calls.map((call) => call.step.durationMs);
+        const avg = group.total / group.calls.length;
+        const p95 = percentile(durations, 0.95);
+        const expanded = open[group.key] ?? false;
+        return (
+          <div className="trace-call-group" key={group.key}>
+            <button
+              type="button"
+              className="trace-step trace-call-head"
+              aria-expanded={expanded}
+              onClick={() => setOpen((prev) => ({ ...prev, [group.key]: !expanded }))}
+            >
+              <span className="trace-badge" data-kind={group.type}>
+                {BADGE[group.type]}
+              </span>
+              <span className="trace-main">
+                <span className="trace-title mono">{group.name}</span>
+                <span className="trace-summary mono">
+                  {group.calls.length} 次 · 合计 {formatDuration(group.total)} · 均值{' '}
+                  {formatDuration(avg)}
+                  {p95 !== null && ` · p95 ${formatDuration(p95)}`} · 最慢{' '}
+                  {formatDuration(group.slowest.durationMs)}
+                </span>
+              </span>
+              {group.failed > 0 ? (
+                <span className="trace-cache trace-cache-fail">失败 {group.failed}</span>
+              ) : (
+                <span className="trace-cache-slot" aria-hidden="true" />
+              )}
+              <span className="trace-dur mono" title="均值">
+                {formatDuration(avg)}
+              </span>
+              <span className="trace-caret" aria-hidden="true">
+                {expanded ? '⌄' : '›'}
+              </span>
+            </button>
+            {expanded && (
+              <div className="trace-call-items">
+                {group.calls.map((call) => (
+                  <button
+                    type="button"
+                    key={call.step.id}
+                    className={`trace-call-item${call.step.id === activeStepId ? ' active' : ''}`}
+                    onClick={() => onSelect(call.step)}
+                  >
+                    <span className="trace-turn-tag mono">第 {call.turnIndex} 轮</span>
+                    <span className="trace-summary mono">
+                      {call.step.resultSummary || call.step.argsSummary || call.step.text || '—'}
+                    </span>
+                    <span className={`trace-dot ${call.step.status ?? 'success'}`} aria-hidden="true" />
+                    <span className="trace-dur mono">
+                      {formatDuration(call.step.durationMs)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -501,12 +671,14 @@ export function TraceList({
   activeStepId,
   activeTurnId,
   context,
+  collapsed,
+  visibleTurns,
+  onToggleTurn,
+  onLoadMore,
   onSelectStep,
   onSelectTurn,
 }: Props) {
-  const [overrides, setOverrides] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [visibleTurns, setVisibleTurns] = useState(5);
 
   /** 默认展开：进来就能读到参数与返回，点整行收起。 */
   const isOpen = (id: string) => expanded[id] ?? true;
@@ -533,67 +705,67 @@ export function TraceList({
 
   // 时长视图：全局按耗时降序，回答「最慢的是哪一步」，不再按轮分组
   if (mode === 'time') {
-    const rows = turns
-      .flatMap((turn) =>
-        turn.items
-          .filter((step) => matchesStep(step, query))
-          .map((step) => ({ step, turnIndex: turn.index })),
-      )
-      .sort((a, b) => b.step.durationMs - a.step.durationMs);
+    const rows = durationRows(turns, (step) => matchesStep(step, query));
+    const measured = rows.filter((row) => row.step.timing.source !== 'estimated');
     return (
       <div className="trace-list">
         <p className="trace-caption">{CAPTIONS.time}</p>
         {rows.length === 0 ? (
           <p className="trace-empty">没有匹配「{query}」的步骤。</p>
         ) : (
-          <div className="trace-steps">
-            {rows.map(({ step, turnIndex }) => (
-              <StepRow
-                key={step.id}
-                step={step}
-                turnIndex={turnIndex}
-                query={query}
-                active={step.id === activeStepId}
-                expanded={isOpen(step.id)}
-                onSelect={onSelectStep}
-                onToggle={() => toggle(step.id)}
-              />
-            ))}
-          </div>
+          <>
+            <div className="trace-steps">
+              {rows.map(({ step, turnIndex }) => (
+                <StepRow
+                  key={step.id}
+                  step={step}
+                  turnIndex={turnIndex}
+                  query={query}
+                  active={step.id === activeStepId}
+                  expanded={isOpen(step.id)}
+                  showShare
+                  onSelect={onSelectStep}
+                  onToggle={() => toggle(step.id)}
+                />
+              ))}
+            </div>
+            <p className="trace-foot mono">
+              共 {measured.length} 步计入实测 · 前 {Math.min(3, measured.length)} 步占{' '}
+              {Math.round(topShare(rows, 3) * 100)}%
+              {rows.length > measured.length && ` · ${rows.length - measured.length} 条估算未计入`}
+            </p>
+          </>
         )}
       </div>
     );
   }
 
   const searching = query.trim().length > 0;
-  const shown = searching ? turns : turns.slice(-visibleTurns);
+  // 搜索时必须放开截断：否则命中的那一轮可能正好在「更早」里没渲染
+  const shown = searching || visibleTurns === null ? turns : turns.slice(-visibleTurns);
   const hidden = turns.length - shown.length;
 
   return (
     <div className="trace-list">
       <p className="trace-caption">{CAPTIONS.turn}</p>
       {hidden > 0 && (
-        <button
-          type="button"
-          className="trace-more"
-          onClick={() => setVisibleTurns((value) => value + 10)}
-        >
+        <button type="button" className="trace-more" onClick={onLoadMore}>
           加载更早的 {hidden} 轮
         </button>
       )}
       {shown.map((turn) => {
-        const collapsed = overrides[turn.id] ?? false;
+        const isCollapsed = collapsed[turn.id] ?? false;
         const items = turn.items.filter((step) => matchesStep(step, query));
         return (
           <section className="trace-turn" key={turn.id} data-turn={turn.index}>
             <TurnHeader
               turn={turn}
-              collapsed={collapsed}
+              collapsed={isCollapsed}
               active={turn.id === activeTurnId}
-              onToggle={() => setOverrides((prev) => ({ ...prev, [turn.id]: !collapsed }))}
+              onToggle={() => onToggleTurn(turn.id)}
               onSelect={() => onSelectTurn(turn)}
             />
-            {!collapsed && (
+            {!isCollapsed && (
               <div className="trace-steps">
                 <ContextRow turn={turn} context={context} />
                 {items.length === 0 ? (
@@ -608,6 +780,7 @@ export function TraceList({
                       query={query}
                       active={step.id === activeStepId}
                       expanded={isOpen(step.id)}
+                      showShare={false}
                       onSelect={onSelectStep}
                       onToggle={() => toggle(step.id)}
                     />
@@ -621,4 +794,3 @@ export function TraceList({
     </div>
   );
 }
-

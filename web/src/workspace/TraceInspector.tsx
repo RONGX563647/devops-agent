@@ -59,6 +59,13 @@ const KIND_TEXT: Record<TraceStep['kind'], string> = {
   parse: '解析',
 };
 
+/** 计时来源的读法：这三档的可信度完全不同，必须写清楚。 */
+const TIMING_TEXT: Record<TraceStep['timing']['source'], string> = {
+  measured: '事件时间戳',
+  derived: '阶段自报',
+  estimated: '相邻步骤估算',
+};
+
 function pretty(text?: string): string {
   const raw = (text ?? '').trim();
   if (!raw) return '';
@@ -128,7 +135,8 @@ function Ratio({ label, value, total }: { label: string; value: number; total: n
 }
 
 function Summary({ step, turn }: { step: TraceStep; turn: TraceTurn | null }) {
-  const turnMs = turn ? Math.max(1, turn.endedAt - turn.startedAt) : 0;
+  // 分母用本轮实测耗时（span 并集）：墙钟含用户空闲，除出来会把占比压小
+  const turnMs = turn ? turn.measuredMs : 0;
   return (
     <div className="inspect-summary">
       <div className="inspect-grid">
@@ -143,6 +151,7 @@ function Summary({ step, turn }: { step: TraceStep; turn: TraceTurn | null }) {
         </span>
         <span className="inspect-key">耗时</span>
         <span className="mono">
+          {step.timing.source === 'estimated' && step.durationMs > 0 ? '≈' : ''}
           {formatDuration(step.durationMs)}
           {turnMs > 0 && ` · 占本轮 ${Math.round((step.durationMs / turnMs) * 100)}%`}
         </span>
@@ -233,7 +242,7 @@ export function TraceInspector({ step, turn, totalMs, profile }: Props) {
     );
   }
 
-  const turnMs = turn ? Math.max(1, turn.endedAt - turn.startedAt) : 0;
+  const turnMs = turn ? turn.measuredMs : 0;
   const argsText = step.args ?? '';
   const resultText = step.result ?? '';
   const tabs = tabsFor(step);
@@ -293,12 +302,16 @@ export function TraceInspector({ step, turn, totalMs, profile }: Props) {
               <span className="inspect-key">时长</span>
               <span className="mono">{formatDuration(step.durationMs)}</span>
               <span className="inspect-key">计时来源</span>
-              <span>{step.measured ? '事件时间戳' : step.durationMs > 0 ? '相邻步骤估算' : '无计时'}</span>
+              <span>
+                {TIMING_TEXT[step.timing.source]}
+                {step.timing.source === 'estimated' && ' · 仅供参考'}
+              </span>
             </div>
-            <Ratio label="占本轮" value={step.durationMs} total={turnMs} />
-            <Ratio label="占全会话" value={step.durationMs} total={totalMs} />
+            <Ratio label="占本轮实测" value={step.durationMs} total={turnMs} />
+            <Ratio label="占全会话实测" value={step.durationMs} total={totalMs} />
             <p className="inspect-note">
-              估算值出现在旧数据里：事件没有配对结束时间，只能取下一条的开始时间相减。
+              估算值只出现在旧数据里：事件没有配对结束时间，只能取下一条的开始时间相减。
+              实测 = 所有步骤占用区间的并集；墙钟含用户读消息的空闲，两者不等是正常的。
             </p>
           </div>
         )}

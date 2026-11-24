@@ -124,6 +124,9 @@ export interface Run {
   cache_creation_input_tokens?: number;
   /** 本轮权限档位；老记录为空串。 */
   permission?: string;
+  /** 实测（span 并集）与墙钟（起止差）两个耗时口径；老记录为 0。 */
+  work_ms?: number;
+  wall_ms?: number;
 }
 
 export interface RunList {
@@ -150,6 +153,9 @@ export interface Span {
   output_tokens?: number;
   cache_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  /** run 内单调序号与父 span：泳道与列表共用同一顺序。 */
+  seq?: number;
+  parent_id?: number | null;
 }
 
 export interface RunHealth {
@@ -416,6 +422,19 @@ export interface TraceDiff {
   newLines: string[];
 }
 
+/** 步骤计时：三个视图共用这一份，禁止在组件里另算时长。
+ *
+ * - measured：起止事件都在，最可信；
+ * - derived：由阶段自报耗时或落库 span 反推，可信但粒度粗；
+ * - estimated：相邻步骤插值，只能看趋势，不参与「最慢 Top N」。
+ */
+export interface TraceTiming {
+  start: number;
+  end: number;
+  durationMs: number;
+  source: 'measured' | 'derived' | 'estimated';
+}
+
 /** 轨迹步骤：由消息与过程步骤派生的只读视图。 */
 export interface TraceStep {
   id: string;
@@ -428,9 +447,15 @@ export interface TraceStep {
   text: string;
   /** 毫秒时间戳。 */
   at: number;
+  /** 唯一计时来源；durationMs / measured 是它投影出来的旧字段。 */
+  timing: TraceTiming;
   durationMs: number;
-  /** 耗时是否来自真实起止事件；false 表示按相邻步骤估算的兜底值。 */
+  /** 耗时是否不是插值（measured 或 derived）；false 表示按相邻步骤估算。 */
   measured: boolean;
+  /** 占全会话实测耗时的比例 0~1；估算值与模型正文恒为 0。 */
+  share: number;
+  /** 模型的最终正文行：读答案用，不是耗时段，不进时长榜与占比分母。 */
+  synthetic?: boolean;
   status?: ProcessEntry['state'];
   toolCallId?: string;
   toolName?: string;
@@ -466,11 +491,18 @@ export interface TraceLanes {
 
 /** 一组聚合指标：顶部状态栏与空态提示共用。 */
 export interface TraceStats {
+  /** 会话实测耗时（span 并集）；「占全会话」的分母。 */
   totalMs: number;
+  /** 实测耗时：所有步骤真实占用区间的并集，等价于 totalMs。 */
+  measuredMs: number;
+  /** 墙钟耗时：首轮问题到末轮结束，含用户读消息/走开的空闲。 */
+  wallMs: number;
   turns: number;
   steps: number;
   tools: number;
   errors: number;
+  /** 模型调用次数：与时长榜里的模型行同源，不再靠猜。 */
+  modelCalls: number;
   tokensIn: number;
   tokensOut: number;
   cacheTokens: number;
@@ -511,6 +543,10 @@ export interface TraceTurn {
   tools: number;
   failed: boolean;
   items: TraceStep[];
+  /** 本轮实测耗时（span 并集）。 */
+  measuredMs: number;
+  /** 本轮墙钟耗时（起止差，含用户空闲）。 */
+  wallMs: number;
   /** 该轮输入解析的计数摘要（无解析时缺省）。 */
   parse?: { refs: number; redactions: number; degraded: number; attachments: number };
   /** 该轮用户消息附带的文件数（无附件时缺省）。 */

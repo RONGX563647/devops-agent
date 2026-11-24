@@ -6,7 +6,13 @@ import pytest
 
 from devops_agent.eval.dataset import EvalCase
 from devops_agent.eval.graders import CaseScore, TraceResult
-from devops_agent.eval.report import aggregate, compare, render_markdown
+from devops_agent.eval.report import (
+    aggregate,
+    compare,
+    compatibility,
+    minimal_detectable_effect,
+    render_markdown,
+)
 from devops_agent.eval.runner import CaseRun
 
 
@@ -161,3 +167,129 @@ def test_render_markdown_for_compare() -> None:
     text = render_markdown(compared)
     assert "## 基线对比" in text
     assert "pass_rate" in text
+
+
+def test_gates_mark_insufficient_below_min_cases() -> None:
+    """样本不足是「不能判」，不是「未达标」。"""
+    runs = [make_run(f"c{index}") for index in range(3)]
+    summary = aggregate(runs, min_cases_for_gate=40, thresholds={"pass_rate": {"min": 0.8}})
+
+    assert summary["gates"][0]["state"] == "insufficient"
+    assert summary["verdict"] == "insufficient"
+
+
+def test_gates_fail_below_threshold() -> None:
+    runs = [make_run("a", passed=True), make_run("b", passed=False)]
+    summary = aggregate(runs, min_cases_for_gate=2, thresholds={"pass_rate": {"min": 0.8}})
+
+    assert summary["gates"][0]["state"] == "fail"
+    assert summary["verdict"] == "fail"
+
+
+def test_gate_sample_count_ignores_missing_judge() -> None:
+    """judge 只有 1 条样本时，正确性门禁应判 insufficient 而不是不达标。"""
+    runs = [make_run("a", judge={"correctness": 3.0}), make_run("b")]
+    summary = aggregate(
+        runs,
+        min_cases_for_gate=2,
+        thresholds={"judge_correctness": {"min": 4.0, "min_samples": 2}},
+    )
+
+    gate = next(item for item in summary["gates"] if item["key"] == "judge_correctness")
+    assert gate["samples"] == 1
+    assert gate["state"] == "insufficient"
+
+
+def test_mde_uses_smaller_sample() -> None:
+    assert minimal_detectable_effect(10, 40) == 0.1
+    assert minimal_detectable_effect(0, 40) == 1.0
+
+
+def test_compatibility_blocks_when_judge_model_changes() -> None:
+    shared = {
+        "suite_sha": "s",
+        "grader_version": "v2",
+        "prompt_sha": "p",
+        "model": "m",
+        "profile": "r",
+        "n": 4,
+        "min_cases_for_gate": 1,
+        "verdict": "pass",
+    }
+    base = {**shared, "judge_model": "j1"}
+    head = {**shared, "judge_model": "j2"}
+
+    compat = compatibility(head, base)
+    assert compat["level"] == "blocking"
+    assert "judge_model" in compat["changed"]
+
+
+def test_compatibility_is_confounded_when_prompt_and_model_change() -> None:
+    shared = {
+        "suite_sha": "s",
+        "grader_version": "v2",
+        "profile": "r",
+        "judge_model": "j",
+        "n": 4,
+        "min_cases_for_gate": 1,
+        "verdict": "pass",
+    }
+    base = {**shared, "prompt_sha": "p1", "model": "m1"}
+    head = {**shared, "prompt_sha": "p2", "model": "m2"}
+
+    assert compatibility(head, base)["level"] == "confounded"
+
+
+def test_compare_returns_not_comparable_when_suite_changed() -> None:
+    """题库变了就不是同一个实验，delta 不能当成结论。"""
+    shared = {
+        "n": 4,
+        "passed": 4,
+        "pass_rate": 1.0,
+        "hard_failures": {},
+        "min_cases_for_gate": 1,
+        "verdict": "pass",
+        "grader_version": "v2",
+        "prompt_sha": "p",
+        "model": "m",
+        "profile": "r",
+        "judge_model": "j",
+    }
+    head = {**shared, "suite_sha": "s-new"}
+    base = {**shared, "suite_sha": "s-old"}
+
+    compared = compare(head, base)
+    assert compared["verdict"] == "not_comparable"
+    assert compared["compatibility"]["level"] == "blocking"
+
+
+def test_compare_only_prompt_changed_is_clean() -> None:
+    shared = {
+        "n": 4,
+        "passed": 4,
+        "pass_rate": 1.0,
+        "hard_failures": {},
+        "min_cases_for_gate": 1,
+        "verdict": "pass",
+        "suite_sha": "s",
+        "grader_version": "v2",
+        "model": "m",
+        "profile": "r",
+        "judge_model": "j",
+    }
+    head = {**shared, "prompt_sha": "p2"}
+    base = {**shared, "prompt_sha": "p1"}
+
+    compared = compare(head, base)
+    assert compared["compatibility"]["level"] == "clean"
+    assert compared["compatibility"]["changed"] == ["prompt_sha"]
+    assert compared["verdict"] == "pass"
+
+
+def test_render_markdown_shows_gates_and_precision() -> None:
+    runs = [make_run("a", passed=True), make_run("b", passed=False)]
+    summary = aggregate(runs, min_cases_for_gate=2, thresholds={"pass_rate": {"min": 0.8}})
+    text = render_markdown(summary)
+
+    assert "## 门禁" in text
+    assert "未达" in text

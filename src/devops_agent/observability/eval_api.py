@@ -11,17 +11,22 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any, TypeVar
 
 from fastapi import APIRouter, HTTPException, Query
 
 from devops_agent.eval import report as report_mod
+from devops_agent.eval.dataset import EvalCase, Suite, ToolExpectations, load_suite
 from devops_agent.observability import repository as repo
 
 router = APIRouter(prefix="/api/eval", tags=["eval"])
 
 T = TypeVar("T")
+
+# 题库目录：eval_api.py -> observability -> devops_agent -> src -> 仓库根
+_SUITES_DIR = Path(__file__).resolve().parents[3] / "eval" / "suites"
 
 _HARD_DEFAULTS: dict[str, int] = {"safety": 0, "forbidden_tool": 0, "format": 0}
 
@@ -107,6 +112,8 @@ def _batch_out(row: dict[str, object]) -> dict[str, Any]:
     """把 DB 行 + summary_json 摊平成稳定响应字段。"""
     summary = _as_dict(row.get("summary_json"))
     judge = summary.get("judge")
+    gates = summary.get("gates")
+    compatibility = summary.get("compatibility")
     return {
         "id": _to_int(row["id"]),
         "suite": _text(row, "suite"),
@@ -130,6 +137,13 @@ def _batch_out(row: dict[str, object]) -> dict[str, Any]:
         "cost_total": _summary_float(summary, "cost_total"),
         "baseline_id": summary.get("baseline_id"),
         "verdict": _verdict(row, summary),
+        # 门禁三态与可比性：前端据此解释「为什么是这个结论」，
+        # 不在前端重算阈值 —— 两套判定逻辑会互相打脸。
+        "gates": gates if isinstance(gates, list) else [],
+        "min_cases_for_gate": _summary_int(summary, "min_cases_for_gate"),
+        "mde": summary.get("mde"),
+        "compatibility": compatibility if isinstance(compatibility, dict) else None,
+        "grader_version": str(summary.get("grader_version") or ""),
     }
 
 
@@ -150,6 +164,153 @@ def _case_out(row: dict[str, object]) -> dict[str, Any]:
         "tokens": _to_int(row.get("tokens")),
         "checks": _as_list(detail.get("checks")),
         "run_id": row.get("run_id"),
+    }
+
+
+def _extend_assertions(items: list[dict[str, str]], kind: str, targets: Sequence[str]) -> None:
+    items.extend({"kind": kind, "target": target} for target in targets)
+
+
+def _tool_assertions(calls: ToolExpectations | None) -> list[dict[str, str]]:
+    """工具类断言：必用 / 禁用 / 调用预算。"""
+    if calls is None:
+        return []
+    items: list[dict[str, str]] = []
+    _extend_assertions(items, "tool_must", calls.must)
+    _extend_assertions(items, "tool_forbid", calls.forbid)
+    if calls.max_total is not None:
+        items.append({"kind": "tool_budget", "target": str(calls.max_total)})
+    return items
+
+
+def _case_assertions(case: EvalCase) -> list[dict[str, str]]:
+    """一条用例的断言清单（类型 + 目标），前端展开用例时逐条显示。"""
+    expected = case.expected
+    items: list[dict[str, str]] = []
+    _extend_assertions(items, "must_contain", expected.must_contain)
+    _extend_assertions(
+        items, "must_contain_any", [" / ".join(group) for group in expected.must_contain_any]
+    )
+    _extend_assertions(items, "must_not_contain", expected.must_not_contain)
+    _extend_assertions(items, "must_not_regex", expected.must_not_regex)
+    _extend_assertions(items, "must_cite", expected.must_cite)
+    _extend_assertions(items, "regex", expected.regex)
+    _extend_assertions(items, "file_state", [item.path for item in expected.file_state])
+    items.extend(_tool_assertions(expected.tool_calls))
+    return items
+
+
+def _suite_out(suite: Suite) -> dict[str, Any]:
+    """评测集目录：构成、阈值、断言清单，供前端画配比与断言构成。"""
+    # 延迟 import：lint 会拖入 runtime.agent（进而 import agentscope），
+    # 而 observability 层不该在启动时就绑定框架。
+    from devops_agent.eval.lint import assertion_summary
+
+    manifest = suite.manifest
+    return {
+        "suite": manifest.suite,
+        "version": manifest.version,
+        "sha256": manifest.sha256,
+        "counts": manifest.counts,
+        "min_cases_for_gate": manifest.min_cases_for_gate,
+        "grader_version": manifest.grader_version,
+        "thresholds": {
+            key: {"min": spec.min, "min_samples": spec.min_samples}
+            for key, spec in manifest.thresholds.items()
+        },
+        "assertions": assertion_summary(suite),
+        "cases": [
+            {
+                "id": case.id,
+                "tags": list(case.tags),
+                "permission": case.permission,
+                "subject": case.subject,
+                "assertions": _case_assertions(case),
+            }
+            for case in suite.cases
+        ],
+    }
+
+
+@router.get("/suites")
+def list_suites() -> dict[str, Any]:
+    """本仓的评测集目录（只读文件，不碰 DB）。
+
+    读不到或解析失败的那个 suite 直接跳过：一个坏文件不该让整页打不开。
+    """
+    items: list[dict[str, Any]] = []
+    for path in sorted(_SUITES_DIR.glob("*.jsonl")):
+        try:
+            items.append(_suite_out(load_suite(path)))
+        except (OSError, ValueError):
+            continue
+    return {"items": items}
+
+
+def _series_point(row: dict[str, object]) -> dict[str, Any]:
+    """批次时间序列的一个点：趋势图只需要这几个数。"""
+    summary = _as_dict(row.get("summary_json"))
+    judge = summary.get("judge")
+    correctness = judge.get("correctness") if isinstance(judge, dict) else None
+    hard = _hard_failures(summary)
+    return {
+        "id": _to_int(row["id"]),
+        "started_at": _text(row, "started_at"),
+        "n": _summary_int(summary, "n"),
+        "pass_rate": _summary_float(summary, "pass_rate"),
+        "judge_correctness": correctness,
+        "trajectory_score": summary.get("trajectory_score"),
+        "p95_ms": _summary_int(summary, "p95_ms"),
+        "hard_total": sum(hard.values()),
+        "verdict": _verdict(row, summary),
+        "prompt_hash": _text(row, "prompt_sha"),
+    }
+
+
+@router.get("/series")
+def list_series(limit: int = Query(30, ge=1, le=200)) -> dict[str, Any]:
+    """最近 N 个批次的时间序列（按时间升序，方便直接画折线）。"""
+    batches = _read(lambda conn: repo.list_eval_batches(conn, limit=limit))
+    if not batches:
+        return {"items": []}
+    # 仓储按时间倒序返回，趋势图要正序
+    return {"items": [_series_point(row) for row in reversed(batches)]}
+
+
+@router.get("/matrix")
+def case_matrix(limit: int = Query(10, ge=1, le=50)) -> dict[str, Any]:
+    """用例 × 批次通过矩阵：回答「整体退化还是某条一直挂」。
+
+    cells 三态：`true` 通过 / `false` 失败 / `null` 该批次没跑到这条。
+    """
+
+    def load(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+        columns: list[dict[str, Any]] = []
+        for row in reversed(repo.list_eval_batches(conn, limit=limit)):
+            batch_id = _to_int(row["id"])
+            cases = repo.list_eval_cases(conn, batch_id, limit=1000)
+            columns.append(
+                {
+                    "id": batch_id,
+                    "started_at": _text(row, "started_at"),
+                    "cases": {
+                        str(case.get("case_id") or ""): bool(case.get("passed")) for case in cases
+                    },
+                }
+            )
+        return columns
+
+    columns = _read(load) or []
+    case_ids = sorted({case_id for column in columns for case_id in column["cases"]})
+    return {
+        "batches": [{"id": column["id"], "started_at": column["started_at"]} for column in columns],
+        "cases": [
+            {
+                "case_id": case_id,
+                "cells": [column["cases"].get(case_id) for column in columns],
+            }
+            for case_id in case_ids
+        ],
     }
 
 

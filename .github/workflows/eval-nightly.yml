@@ -26,10 +26,22 @@ jobs:
           DEVOPS_AGENT_JUDGE_MODEL: ${{ secrets.DEVOPS_AGENT_JUDGE_MODEL }}
           DEVOPS_AGENT_EVAL_DB_PATH: workspace/evals/eval.db
         run: |
+          # 基线是可选的：仓库里没有 workspace/evals/baseline.json 时只按绝对阈值判门禁。
+          # 想开启回归判定，把一个 report.json 放到该路径即可 —— 此时 verdict 会由
+          # compare 决定，可比性不成立（suite_sha / grader_version / judge_model 变了）
+          # 会退回 not_comparable，而不是把「换了个实验」当成「退步」。
+          if [ -f workspace/evals/baseline.json ]; then
+            BASE_ARGS="--baseline workspace/evals/baseline.json"
+          else
+            echo "未提供基线，跳过对比（只有绝对阈值生效）"
+            BASE_ARGS=""
+          fi
+          # 退出码语义：verdict == fail 时 CLI 返回 1，让 nightly 直接变红；
+          # insufficient（样本未达门禁量）不算失败，否则天天红就没人看了。
           python -m devops_agent.eval run \
             --suite eval/suites/devops-core.v1.jsonl \
             --out workspace/evals/nightly \
-            --judge
+            --judge $BASE_ARGS
       - name: upload report
         if: always()
         uses: actions/upload-artifact@v4

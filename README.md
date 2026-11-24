@@ -176,6 +176,17 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 | `npm run test:coverage` | Vitest + 覆盖率阈值判定 |
 | `npm run build` | 生产构建 |
 
+**评测题库门禁**（CI 的 `quality` job，不调模型）：
+
+| 命令 | 检查什么 |
+|---|---|
+| `python -m devops_agent.eval validate --suite ...` | 题库结构、断言字段、阈值口径、graders 版本 |
+| `python -m devops_agent.eval prompt-lint --suite ...` | S1 工具名闭包 / S2 占位符机器无关 / S3 文案承诺=能力矩阵 / S4 题库资产自洽 / S5 断言有效性（恒真即无效）/ S6 判卷口径版本 |
+
+恒真断言（例如只读档下的 `forbid: ["Write"]`、单元素 `ordered`）会让通过率虚高，`prompt-lint` 把它们判为 `dead`，前端「质量 → 评测集」直接把条数与占比画出来。
+
+`eval-nightly.yml` 每天跑一次真实评测：`verdict == fail` 时退出码 1 让流水线变红；`insufficient`（样本未达 `min_cases_for_gate`）**不算失败**——没测够和测砸了不是一回事。放了 `workspace/evals/baseline.json` 时会自动做回归对比，可比性不成立（`suite_sha` / `grader_version` / `judge_model` 变了）退回 `not_comparable`。
+
 ---
 
 ## 可观测性与前端

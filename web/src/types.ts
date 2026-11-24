@@ -145,6 +145,32 @@ export interface EvalTrends {
   by_source: Record<string, number>;
 }
 
+/** 门禁三态：样本不足时是 insufficient，不能压成 false。 */
+export interface EvalGate {
+  key: string;
+  value: number | null;
+  min: number;
+  min_samples: number;
+  samples: number;
+  state: 'pass' | 'fail' | 'insufficient';
+}
+
+/** 可比性：变了哪一类因子，决定 delta 能说多硬。 */
+export interface EvalCompatibility {
+  level: 'clean' | 'confounded' | 'blocking' | 'unknown';
+  changed: string[];
+  missing: string[];
+  reasons: string[];
+}
+
+export type EvalVerdict =
+  | 'pass'
+  | 'warn'
+  | 'fail'
+  | 'insufficient'
+  | 'running'
+  | 'not_comparable';
+
 /** 一次评测批次（GET /api/eval/batches）。 */
 export interface EvalBatch {
   id: number;
@@ -168,7 +194,67 @@ export interface EvalBatch {
   tokens_total: number;
   cost_total: number;
   baseline_id: number | null;
-  verdict: 'pass' | 'warn' | 'fail' | 'insufficient' | 'running';
+  verdict: EvalVerdict;
+  gates: EvalGate[];
+  min_cases_for_gate: number;
+  mde: number | null;
+  compatibility: EvalCompatibility | null;
+  grader_version: string;
+}
+
+/** 一条用例的断言（GET /api/eval/suites）。 */
+export interface EvalAssertion {
+  kind: string;
+  target: string;
+}
+
+export interface EvalSuiteCase {
+  id: string;
+  tags: string[];
+  permission: string;
+  subject: string;
+  assertions: EvalAssertion[];
+}
+
+/** 评测集目录：题库构成与断言分布。 */
+export interface EvalSuite {
+  suite: string;
+  version: string;
+  sha256: string;
+  counts: Record<string, number>;
+  min_cases_for_gate: number;
+  grader_version: string;
+  thresholds: Record<string, { min: number; min_samples: number }>;
+  assertions: Record<string, number>;
+  cases: EvalSuiteCase[];
+}
+
+export interface EvalSuiteList {
+  items: EvalSuite[];
+}
+
+/** 批次时间序列的一个点。 */
+export interface EvalSeriesPoint {
+  id: number;
+  started_at: string;
+  n: number;
+  pass_rate: number;
+  judge_correctness: number | null;
+  trajectory_score: number | null;
+  p95_ms: number | null;
+  hard_total: number;
+  verdict: EvalVerdict;
+  prompt_hash: string;
+}
+
+export interface EvalSeries {
+  items: EvalSeriesPoint[];
+}
+
+/** 用例 × 批次通过矩阵；cells 为 null 表示该批没跑到这条。 */
+export interface EvalMatrix {
+  batches: { id: number; started_at: string }[];
+  cases: { case_id: string; cells: (boolean | null)[] }[];
 }
 
 export interface EvalBatchList {
@@ -214,6 +300,11 @@ export interface EvalCompare {
   verdict: string;
   metrics: EvalCompareMetric[];
   cases: { case_id: string; base_passed: boolean; head_passed: boolean }[];
+  n: number;
+  base_n: number;
+  /** 精度上限：小于该值的 delta 不超过一个用例的抖动。 */
+  mde: number;
+  compatibility: EvalCompatibility;
 }
 
 export interface EvalCaseList {

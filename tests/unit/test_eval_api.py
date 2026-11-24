@@ -270,3 +270,86 @@ def test_schema_is_idempotent(tmp_path: Path) -> None:
     with pytest.raises(sqlite3.Error):
         # 路径是目录时 connect 失败，验证 API 测试里的降级前提成立
         sqlite3.connect(str(tmp_path))
+
+
+def test_suites_endpoint_lists_repo_catalog(db: Path) -> None:
+    """评测集目录直接读仓库文件，不依赖数据库。"""
+    resp = client.get("/api/eval/suites")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert items, "应至少解析出一个评测集"
+    suite = items[0]
+    assert suite["cases"]
+    assert suite["counts"]
+    assert suite["cases"][0]["assertions"]
+
+
+def test_series_is_ascending_and_carries_verdict(db: Path) -> None:
+    """趋势图要正序，首个点必须早于第二个点。"""
+    seed_batch(
+        db,
+        started_at="2026-11-23T10:00:00Z",
+        summary_data=summary(pass_rate=0.5, verdict="insufficient"),
+        case_rows=[("c1", "success", True, {})],
+    )
+    seed_batch(
+        db,
+        started_at="2026-11-24T10:00:00Z",
+        summary_data=summary(pass_rate=0.9, verdict="pass"),
+        case_rows=[("c1", "success", True, {})],
+    )
+
+    items = client.get("/api/eval/series").json()["items"]
+    assert [item["pass_rate"] for item in items] == [0.5, 0.9]
+    assert items[0]["id"] < items[1]["id"]
+    assert items[1]["verdict"] == "pass"
+
+
+def test_matrix_keeps_missing_case_as_null(db: Path) -> None:
+    """某批没跑到的用例必须留 None，不能伪装成失败。"""
+    seed_batch(
+        db,
+        started_at="2026-11-23T10:00:00Z",
+        summary_data=summary(),
+        case_rows=[("c1", "success", True, {})],
+    )
+    seed_batch(
+        db,
+        started_at="2026-11-24T10:00:00Z",
+        summary_data=summary(),
+        case_rows=[("c1", "success", False, {}), ("c2", "success", True, {})],
+    )
+
+    data = client.get("/api/eval/matrix").json()
+    assert len(data["batches"]) == 2
+    rows = {row["case_id"]: row["cells"] for row in data["cases"]}
+    assert rows["c1"] == [True, False]
+    assert rows["c2"] == [None, True]
+
+
+def test_batch_exposes_gates_and_grader_version(db: Path) -> None:
+    """门禁三态要透出到 API，前端才能解释 verdict。"""
+    data = summary()
+    data["gates"] = [
+        {
+            "key": "pass_rate",
+            "value": 0.5,
+            "min": 0.8,
+            "min_samples": 0,
+            "samples": 2,
+            "state": "fail",
+        }
+    ]
+    data["grader_version"] = "v2"
+    data["min_cases_for_gate"] = 40
+    batch_id = seed_batch(
+        db,
+        started_at="2026-11-24T10:00:00Z",
+        summary_data=data,
+        case_rows=[("c1", "success", True, {})],
+    )
+
+    batch = client.get(f"/api/eval/batches/{batch_id}").json()["batch"]
+    assert batch["gates"][0]["state"] == "fail"
+    assert batch["grader_version"] == "v2"
+    assert batch["min_cases_for_gate"] == 40

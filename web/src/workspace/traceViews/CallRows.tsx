@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { TraceStep, TraceTurn } from '../../types';
-import { percentile, type TraceRow } from '../trace';
+import { percentile, type TraceRow } from '../traceData/stats';
 import { formatDuration } from '../time';
 import { BADGE, matchesStep } from './Highlight';
 

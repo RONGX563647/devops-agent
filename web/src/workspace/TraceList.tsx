@@ -10,7 +10,7 @@
 import { useState } from 'react';
 import type { AgentContext } from '../api/client';
 import type { TraceStep, TraceTurn } from '../types';
-import { durationRows, topShare } from './trace';
+import { durationRows, topShare } from './traceData/stats';
 import { CallRows } from './traceViews/CallRows';
 import { ContextRow } from './traceViews/ContextRow';
 import { matchesStep } from './traceViews/Highlight';

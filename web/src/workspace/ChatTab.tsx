@@ -23,17 +23,17 @@ import { GitHubIcon, GlobeIcon, PaperclipIcon, SendIcon, SparkIcon } from './cha
 import { AssistantMessage } from './chat/Message';
 import { newId } from './id';
 import { extractLinks } from './links';
-import { ModelConfigPopover } from './ModelConfigPopover';
+import { ModelConfigPopover } from './model-config/Popover';
 import { PermissionCard } from './PermissionCard';
 import { PermissionPicker } from './PermissionPicker';
-import { confirm, refreshPending, send, setPermission, stop, useSession } from './store';
+import { confirm, refreshPending, send, setPermission, stop } from './store/actions';
+import { useSession } from './store/state';
 import { CompressionTimeline, ContextRing } from './ContextRing';
-import { formatClock } from './time';
 import { TraceRail } from './TraceRail';
-import { turnsFromMessages } from './trace';
+import { turnsFromMessages } from './traceData/build';
 
 export { attachMeta, formatSize } from './chat/attachments';
-export { formatClock };
+export { formatClock } from './time';
 interface Props {
   session: string;
   /** 首次发送时通知外层把「新会话」落到 URL 上。 */

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Overview } from './quality/Overview';
 import { SuitePanel } from './quality/SuitePanel';
-import { EvalBatches } from './EvalBatches';
+import { EvalBatches } from './eval/Batches';
 
 /** 三个视图：「能不能用」→「拿什么测的」→「逐条明细」。 */
 type QualityView = 'overview' | 'suite' | 'batches';

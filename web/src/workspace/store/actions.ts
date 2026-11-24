@@ -1,7 +1,7 @@
 /** 会话动作：发起/停止一轮、切档、确认续跑与挂起恢复。 */
 
 import { fetchPending } from '../../api/client';
-import { applyEvent, INITIAL_STATE, streamConfirm, streamRun } from '../../api/useRunStream';
+import { applyEvent, INITIAL_STATE, streamConfirm, streamRun } from '../../api/stream';
 import type { Attachment, ChatMessage, ConfirmDecision, PermissionKey } from '../../types';
 import { newId } from '../id';
 import { savePermission } from '../history';

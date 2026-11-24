@@ -14,7 +14,7 @@ import {
 import type { Attachment, ChatMessage, InputStage, ParseStage, Run, RunHealth, Span } from '../types';
 import { clearAllHistory, saveMessages } from './history';
 import { RunTrace } from './RunTrace';
-import { resetStore } from './store';
+import { resetStore } from './store/state';
 import { TraceTab } from './TraceTab';
 
 vi.mock('../api/client', () => ({

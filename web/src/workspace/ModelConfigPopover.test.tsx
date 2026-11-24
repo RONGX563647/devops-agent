@@ -10,7 +10,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelConfig, ModelValues } from '../types';
-import { ModelConfigPopover } from './ModelConfigPopover';
+import { ModelConfigPopover } from './model-config/Popover';
 
 const saveSession = vi.fn();
 const saveDefaults = vi.fn();

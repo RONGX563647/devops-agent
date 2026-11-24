@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage, ProcessEntry } from '../types';
-import { turnsFromMessages } from './trace';
+import { turnsFromMessages } from './traceData/build';
 import { TraceList } from './TraceList';
 
 function tool(partial: Partial<ProcessEntry> & { id: string }): ProcessEntry {

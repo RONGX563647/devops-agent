@@ -621,10 +621,16 @@ export function applyEvent(prev: StreamState, event: StreamEvent): StreamState {
   return handler ? handler(next, event) : next;
 }
 
-/** 逐帧读取 SSE 流并回调；抽成独立函数便于单测。 */
+/** 逐帧读取 SSE 流并回调；抽成独立函数便于单测。
+ *
+ * onActivity 在「读到任意字节」时触发，与帧内容无关：注释心跳帧、工具输出
+ * 增量、未闭合的 chunk 都算活动。这样保活判定不依赖 parseFrame 能否解析出
+ * 事件（注释帧会被 parseFrame 丢弃，但同样证明连接还活着）。
+ */
 export async function consumeStream(
   body: ReadableStream<Uint8Array>,
   onEvent: (event: StreamEvent) => void,
+  onActivity?: () => void,
 ): Promise<void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -636,6 +642,7 @@ export async function consumeStream(
       buffer += decoder.decode();
       break;
     }
+    onActivity?.();
     buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
     const frames = buffer.split('\n\n');
     buffer = frames.pop() ?? '';
@@ -658,6 +665,7 @@ export async function streamRun(
   attachmentIds: string[] = [],
   permission?: string,
   webSearch = false,
+  onActivity?: () => void,
 ): Promise<void> {
   const resp = await fetch('/run/stream', {
     method: 'POST',
@@ -679,7 +687,7 @@ export async function streamRun(
   if (!resp.ok || !resp.body) {
     throw new Error(`流式请求失败 ${resp.status}`);
   }
-  await consumeStream(resp.body, onEvent);
+  await consumeStream(resp.body, onEvent, onActivity);
 }
 
 /** 提交确认并接着读同一条 run 的后续事件流。 */
@@ -691,6 +699,7 @@ export async function streamConfirm(
   signal: AbortSignal,
   /** 挂起中用户切过档时带上：续跑按当前档位，不再锁死发起轮。 */
   permission?: string,
+  onActivity?: () => void,
 ): Promise<void> {
   const resp = await fetch(`/run/${runId}/confirm`, {
     method: 'POST',
@@ -706,5 +715,5 @@ export async function streamConfirm(
   if (!resp.ok || !resp.body) {
     throw new Error(`确认失败 ${resp.status}`);
   }
-  await consumeStream(resp.body, onEvent);
+  await consumeStream(resp.body, onEvent, onActivity);
 }

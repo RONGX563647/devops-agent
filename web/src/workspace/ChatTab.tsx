@@ -20,6 +20,7 @@ import { Markdown } from './Markdown';
 import { PermissionCard } from './PermissionCard';
 import { PermissionPicker } from './PermissionPicker';
 import { confirm, refreshPending, send, setPermission, stop, useSession } from './store';
+import { CompressionTimeline, ContextRing } from './ContextRing';
 import { StepList } from './StepRow';
 import { formatClock } from './time';
 import { TraceRail } from './TraceRail';
@@ -484,6 +485,8 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
         onLocate={(turn) => locate(turn.id)}
         onOpenTrace={onOpenTrace}
       />
+      {/* 压缩过程贴着输入框：它解释的是「为什么接下来的回答变短了」。 */}
+      <CompressionTimeline records={view.compressions} />
       <div className="chat-composer">
         <div className="chat-compose">
           {files.length > 0 && (
@@ -587,6 +590,12 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
                     ? '生成中，仍可切档；停止后可发送新消息'
                     : 'Enter 发送 · Shift+Enter 换行')}
             </span>
+            <ContextRing
+              tokens={view.contextTokens}
+              threshold={view.contextThreshold}
+              contextSize={view.contextSize}
+              busy={view.compressions.some((item) => item.state === 'running')}
+            />
             {view.running && (
               <button className="send-btn stop" onClick={() => stop(session)}>
                 停止

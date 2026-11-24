@@ -499,6 +499,19 @@ export interface StreamEvent {
   tool_calls?: PendingCall[];
   /** 挂起有效期（RUN_PARKED）；后端未给时为空 */
   expires_at?: string | null;
+  /** 上下文预算：触发压缩的 token 阈值（CONTEXT_BUDGET） */
+  threshold?: number;
+  /** 模型窗口大小（CONTEXT_BUDGET） */
+  context_size?: number;
+  /** 触发压缩的比例（CONTEXT_BUDGET），阈值 = ratio × 窗口 */
+  trigger_ratio?: number;
+  /** 压缩检查前后的 token 数（CONTEXT_COMPRESSION_START / END） */
+  before_tokens?: number;
+  after_tokens?: number;
+  /** 这次检查是否真的压了：没到阈值时为 false，前端不画无效记录 */
+  compressed?: boolean;
+  /** 压缩后摘要的字符数 */
+  summary_chars?: number;
 }
 
 /** 过程步骤的类别——每类在 UI 上有不同视觉标注。 */
@@ -527,6 +540,26 @@ export interface ParseStage {
   changed: boolean;
   /** 阶段内部失败条数（部分降级）。 */
   failed: number;
+}
+
+/** 一次上下文压缩记录：START/END 配对后落到这里。
+ *
+ * state 三态：running 表示框架正在压；done 表示压完了；skipped 表示
+ * 检查过但没到阈值（框架直接 return）。界面只把 done 画进时间线。
+ */
+export interface CompressionRecord {
+  id: string;
+  /** 压缩前上下文 token 数（框架按自己的口径估算，不是本轮累计用量） */
+  before: number;
+  /** 压缩后 token 数；未结束时为 null */
+  after: number | null;
+  /** 触发阈值，用于显示「103053 / 102400」 */
+  threshold: number;
+  state: 'running' | 'done' | 'skipped';
+  /** 压缩后摘要字符数 */
+  summaryChars: number;
+  at: string;
+  endedAt: string | null;
 }
 
 /** 一条过程步骤：由若干同类事件流聚合成，携带展示所需的标注与状态。 */

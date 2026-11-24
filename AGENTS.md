@@ -99,8 +99,9 @@ git fetch origin && git checkout main && git pull
 ## 3. 架构约束（写代码时遵守）
 
 1. **框架隔离**：`import agentscope` 只允许出现在装配/工厂模块——当前边界为 `runtime/agent.py`、
-   `runtime/supervisor.py`、`tools/catalog.py`、`executor/boundary.py`、`governance/policy.py`、
-   `memory/ledger.py`、`secrets/middleware.py`（以 `grep -rn 'agentscope' src/` 的实际结果为准）；
+   `runtime/supervisor.py`、`runtime/compression.py`、`tools/catalog.py`、`executor/boundary.py`、
+   `governance/policy.py`、`memory/ledger.py`、`secrets/middleware.py`（以 `grep -rn 'agentscope' src/`
+   的实际结果为准）；
    这些模块构成对框架的隔离层，网关（`main.py`）、编排协议（`runtime/runtime.py`）、
    可观测性（`observability/`）等一律通过协议或工厂间接使用，不得散落 import。`runtime/events.py`
    刻意靠 duck typing 不 import 框架，以保持事件转译可用假事件测试。`secrets/middleware.py` 是

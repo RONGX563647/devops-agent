@@ -1,6 +1,6 @@
 # SPEC-0005：内嵌式评测平台（现有 FastAPI + SQLite + React，不新增服务）
 
-- 状态：Draft（待评审）
+- 状态：Superseded by SPEC-0006（指标矩阵、校准与硬性红线被 0006 吸收）
 - 日期：2026-11-25
 - 取代：SPEC-0004（自托管 Langfuse 与 Postgres/Redis/MinIO 方案被否决）
 - 相关：`src/devops_agent/{main.py,eval/*,observability/*,executor/boundary.py}`、

@@ -75,8 +75,10 @@ _TOOL_PROMPT = """你可以调用以下工具来获取真实信息，而不是�
 1. 需要文件内容、目录列表、命令输出时，必须真的发起工具调用；
    不要用「工具调用 xxx」这样的文字描述代替调用。
 2. 不要编造命令输出或文件内容。工具失败就据实说明失败原因；
-   同一个工具连续失败两次就换手段（例如 {glob_tool} 与 shell 互换），
-   不要反复重试同一种调用。
+   同一个工具连续失败两次就换手段（例如 {glob_tool} 与 shell 互换）；
+   换过两种手段仍然失败就停止尝试，说明缺了什么、用已有信息回答，
+   不要继续换第三种写法重试。上下文里标注「本轮未能取到的材料」时，
+   不要再尝试抓取或读取它们。
 3. 最终回答用中文，可用 Markdown（标题、列表、表格、代码块）；引用工具输出时保持原样。"""
 
 
@@ -92,8 +94,11 @@ def resolve_workdir(workdir: str | os.PathLike[str] | None = None) -> Path:
 # v2：重试条款改成「同一工具连续失败两次就换手段」，不再指定具体工具名 ——
 #     依赖缺失时（如缺 rg）原来的「改用 Grep 重试」会把模型推回同一堵墙。
 # v3：指纹拆成「语义 / 字节 / 档位说明」三个（见 prompt_fingerprint 的说明）。
+# v4：补「换过两种手段仍失败就停止」——只写「换手段」时模型会一直换下去：
+#     实测一次会话里它换了 curl / PowerShell / python 脚本 / 代理设置六种写法，
+#     失败都发生在同一层（网络），白烧 21 步工具调用。
 PROMPT_ID = "agent-system"
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 
 
 def _render_system_prompt(workdir_label: str, shell_label: str) -> str:

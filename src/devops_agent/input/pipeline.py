@@ -43,6 +43,9 @@ FETCH_TIMEOUT_SECONDS: Final = 5.0
 FETCH_MAX_BYTES: Final = 512 * 1024
 # token 估算口径：与 AgentScope formatter 的「字节数 / 4」同源，按字符算更保守
 CHARS_PER_TOKEN: Final = 4
+# 「服务端没代为抓取」：与真正的抓取失败区分开——这不是内容不可得，
+# 模型用自己的工具仍可能取到，不能替它宣布放弃。
+REMOTE_FETCH_OFF: Final = "远程抓取未开启"
 
 STAGE_LABELS: Final[dict[str, str]] = {
     "normalize": "归一化",
@@ -350,7 +353,7 @@ def _resolve_ref(ref: Reference, root: Path | None, remote_fetch: bool) -> tuple
     if ref.kind != "url":
         return f"（git 引用，未克隆）{ref.value}", ""
     if not remote_fetch:
-        return "", "远程抓取未开启"
+        return "", REMOTE_FETCH_OFF
     return _fetch_quietly(ref.value)
 
 
@@ -387,11 +390,16 @@ def _attach_summary(total: int, ok: int, failed: int) -> tuple[str, str]:
 
 def _expand(
     refs: list[Reference], root: Path | None, remote_fetch: bool
-) -> tuple[list[tuple[Reference, str]], Stage]:
-    """把每条引用换成可直接塞进上下文的材料块。"""
+) -> tuple[list[tuple[Reference, str]], list[str], Stage]:
+    """把每条引用换成可直接塞进上下文的材料块。
+
+    取不到的引用同时以 `misses` 返回：它必须进模型上下文，只写进阶段详情
+    等于模型不知道自己手里缺了什么，于是自己去抓同一个地址反复失败。
+    """
     start = time.perf_counter()
     blocks: list[tuple[Reference, str]] = []
     notes: list[str] = []
+    misses: list[str] = []
     failures = 0
 
     for ref in refs:
@@ -399,37 +407,49 @@ def _expand(
         if problem:
             failures += 1
             notes.append(f"{ref.value} → {problem}")
+            # 「远程抓取未开启」只是服务端没代为抓取，不写进 misses：
+            # 写进去等于替模型判定「内容不可得」，会劝退它用 shell 自己取。
+            if problem != REMOTE_FETCH_OFF:
+                misses.append(f"{ref.value} → {problem}")
             continue
         blocks.append((ref, content))
         notes.append(f"{ref.value} → {len(content)} 字")
 
     status, summary = _expand_summary(len(refs), len(blocks), failures)
     added = sum(len(content) for _, content in blocks)
-    return blocks, _stage(
-        "expand",
-        status=status,
-        summary=summary,
-        before=0,
-        after=added,
-        items=len(refs),
-        ms=_elapsed_ms(start),
-        detail="\n".join(notes),
-        changed=bool(blocks),
-        failed=failures,
+    return (
+        blocks,
+        misses,
+        _stage(
+            "expand",
+            status=status,
+            summary=summary,
+            before=0,
+            after=added,
+            items=len(refs),
+            ms=_elapsed_ms(start),
+            detail="\n".join(notes),
+            changed=bool(blocks),
+            failed=failures,
+        ),
     )
 
 
-def _attach(attachments: Sequence[Attachment]) -> tuple[list[tuple[Reference, str]], Stage]:
+def _attach(
+    attachments: Sequence[Attachment],
+) -> tuple[list[tuple[Reference, str]], list[str], Stage]:
     """把上传的附件变成材料块——正文在入库时已抽好，这里不再碰磁盘。"""
     start = time.perf_counter()
     blocks: list[tuple[Reference, str]] = []
     notes: list[str] = []
+    misses: list[str] = []
     failures = 0
 
     for attachment in attachments:
         if not attachment.ok:
             failures += 1
             notes.append(f"{attachment.name} → {attachment.problem}")
+            misses.append(f"{attachment.name} → {attachment.problem}")
             continue
         blocks.append((Reference(kind="file", value=attachment.name), attachment.text))
         suffix = "（已截断）" if attachment.truncated else ""
@@ -437,17 +457,21 @@ def _attach(attachments: Sequence[Attachment]) -> tuple[list[tuple[Reference, st
 
     status, summary = _attach_summary(len(attachments), len(blocks), failures)
     added = sum(len(content) for _, content in blocks)
-    return blocks, _stage(
-        "attach",
-        status=status,
-        summary=summary,
-        before=0,
-        after=added,
-        items=len(attachments),
-        ms=_elapsed_ms(start),
-        detail="\n".join(notes),
-        changed=bool(blocks),
-        failed=failures,
+    return (
+        blocks,
+        misses,
+        _stage(
+            "attach",
+            status=status,
+            summary=summary,
+            before=0,
+            after=added,
+            items=len(attachments),
+            ms=_elapsed_ms(start),
+            detail="\n".join(notes),
+            changed=bool(blocks),
+            failed=failures,
+        ),
     )
 
 
@@ -725,11 +749,44 @@ def _budget(
     )
 
 
-def _compose(text: str, blocks: list[tuple[Reference, str]]) -> tuple[str, Stage]:
-    """拼出最终交给模型的文本：用户原话 + 材料附录。"""
+def _render_materials(blocks: Sequence[tuple[Reference, str]]) -> str:
+    """取到的材料：一份一个小节，正文原样包进代码块，避免被当成指令读。"""
+    return "\n\n".join(
+        f"### 引用材料 {index} · {ref.value}\n\n```\n{content}\n```"
+        for index, (ref, content) in enumerate(blocks, start=1)
+    )
+
+
+def _render_misses(misses: Sequence[str]) -> str:
+    """取不到的材料：清单 + 停止规则。
+
+    只列清单不够。实测一次会话里模型不知道引用抓取失败（失败原因只在阶段详情里），
+    自己去 curl 同一个地址，被 shell 拆参数、被网络重置，换 PowerShell、换 python
+    脚本、换代理设置，烧掉 21 步工具调用才承认拿不到。所以这里必须同时说清
+    「别再抓了」和「拿已有的回答」。
+    """
+    lines = ["### 本轮未能取到的材料", ""]
+    lines.extend(f"- {miss}" for miss in misses)
+    lines.extend(
+        [
+            "",
+            "以上内容本轮确实拿不到，不要用工具重复抓取同一地址或重读同一文件："
+            "同一目标失败两次就停止尝试。",
+            "请基于已拿到的材料与已知信息回答，并明确说明还缺哪些内容。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _compose(
+    text: str,
+    blocks: list[tuple[Reference, str]],
+    misses: Sequence[str] = (),
+) -> tuple[str, Stage]:
+    """拼出最终交给模型的文本：用户原话 + 材料附录 + 未取到的材料。"""
     start = time.perf_counter()
     before = len(text)
-    if not blocks:
+    if not blocks and not misses:
         return text, _stage(
             "compose",
             status="skip",
@@ -739,19 +796,23 @@ def _compose(text: str, blocks: list[tuple[Reference, str]]) -> tuple[str, Stage
             ms=_elapsed_ms(start),
             changed=False,
         )
-    appendix = "\n\n".join(
-        f"### 引用材料 {index} · {ref.value}\n\n```\n{content}\n```"
-        for index, (ref, content) in enumerate(blocks, start=1)
-    )
-    merged = f"{text}\n\n---\n\n{appendix}"
+    sections = [text]
+    if blocks:
+        sections.append(_render_materials(blocks))
+    if misses:
+        sections.append(_render_misses(misses))
+    merged = "\n\n---\n\n".join(sections)
     tokens = estimate_tokens(merged)
+    counts = [f"{len(blocks)} 份材料"] if blocks else []
+    if misses:
+        counts.append(f"未取到 {len(misses)} 份")
     return merged, _stage(
         "compose",
         status="ok",
-        summary=f"追加 {len(blocks)} 份材料 · 最终 {len(merged)} 字 ≈ {tokens} token",
+        summary=f"{' · '.join(counts)} · 最终 {len(merged)} 字 ≈ {tokens} token",
         before=before,
         after=len(merged),
-        items=len(blocks),
+        items=len(blocks) + len(misses),
         ms=_elapsed_ms(start),
         changed=True,
     )
@@ -784,11 +845,14 @@ def prepare(
 
     text, normalize_stage = _normalize(user_input)
     refs, detect_stage = _detect(text, root)
-    blocks, expand_stage = _expand(refs, root, _remote_fetch_enabled(remote_fetch))
-    attached, attach_stage = _attach(attachments)
+    blocks, ref_misses, expand_stage = _expand(refs, root, _remote_fetch_enabled(remote_fetch))
+    attached, attach_misses, attach_stage = _attach(attachments)
     text, all_blocks, redact_stage = _redact(text, blocks + attached, namer, on_secret)
+    # 失败说明也要进模型上下文，因此同样过一遍脱敏（URL 里可能带 token）。
+    # 这些内容来自用户原文或文件名，正文那一步已经走过 sink，这里不重复入库。
+    misses = [_redact_text(miss, namer, None)[0] for miss in (*ref_misses, *attach_misses)]
     text, all_blocks, budget_stage = _budget(text, all_blocks)
-    text, compose_stage = _compose(text, all_blocks)
+    text, compose_stage = _compose(text, all_blocks, misses)
 
     return PreparedInput(
         original=user_input,

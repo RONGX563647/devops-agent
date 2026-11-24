@@ -153,6 +153,16 @@ def test_build_system_prompt_declares_tools(tmp_path: Path) -> None:
     assert "必须真的发起工具调用" in prompt
 
 
+def test_system_prompt_tells_agent_when_to_stop_retrying(tmp_path: Path) -> None:
+    """只有「换手段」没有「停下来」时，模型会一直换写法重试同一个失败目标。
+
+    真实会话里它换了 curl / PowerShell / python 脚本 / 代理设置六种才承认失败。
+    """
+    prompt = build_system_prompt(tmp_path)
+    assert "换过两种手段仍然失败就停止尝试" in prompt
+    assert "本轮未能取到的材料" in prompt
+
+
 def test_prompt_fingerprint_ignores_workdir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

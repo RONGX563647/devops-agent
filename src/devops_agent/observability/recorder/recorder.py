@@ -1,12 +1,4 @@
-"""事件记录器 —— 消费事件 dict 流，聚合出 run + spans 落库。
-
-职责边界：
-- 输入是普通 dict（由 runtime/events.py 转译），完全不 import agentscope；
-- 每个 SSE 请求对应一个 Recorder 实例；**连接不持有到对象上** ——
-  sqlite3 连接默认绑定创建线程，而「挂起 → 确认」跨了两个请求 / 线程，
-  复用长连接会直接抛 `SQLite objects created in a thread...`；
-- 用 reply_id 把零散事件配对成 span（START 记起点，END 落一条 span）。
-"""
+"""RunRecorder 主体 —— 消费事件 dict 流，聚合出 run + spans 落库。"""
 
 from __future__ import annotations
 
@@ -18,74 +10,18 @@ from pathlib import Path
 
 from devops_agent.observability import repository as repo
 from devops_agent.observability.models import InputStageRecord, RunRecord, SpanRecord
+from devops_agent.observability.recorder.timing import (
+    _elapsed_ms,
+    _iso_to_epoch_ms,
+    _pending_t0,
+    _work_ms,
+    utc_now,
+)
+from devops_agent.observability.recorder.usage import _as_int, _token_delta
 
 # 单个 span 的入参/返回最长保留字符数。工具返回可能是整份日志，
 # 全量落库会让 sqlite 文件无上限膨胀；8k 足够定位问题，超长部分靠 run 的输出兜底。
 MAX_SPAN_TEXT = 8_000
-
-
-def utc_now() -> str:
-    """当前 UTC 时间（ISO 8601），供 recorder 打点。"""
-    return datetime.now(UTC).isoformat()
-
-
-def _elapsed_ms(start: str, end: str) -> int:
-    """两个 ISO 时间串的毫秒差；解析失败或时区不一致回退 0，不让埋点拖垮主流程。"""
-    try:
-        delta = datetime.fromisoformat(end) - datetime.fromisoformat(start)
-        return max(0, int(delta.total_seconds() * 1000))
-    except (ValueError, TypeError):  # TypeError：offset-naive 与 offset-aware 混减
-        return 0
-
-
-def _union_ms(intervals: list[tuple[int, int]]) -> int:
-    """多个区间的并集长度。
-
-    模型调用与工具调用可能嵌套（思考发生在模型调用内部、并行工具互相重叠），
-    直接求和会把同一段时间算两次；并集才是「真正在干活」的时间。
-    """
-    total = 0
-    cur_start: int | None = None
-    cur_end = 0
-    for start, end in sorted(intervals):
-        if end <= start:
-            continue
-        if cur_start is None:
-            cur_start, cur_end = start, end
-        elif start <= cur_end:
-            cur_end = max(cur_end, end)
-        else:
-            total += cur_end - cur_start
-            cur_start, cur_end = start, end
-    if cur_start is not None:
-        total += cur_end - cur_start
-    return total
-
-
-def _iso_to_epoch_ms(value: str) -> int:
-    """ISO 时间 → epoch 毫秒；解析失败退化为当前时间，埋点不该拖垮主流程。"""
-    try:
-        return int(datetime.fromisoformat(value).timestamp() * 1000)
-    except (ValueError, TypeError):
-        return int(datetime.now(UTC).timestamp() * 1000)
-
-
-def _as_int(value: object) -> int:
-    """事件里的数字字段可能是 object，安全转 int，失败回退 0。"""
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    return 0
-
-
-def _pending_t0(pending: dict[str, object]) -> int:
-    """取 pending 里记下的单调时钟起点（纳秒）；缺省回 0。"""
-    value = pending.get("t0", 0)
-    return value if isinstance(value, int) else 0
 
 
 class RunRecorder:
@@ -254,10 +190,7 @@ class RunRecorder:
         )
 
     def _on_model_end(self, event: dict[str, object]) -> None:
-        in_tok = _as_int(event.get("input_tokens", 0))
-        out_tok = _as_int(event.get("output_tokens", 0))
-        cache_read = _as_int(event.get("cache_input_tokens", 0))
-        cache_write = _as_int(event.get("cache_creation_input_tokens", 0))
+        in_tok, out_tok, cache_read, cache_write = _token_delta(event)
         self._input_tokens += in_tok
         self._output_tokens += out_tok
         self._cache_input_tokens += cache_read
@@ -484,15 +417,7 @@ class RunRecorder:
             # 实测耗时 = 所有 span 区间的并集；墙钟 = 起止差（含用户空闲）。
             # 实测不可能超过墙钟（事件时钟偶尔会比 run 起点更早），超了就以墙钟封顶。
             wall_ms = max(0, duration)
-            work_ms = min(
-                _union_ms(
-                    [
-                        (span.start_offset_ms, span.start_offset_ms + (span.duration_ms or 0))
-                        for span in spans
-                    ]
-                ),
-                wall_ms,
-            )
+            work_ms = _work_ms(spans, wall_ms)
             repo.add_input_stages(conn, self._run_id, self._input_stages)
             repo.finish_run(
                 conn,

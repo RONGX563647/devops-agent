@@ -71,6 +71,11 @@ def test_rule_content_scopes() -> None:
         # 复合命令一律不沉淀：首词 cd 沉淀成 cd:* 会顺带放过后半段的 rm
         ("cd /repo && rm -rf build", None),
         ("ls; rm -rf b", None),
+        # 命令替换里能藏任意命令，首词判定看不见内部
+        ("echo $(rm -rf /)", None),
+        ("echo `rm -rf /`", None),
+        ('echo "$(rm -rf /)"', None),  # 双引号内的 $() 同样执行
+        ("echo '$(rm -rf /)'", "echo:*"),  # 单引号内是字面量，不执行
         # 引号里的分隔符不算复合命令
         ("echo 'a && b'", "echo:*"),
         # 这些一旦沉淀就是「任意执行」的后门

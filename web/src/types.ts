@@ -405,6 +405,10 @@ export interface ProcessEntry {
   tokensOut?: number;
   /** 其中命中前缀缓存的输入 token。 */
   cacheTokens?: number;
+  /** 模型调用所属回复：同一轮里多次调用靠它分组，避免步骤 id 互相覆盖。 */
+  replyId?: string;
+  /** 同一回复内的模型调用序号（从 1 开始），用来区分首枪与后续枪。 */
+  callIndex?: number;
   /** 输入解析阶段的明细（kind === 'parse' 时有值）。 */
   parseStages?: ParseStage[];
 }

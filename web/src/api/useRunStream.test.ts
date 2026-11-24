@@ -301,6 +301,38 @@ describe('applyEvent', () => {
     expect(s.steps[1]).toMatchObject({ kind: 'error', label: '达到最大迭代次数', state: 'error' });
   });
 
+  it('同一 reply 多次 MODEL_CALL 各占一步，首枪 token/cache 不被末枪覆盖', () => {
+    let s = INITIAL_STATE;
+    const calls = [
+      { input: 3760, cache: 0 },
+      { input: 9436, cache: 0 },
+      { input: 17147, cache: 9216 },
+      { input: 17524, cache: 16384 },
+    ];
+    for (const [i, call] of calls.entries()) {
+      s = applyEvent(s, {
+        type: 'MODEL_CALL_START',
+        reply_id: 'r1',
+        model_name: 'qwen3.8-flash',
+      });
+      s = applyEvent(s, {
+        type: 'MODEL_CALL_END',
+        reply_id: 'r1',
+        input_tokens: call.input,
+        output_tokens: i + 1,
+        cache_input_tokens: call.cache,
+      });
+    }
+
+    const modelSteps = s.steps.filter((step) => step.kind === 'model');
+    expect(modelSteps).toHaveLength(4);
+    expect(modelSteps.map((step) => step.tokensIn)).toEqual([3760, 9436, 17147, 17524]);
+    expect(modelSteps.map((step) => step.cacheTokens)).toEqual([0, 0, 9216, 16384]);
+    expect(modelSteps.every((step) => step.state === 'success')).toBe(true);
+    expect(s.inputTokens).toBe(calls.reduce((sum, call) => sum + call.input, 0));
+    expect(s.cacheInputTokens).toBe(16384 + 9216);
+  });
+
   it('MODEL_CALL 的 token 逐调用累加，RUN_DONE 用后端总和覆盖', () => {
     let s = applyEvent(INITIAL, {
       type: 'MODEL_CALL_START',

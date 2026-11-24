@@ -427,21 +427,39 @@ def _check_prompt_collision(cases: list[EvalCase]) -> list[Finding]:
 # ------------------------------------------------- S8 档位可达性（真跑权限引擎）
 
 
-def _expected_behavior(expected_status: str) -> str | None:
+def _expected_behavior(case: EvalCase) -> str | None:
     """期望的运行状态 → 权限引擎应给出的判定。
 
-    `success` 意味着命令真的跑了，即权限必须是 allow；
-    `pending` 意味着走确认流，即 ask。其他状态不约束权限。
+    判据要看 `require_executed`，而不是只看 `status`：
+
+    - `status=success` 且 `require_executed=True`：命令必须真的跑了 → 需要 `allow`；
+    - `status=success` 且 `require_executed=False`：只要求「处理了这条命令」，
+      被拒绝也算合格 → 需要 `deny`（这是 `auto` 档的典型形态：dont_ask 把
+      ASK 转成 DENY，用例断言「如实说明被拒」）；
+    - `status=pending`：走确认流 → 需要 `ask`。
+
+    只看 `status` 的话，`auto` 档那两条「期望被拒绝」的用例会被误报。
     """
-    return {"success": "allow", "pending": "ask"}.get(expected_status)
+    if case.expected.status == "pending":
+        return "ask"
+    if case.expected.status != "success":
+        return None
+    return "allow" if case.require_executed else "deny"
 
 
 def _achievable(case: EvalCase) -> str | None:
-    """用真实权限引擎跑一遍 command_hint；不可达时返回说明。"""
+    """用真实权限引擎跑一遍 command_hint；档位与期望不一致时返回说明。
+
+    `require_executed=False` 的用例（「无论是否执行都必须拒绝」）只要求
+    「权限层没有放行」。若权限层实际是 `allow`，说明这条用例的防线全在判卷层——
+    这仍然值得报出来（它可能被误读成「权限层拦住了」），但用 error 会误伤
+    「特意这样设计」的场景，所以由 `_check_achievability` 分层：
+    真正的不可达（该跑却被拒）是 error，防线位置不同是 warning。
+    """
     if not case.command_hint:
         return None
     profile = PROFILES.get(case.permission)
-    want = _expected_behavior(case.expected.status)
+    want = _expected_behavior(case)
     if profile is None or want is None:
         return None
     actual = bash_decision(profile, case.command_hint, Path.cwd())
@@ -449,7 +467,8 @@ def _achievable(case: EvalCase) -> str | None:
         return None
     return (
         f"`{case.command_hint}` 在 {case.permission} 档判定为 {actual}，"
-        f"但用例期望 status={case.expected.status}（需 {want}）"
+        f"但用例期望 status={case.expected.status}"
+        f"（require_executed={case.require_executed}，需 {want}）"
     )
 
 
@@ -460,20 +479,30 @@ def _check_achievability(cases: list[EvalCase]) -> list[Finding]:
     这类命令，而旧题库有 5 条用例在 `permission: readonly` 下断言
     `tool_calls.must: ["Bash"]` 并期望它们跑起来 —— 结构上不可能通过，
     却被判卷当成「模型没做到」。静态跑一遍权限引擎就能拦住。
+
+    `require_executed=False` 且权限层判 `allow` 的情况是 **warning**：
+    用例本身能跑（它只断言正文），但它的防线不在权限层。报出来是为了
+    避免把「权限层挡住了」当成既有事实写进文档。
     """
     findings: list[Finding] = []
     for case in cases:
         problem = _achievable(case)
-        if problem:
-            findings.append(
-                _finding(
-                    "S8",
-                    "error",
-                    f"case:{case.id}",
-                    problem,
-                    hint="换到能执行该命令的档位，或改断言",
-                )
+        if not problem:
+            continue
+        level = "error" if case.require_executed else "warning"
+        findings.append(
+            _finding(
+                "S8",
+                level,
+                f"case:{case.id}",
+                problem,
+                hint=(
+                    "换到能执行该命令的档位，或改断言"
+                    if level == "error"
+                    else "权限层未拦截该命令，这条用例的防线只有判卷层"
+                ),
             )
+        )
     return findings
 
 

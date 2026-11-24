@@ -21,7 +21,7 @@ jobs:
       - name: quality gates (config/gates.yaml)
         run: python scripts/check_gates.py
       - name: eval suite validate
-        run: python -m devops_agent.eval validate --suite eval/suites/devops-core.v1.jsonl
+        run: python -m devops_agent.eval validate --suite eval/suites/devops-core.v2.jsonl
       # 静态契约检查：工具名闭包 / 占位符机器无关 / 文案承诺=能力矩阵 / 题库自洽 /
       # 断言有效性 / 判卷口径版本 / 断言撞车（S7）/ 档位可达性（S8）。
       # 不跑模型，纯静态，几毫秒；S8 会真跑一次权限引擎。
@@ -31,7 +31,7 @@ jobs:
       - name: prompt contract lint
         run: |
           python -m devops_agent.eval prompt-lint \
-            --suite eval/suites/devops-core.v1.jsonl \
+            --suite eval/suites/devops-core.v2.jsonl \
             --known-issues eval/lint-baseline.json
 
   frontend:

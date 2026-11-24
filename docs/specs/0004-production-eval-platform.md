@@ -1,6 +1,6 @@
 # SPEC-0004：生产级评测平台（DeepEval 打分 + Langfuse 可视化 + 统一门禁）
 
-- 状态：Draft（待评审）
+- 状态：Superseded by SPEC-0005（自托管可视化与额外中间件被否决）
 - 日期：2026-11-25
 - 取代：SPEC-0003（其“DeepEval 只替换打分引擎”的结论被本文吸收，范围扩大）
 - 相关：`src/devops_agent/eval/*`、`src/devops_agent/observability/*`、

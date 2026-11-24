@@ -35,21 +35,28 @@ def linux_shell(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_semantic_fingerprint_is_platform_independent(monkeypatch: pytest.MonkeyPatch) -> None:
     """同一份代码在 Windows 与 Linux 上必须得到同一个语义指纹。
 
-    做法：先取当前平台的值，再把 `shell_name` 换成 Linux 的，比较两次结果。
+    做法：把 `shell_name` 换成两个**明确不同**的假值再比对。
+    不能拿「真实平台」和「/bin/sh」比 —— 在 Linux 上这两个本来就相同，
+    测试会变成恒真（CI 在 ubuntu 上跑就是这样挂的）。
     `_render_system_prompt` 用 `<shell>` 占位符，所以换 shell 不该改变语义指纹。
     """
-    windows = prompt_fingerprint()
+    monkeypatch.setattr(agent_mod, "shell_name", lambda: "cmd.exe (Windows)")
+    one = prompt_fingerprint()
     monkeypatch.setattr(agent_mod, "shell_name", lambda: "/bin/sh")
-    linux = prompt_fingerprint()
-    assert windows == linux
+    other = prompt_fingerprint()
+    assert one == other
 
 
 def test_bytes_fingerprint_differs_across_platforms(monkeypatch: pytest.MonkeyPatch) -> None:
-    """字节指纹必须反映平台差异——这正是「缓存能否跨机复用」的判据。"""
-    windows = prompt_bytes_sha("E:/repo")
+    """字节指纹必须反映平台差异——这正是「缓存能否跨机复用」的判据。
+
+    同样用两个明确的假值，避免在 Linux 上「真平台 == /bin/sh」导致恒真。
+    """
+    monkeypatch.setattr(agent_mod, "shell_name", lambda: "cmd.exe (Windows)")
+    one = prompt_bytes_sha("E:/repo")
     monkeypatch.setattr(agent_mod, "shell_name", lambda: "/bin/sh")
-    linux = prompt_bytes_sha("E:/repo")
-    assert windows != linux
+    other = prompt_bytes_sha("E:/repo")
+    assert one != other
 
 
 def test_semantic_fingerprint_ignores_real_workdir() -> None:

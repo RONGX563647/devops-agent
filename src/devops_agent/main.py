@@ -522,6 +522,17 @@ async def run_stream(
             recorder.finish(status="failed", error=f"{type(exc).__name__}: {exc}")
             yield _sse_frame({"type": "RUN_ERROR", "error": str(exc)})
         finally:
+            # 客户端断连抛的是 GeneratorExit / CancelledError，都不是 Exception 子类，
+            # 上面的 except 抓不到；不兜底就会留下永远 running 的 run。
+            # finish 幂等（正常路径已写过 success/failed 时直接早退），不会覆盖终态。
+            # 终态沿用 failed 而不是新增 aborted：runs.status 的 CHECK 是建表时定的，
+            # 老库不会因为改 DDL 而放宽，新写一个状态值会在旧库上直接 IntegrityError。
+            try:
+                recorder.finish(
+                    status="failed", error="ClientDisconnected: 客户端断开，本轮中止"
+                )
+            except Exception:  # noqa: BLE001 - 收尾失败也不能阻止释放会话锁
+                logger.warning("断连兜底收尾失败: %s", req.session_id, exc_info=True)
             # 会话快照要包含这一轮结束后的完整状态，刷新后重建才不会丢历史
             registry.save(req.session_id)
             entry.lock.release()

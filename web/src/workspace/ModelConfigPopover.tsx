@@ -17,7 +17,7 @@ import {
   patchModelConfig,
   patchSessionModelConfig,
 } from '../api/client';
-import type { ModelBound, ModelConfig, ModelSource, ModelValues } from '../types';
+import type { ModelBound, ModelConfig, ModelPatch, ModelSource, ModelValues } from '../types';
 import { formatTokens } from './ContextRing';
 
 /** 来源徽标文案。`framework-default` 不是「默认值」，是「没人设过」。 */
@@ -108,9 +108,9 @@ function NumInput({ value, bound, integer, onChange, disabled, ariaLabel }: NumP
 }
 
 /** 危险改动提示：不是拦路，是让人知道自己在改什么。 */
-function dangersOf(draft: Partial<ModelValues>, base: ModelValues): string[] {
+function dangersOf(draft: ModelPatch, base: ModelValues): string[] {
   const notes: string[] = [];
-  if (draft.model !== undefined && draft.model !== base.model) {
+  if (typeof draft.model === 'string' && draft.model !== base.model) {
     notes.push('下一次模型调用即生效。若模型名无效，该次调用会失败且不会自动回滚到旧模型。');
   }
   if (draft.context_size !== undefined && draft.context_size !== base.context_size) {
@@ -130,7 +130,7 @@ function dangersOf(draft: Partial<ModelValues>, base: ModelValues): string[] {
 
 /** 本地越界检查：只为提前禁用保存，服务端仍是唯一裁判。 */
 export function boundError(
-  values: ModelValues,
+  values: ModelPatch,
   bounds: Record<string, ModelBound>,
 ): string {
   const table = values as unknown as Record<string, unknown>;
@@ -153,48 +153,72 @@ interface Props {
 
 export function ModelConfigPopover({ session, config, contextTokens, onChanged }: Props) {
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState<Partial<ModelValues>>({});
+  const [draft, setDraft] = useState<ModelPatch>({});
   const [notice, setNotice] = useState('');
   const [ack, setAck] = useState(false);
   const [confirmDeploy, setConfirmDeploy] = useState(false);
   const [busy, setBusy] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const gearRef = useRef<HTMLButtonElement | null>(null);
+  const hadOpen = useRef(false);
   const queryClient = useQueryClient();
 
-  // 每次打开都从当前生效值开始：草稿跨会话/跨版本残留会让「改的是哪一份」说不清
+  // 每次打开都从当前生效值开始：草稿跨会话/跨版本残留会让「改的是哪一份」说不清。
+  // 重置必须发生在 updater 之外：updater 在 StrictMode 下会跑两次，不能有副作用。
   function toggleOpen() {
-    setOpen((value) => {
-      if (!value) {
-        setDraft({});
-        setAck(false);
-        setConfirmDeploy(false);
-        setNotice('');
-      }
-      return !value;
-    });
+    if (!open) {
+      setDraft({});
+      setAck(false);
+      setConfirmDeploy(false);
+      setNotice('');
+    }
+    setOpen(!open);
   }
 
+  // 打开期间：点外关闭、Esc 关闭，并把焦点送进面板 / 关闭时还给齿轮。
+  // focus 不是 setState，放在 effect 里安全；setOpen 只出现在事件回调里。
   useEffect(() => {
-    if (!open) return undefined;
-    function onDocClick(event: MouseEvent) {
+    if (!open) {
+      if (hadOpen.current) gearRef.current?.focus();
+      hadOpen.current = false;
+      return undefined;
+    }
+    hadOpen.current = true;
+    panelRef.current?.focus();
+    function onDocMouseDown(event: MouseEvent) {
       if (!wrapRef.current?.contains(event.target as Node)) setOpen(false);
     }
-    document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setOpen(false);
+    }
+    document.addEventListener('mousedown', onDocMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
   }, [open]);
 
   const base = config?.effective;
-  const shown: ModelValues | null = base ? { ...base, ...draft } : null;
+  const shown = base ? { ...base, ...draft } : null;
   const sources = { ...(config?.sources ?? {}) } as Record<string, ModelSource>;
   const overrides = config?.overrides ?? {};
   const edited = draft;
 
   /** 草稿里改过的项要显示成「本会话/部署默认」之前的样子：先标成待保存。 */
-  function patch(change: Partial<ModelValues>) {
+  function patch(change: ModelPatch) {
     setDraft((prev) => ({ ...prev, ...change }));
     setAck(false);
     setConfirmDeploy(false);
     setNotice('');
+  }
+
+  /** 保存前的模型名归一：去首尾空格，空串 = 删覆盖（null），不留一条空模型名。 */
+  function normalizeModel(edit: ModelPatch): ModelPatch {
+    if (!('model' in edit)) return edit;
+    const text = (edit.model ?? '').trim();
+    return { ...edit, model: text === '' ? null : text };
   }
 
   async function saveSession() {
@@ -204,7 +228,8 @@ export function ModelConfigPopover({ session, config, contextTokens, onChanged }
     }
     setBusy(true);
     try {
-      const result = await patchSessionModelConfig(session, edited);
+      // 后端 apply_patch 把 null 当删键，ModelPatch 已按这个语义声明类型
+      const result = await patchSessionModelConfig(session, normalizeModel(edited));
       setNotice(`已保存到本会话 · ${result.effective_from ?? '下一轮生效'}`);
       setDraft({});
       await queryClient.invalidateQueries({ queryKey: ['model-config'] });
@@ -219,7 +244,7 @@ export function ModelConfigPopover({ session, config, contextTokens, onChanged }
   async function saveDefaults() {
     setBusy(true);
     try {
-      const result = await patchModelConfig(edited, config?.version);
+      const result = await patchModelConfig(normalizeModel(edited), config?.version);
       const affected = result.affected ?? { applied: 0, deferred: 0 };
       setNotice(
         `已设为部署默认：${affected.applied} 个会话立即生效，${affected.deferred} 个等当前轮结束`,
@@ -251,7 +276,7 @@ export function ModelConfigPopover({ session, config, contextTokens, onChanged }
   }
 
   const dirty = Object.keys(edited).length > 0;
-  const dangers = shown ? dangersOf(edited, base ?? shown) : [];
+  const dangers = base ? dangersOf(edited, base) : [];
   const needsAck = dangers.length > 0 && !ack;
   const invalid = shown ? boundError(shown, config?.bounds ?? {}) : '';
   const retriesDirty =
@@ -265,6 +290,7 @@ export function ModelConfigPopover({ session, config, contextTokens, onChanged }
     return (
       <div className="mc-wrap" ref={wrapRef}>
         <button
+          ref={gearRef}
           type="button"
           className="mc-gear"
           aria-label="模型设置"
@@ -281,6 +307,7 @@ export function ModelConfigPopover({ session, config, contextTokens, onChanged }
   return (
     <div className="mc-wrap" ref={wrapRef}>
       <button
+        ref={gearRef}
         type="button"
         className="mc-gear is-open"
         aria-label="模型设置"
@@ -289,7 +316,7 @@ export function ModelConfigPopover({ session, config, contextTokens, onChanged }
       >
         <GearIcon />
       </button>
-      <div className="mc-panel" role="dialog" aria-label="模型设置">
+      <div className="mc-panel" role="dialog" aria-label="模型设置" tabIndex={-1} ref={panelRef}>
         <div className="mc-head">
           <span className="mc-title">模型设置</span>
           <span className="mc-badge mono">
@@ -305,23 +332,30 @@ export function ModelConfigPopover({ session, config, contextTokens, onChanged }
               <input
                 className="mc-input mono"
                 aria-label="模型名"
-                value={shown.model}
+                value={shown.model ?? ''}
                 placeholder="未配置（走环境变量）"
+                // 输入时保留原值：否则每敲一个空格就被 trim 掉，光标会跳
                 onChange={(e) => patch({ model: e.target.value })}
+                // 离开时才归一：去尾随空格；空串 = 删本层覆盖（null），不写空模型名
+                onBlur={(e) => {
+                  const text = e.target.value.trim();
+                  const next = text === '' ? null : text;
+                  if (next !== (shown.model ?? null)) patch({ model: next });
+                }}
               />
             </Row>
-            <Row label="上下文窗口" source={sources.context_size}>
+            <Row label="上下文窗口" source={sources.context_size} hint="空 = 跟随下层">
               <NumInput
                 ariaLabel="上下文窗口"
                 value={shown.context_size}
                 bound={config?.bounds.context_size}
                 integer
-                onChange={(value) => patch({ context_size: value ?? shown.context_size })}
+                onChange={(value) => patch({ context_size: value })}
               />
             </Row>
             {config?.derived.context_uncalibrated && (
               <p className="mc-warn">
-                {formatTokens(shown.context_size)} 是框架默认值，没有经过确认。填成模型的真实窗口
+                {formatTokens(base.context_size)} 是框架默认值，没有经过确认。填成模型的真实窗口
                 才能让压缩阈值和占用圆环准。
               </p>
             )}
@@ -369,35 +403,31 @@ export function ModelConfigPopover({ session, config, contextTokens, onChanged }
             </Row>
 
             <div className="mc-section">迭代与重试</div>
-            <Row label="迭代上限" source={sources.max_iters}>
+            <Row label="迭代上限" source={sources.max_iters} hint="空 = 跟随下层">
               <NumInput
                 ariaLabel="迭代上限"
                 value={shown.max_iters}
                 bound={config?.bounds.max_iters}
                 integer
-                onChange={(value) => patch({ max_iters: value ?? shown.max_iters })}
+                onChange={(value) => patch({ max_iters: value })}
               />
             </Row>
-            <Row label="模型重试" source={sources.model_max_retries} hint="HTTP 层">
+            <Row label="模型重试" source={sources.model_max_retries} hint="HTTP 层 · 空 = 跟随下层">
               <NumInput
                 ariaLabel="模型重试"
                 value={shown.model_max_retries}
                 bound={config?.bounds.model_max_retries}
                 integer
-                onChange={(value) =>
-                  patch({ model_max_retries: value ?? shown.model_max_retries })
-                }
+                onChange={(value) => patch({ model_max_retries: value })}
               />
             </Row>
-            <Row label="智能体重试" source={sources.agent_max_retries} hint="ReAct 层">
+            <Row label="智能体重试" source={sources.agent_max_retries} hint="ReAct 层 · 空 = 跟随下层">
               <NumInput
                 ariaLabel="智能体重试"
                 value={shown.agent_max_retries}
                 bound={config?.bounds.agent_max_retries}
                 integer
-                onChange={(value) =>
-                  patch({ agent_max_retries: value ?? shown.agent_max_retries })
-                }
+                onChange={(value) => patch({ agent_max_retries: value })}
               />
             </Row>
             <p
@@ -411,30 +441,28 @@ export function ModelConfigPopover({ session, config, contextTokens, onChanged }
             </p>
 
             <div className="mc-section">上下文压缩</div>
-            <Row label="触发比例" source={sources.trigger_ratio}>
+            <Row label="触发比例" source={sources.trigger_ratio} hint="空 = 跟随下层">
               <NumInput
                 ariaLabel="触发比例"
                 value={shown.trigger_ratio}
                 bound={config?.bounds.trigger_ratio}
-                onChange={(value) => patch({ trigger_ratio: value ?? shown.trigger_ratio })}
+                onChange={(value) => patch({ trigger_ratio: value })}
               />
             </Row>
-            <Row label="保留比例" source={sources.reserve_ratio}>
+            <Row label="保留比例" source={sources.reserve_ratio} hint="空 = 跟随下层">
               <NumInput
                 ariaLabel="保留比例"
                 value={shown.reserve_ratio}
                 bound={config?.bounds.reserve_ratio}
-                onChange={(value) => patch({ reserve_ratio: value ?? shown.reserve_ratio })}
+                onChange={(value) => patch({ reserve_ratio: value })}
               />
             </Row>
-            <Row label="预警缓冲" source={sources.context_buffer_ratio}>
+            <Row label="预警缓冲" source={sources.context_buffer_ratio} hint="空 = 跟随下层">
               <NumInput
                 ariaLabel="预警缓冲"
                 value={shown.context_buffer_ratio}
                 bound={config?.bounds.context_buffer_ratio}
-                onChange={(value) =>
-                  patch({ context_buffer_ratio: value ?? shown.context_buffer_ratio })
-                }
+                onChange={(value) => patch({ context_buffer_ratio: value })}
               />
             </Row>
             <p className="mc-derived">

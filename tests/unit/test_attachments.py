@@ -83,6 +83,17 @@ def test_extract_text_reports_broken_office_package() -> None:
     assert "损坏" in problem
 
 
+def test_ooxml_rejects_unpacked_bomb(monkeypatch: pytest.MonkeyPatch) -> None:
+    """压缩包很小但解压后超限：明确报超限，不抛异常也不返回正文。
+
+    用高度可压缩的重复字节模拟 zip bomb，解压上限调小以把内存控制在 KB 级。
+    """
+    monkeypatch.setattr(att, "_MAX_UNPACKED_BYTES", 4096)
+    text, problem = extract_text("bomb.docx", _docx("A" * 200_000))
+    assert text == ""
+    assert "解压后体积超过上限" in problem
+
+
 def test_extract_text_without_pypdf_degrades(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

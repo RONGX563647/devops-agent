@@ -7,9 +7,15 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from agentscope.permission import PermissionContext, PermissionEngine, PermissionMode
+from agentscope.permission import (
+    PermissionBehavior,
+    PermissionContext,
+    PermissionEngine,
+    PermissionMode,
+    PermissionRule,
+)
 
-from devops_agent.governance.policy import bash_decision, build_permission_context
+from devops_agent.governance.policy import bash_decision, build_permission_context, deny_rule
 from devops_agent.governance.profiles import (
     AVAILABLE_ENV,
     DEFAULT_ENV,
@@ -152,6 +158,41 @@ def test_context_without_profile_still_reads_yaml() -> None:
     """不带档位时保持旧行为（脚本 / 单测直接建引擎的场景）。"""
     context: PermissionContext = build_permission_context()
     assert context.mode == PermissionMode.DONT_ASK
+
+
+def test_custom_deny_appends_to_builtin() -> None:
+    """传自定义 deny 是追加而非替换：内置 .git/、.env 必须还在。
+
+    旧实现 `deny_rules if deny_rules is not None else ...` 会让调用方一传
+    就整体顶掉 builtin deny——而那是所有档位唯一的点防御兜底。
+    """
+    custom = {"Bash": [deny_rule("Bash", source="caller")]}
+    contexts = (
+        build_permission_context(deny_rules=custom),
+        build_permission_context(profile=PROFILES["auto"], deny_rules=custom),
+    )
+    for context in contexts:
+        contents = [rule.rule_content for rule in context.deny_rules["Bash"]]
+        assert ".env" in contents
+        assert ".git/" in contents
+        assert None in contents  # caller 的整工具拒绝也保留
+
+
+def test_custom_deny_overrides_same_rule_only() -> None:
+    """同 (tool_name, rule_content) 的规则以 caller 为准，其余内置规则不受牵连。"""
+    override = PermissionRule(
+        tool_name="Bash",
+        rule_content=".env",
+        behavior=PermissionBehavior.DENY,
+        source="caller",
+    )
+    context = build_permission_context(deny_rules={"Bash": [override]})
+    env_rules = [rule for rule in context.deny_rules["Bash"] if rule.rule_content == ".env"]
+    assert len(env_rules) == 1
+    assert env_rules[0].source == "caller"
+    assert any(rule.rule_content == ".git/" for rule in context.deny_rules["Bash"])
+    # 未被 Bash 覆盖的其他 builtin（Write/Edit 的 .git/）同样保留
+    assert context.deny_rules["Write"]
 
 
 def test_build_toolkit_for_mounts_profile_tools(tmp_path: Path) -> None:

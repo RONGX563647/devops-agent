@@ -164,6 +164,33 @@ describe('会话 store', () => {
     expect(result.current.messages[1].text).toBe('历史回答');
     expect(result.current.messages[1].runId).toBe(11);
   });
+
+  it('ensureHistory 首次失败不把会话锁死，下次还能重试', async () => {
+    vi.mocked(fetchRuns).mockRejectedValueOnce(new Error('500'));
+    const { result } = renderHook(() => useSession('s-6'));
+
+    await act(async () => {
+      await ensureHistory('s-6');
+    });
+    // 失败后 hydrated 不能置位（否则下面第二次调用会被早退挡掉），只留空历史
+    expect(result.current.messages).toHaveLength(0);
+    expect(result.current.loading).toBe(false);
+    expect(vi.mocked(fetchRuns)).toHaveBeenCalledTimes(1);
+
+    vi.mocked(fetchRuns).mockResolvedValue({
+      items: [makeRun(21, 's-6')],
+      total: 1,
+      limit: 200,
+      offset: 0,
+    });
+    await act(async () => {
+      await ensureHistory('s-6');
+    });
+    expect(vi.mocked(fetchRuns)).toHaveBeenCalledTimes(2);
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages[0].text).toBe('历史问题');
+    expect(result.current.messages[1].runId).toBe(21);
+  });
 });
 
 describe('权限档位', () => {

@@ -245,3 +245,20 @@ def test_lru_never_evicts_running_session(db: Path) -> None:
             assert "s1" in registry.sessions
 
     asyncio.run(hold())
+
+
+def test_flush_pending_retries_after_apply_failure(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """应用失败时必须保留挂起标记：否则这一轮的部署默认永远不会再被补上。"""
+    registry = _registry([])
+    entry = registry.acquire("s1", PROFILES["workspace"])
+    entry.pending_model = True
+
+    monkeypatch.setattr(registry, "_apply_entry", lambda _entry: False)
+    assert registry.flush_pending("s1") is False
+    assert entry.pending_model is True
+
+    monkeypatch.setattr(registry, "_apply_entry", lambda _entry: True)
+    assert registry.flush_pending("s1") is True
+    assert entry.pending_model is False

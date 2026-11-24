@@ -442,7 +442,11 @@ class AgentScopeRuntime:
         if self._note_middleware is not None:
             self._note_middleware.set_profile(profile)
         if web_search is not None and web_search != self._web_search:
-            self._agent.model = build_chat_model(enable_search=web_search)
+            # 必须带上会话级参数：省略 params 会回落到部署默认，
+            # 用户面板里设的 temperature / context_size / max_iters 会被这个开关静默重置。
+            self._agent.model = build_chat_model(
+                enable_search=web_search, params=self._params
+            )
             self._web_search = web_search
             # 开关换了，末尾说明也要跟着换：否则检索结果已在上下文里，
             # 模型却仍按「没有联网能力」作答。

@@ -5,16 +5,29 @@ on:
     branches: [main]
   pull_request:
 
+# 本 workflow 只读代码：显式收窄默认继承的 GITHUB_TOKEN 权限，
+# 避免第三方 action / 构建脚本拿到可写 token。
+permissions:
+  contents: read
+
 jobs:
   quality:
     runs-on: ubuntu-latest
+    # 装依赖 + ruff/mypy + 覆盖率门禁 + 静态契约检查；无模型调用，20 分钟足够。
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
-      # 行尾门禁：.gitattributes 规定全仓库 LF；二进制文件显示为 none，放行。
+      # 行尾门禁：.gitattributes 规定全仓库 LF；二进制文件放行。
+      # `git ls-files --eol` 对自动识别的二进制给 `-text`（不是 `none`——`none` 只给
+      # .gitattributes 里显式标 binary 的文件），两种都要放行，否则提交一张 png 就会被
+      # 当成「行尾不是 LF」拦下。
       # 任何新文件若是 CRLF 或文件内混用，这里直接拦下，不再靠人工 review 发现。
       - name: line endings (LF only)
         run: |
-          bad="$(git ls-files --eol | awk '$1 != "i/lf" && $1 != "i/none" || $2 != "w/lf" && $2 != "w/none"')"
+          # git 在管道左侧失败时（缺仓库 / dubious ownership），没有 pipefail 就只是
+          # 输出为空 → bad 为空 → 门禁静默放行。开 pipefail 让失败变成非零退出。
+          set -o pipefail
+          bad="$(git ls-files --eol | awk '$1 != "i/lf" && $1 != "i/none" && $1 != "i/-text" || $2 != "w/lf" && $2 != "w/none" && $2 != "w/-text"')"
           if [ -n "$bad" ]; then
             echo "::error::以下文件行尾不是 LF："
             echo "$bad"
@@ -53,6 +66,8 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    # npm ci + lint/typecheck/coverage/build；只在 npm 镜像慢时才会接近上限。
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: web

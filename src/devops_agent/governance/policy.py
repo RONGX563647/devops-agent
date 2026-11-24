@@ -68,6 +68,31 @@ def _profile_allow_specs(profile: PermissionProfile, policy: RuntimePolicy) -> l
     return specs
 
 
+def _merge_deny_rules(
+    builtin: dict[str, list[PermissionRule]],
+    caller: dict[str, list[PermissionRule]] | None,
+) -> dict[str, list[PermissionRule]]:
+    """caller 的 deny 追加到内置集合上，而不是整体替换。
+
+    不能直接 `{**builtin, **caller}`：内置 deny 分散在 Bash/Write/Edit 三个
+    tool_name 下，按 tool_name 覆盖会让 caller 传一条 Bash 规则就抹掉
+    `.git/`、`.env` 这两条点防御。这里按 (tool_name, rule_content) 判定
+    「同一条规则」，命中的以 caller 为准，其余内置规则原样保留。
+    """
+    if not caller:
+        return builtin
+    merged = {tool: list(rules) for tool, rules in builtin.items()}
+    for tool, rules in caller.items():
+        overridden = {(rule.tool_name, rule.rule_content) for rule in rules}
+        kept = [
+            rule
+            for rule in merged.get(tool, [])
+            if (rule.tool_name, rule.rule_content) not in overridden
+        ]
+        merged[tool] = kept + list(rules)
+    return merged
+
+
 def _profile_deny_specs(_profile: PermissionProfile, policy: RuntimePolicy) -> list[RuleSpec]:
     """档位的拒绝规则 = policy 声明的全部 deny，无条件装配。
 
@@ -99,9 +124,13 @@ def build_permission_context(
     而部署时真正的工作区常常不是进程 cwd（`DEVOPS_AGENT_WORKDIR` 指到别处）。
     不把它登记进来，`accept_edits` 档写文件会被判成「工作区外」→ 每次都要确认，
     用户看到的就是「明明选了工作区可写，写个文件还要问」。
+
+    `deny_rules` 是**追加**给内置 deny 的：内置的 `.git/`、`.env` 等是所有档位
+    唯一的点防御兜底，不能被调用方一传就整体顶掉。
     """
     resolved = policy if policy is not None else load_policy()
     cfg = resolved.permission
+    builtin_deny = _to_rule_map(cfg.deny_rules)
     working = _working_dirs(resolved)
     if workdir is not None:
         target = str(Path(workdir).expanduser().resolve())
@@ -111,17 +140,15 @@ def build_permission_context(
             mode=mode if mode is not None else PermissionMode(cfg.mode),
             working_directories=working,
             allow_rules=_to_rule_map(cfg.allow_rules),
-            deny_rules=deny_rules if deny_rules is not None else _to_rule_map(cfg.deny_rules),
+            deny_rules=_merge_deny_rules(builtin_deny, deny_rules),
             ask_rules=_to_rule_map(cfg.ask_rules),
         )
     return PermissionContext(
         mode=mode if mode is not None else PermissionMode(profile.mode),
         working_directories=working,
         allow_rules=_to_rule_map(_profile_allow_specs(profile, resolved)),
-        deny_rules=(
-            deny_rules
-            if deny_rules is not None
-            else _to_rule_map(_profile_deny_specs(profile, resolved))
+        deny_rules=_merge_deny_rules(
+            _to_rule_map(_profile_deny_specs(profile, resolved)), deny_rules
         ),
         ask_rules=_to_rule_map(cfg.ask_rules),
     )

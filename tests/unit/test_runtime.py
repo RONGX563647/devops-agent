@@ -1,6 +1,7 @@
 """编排层工厂单元测试（用 MagicMock 作为 model，不发真实模型请求）。"""
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -9,6 +10,7 @@ from agentscope.agent import Agent
 from agentscope.pipeline import GoalPipeline, TeamMember, TeamPipeline
 
 from devops_agent.governance.profiles import PROFILES, default_profile
+from devops_agent.model_settings import effective_params
 from devops_agent.runtime.agent import (
     PROFILE_KEY,
     SEARCH_MODE_ENV,
@@ -329,6 +331,28 @@ def test_apply_profile_can_hot_swap_web_search(
     assert body is not None and body["search_options"]["forced_search"] is True
     runtime.apply_profile(PROFILES["execute"], web_search=False)
     assert runtime._agent.model.extra_body is None
+
+
+def test_web_search_toggle_keeps_session_model_params(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """切联网开关只能用同一份会话参数重建模型，不能回落到部署默认。
+
+    以前 `apply_profile` 重建模型时没传 params，用户面板里设的 temperature /
+    context_size 会被这个开关静默重置，而徽标仍显示「本会话」。
+    """
+    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
+    monkeypatch.delenv("DEVOPS_AGENT_ENABLE_SEARCH", raising=False)
+
+    runtime = build_agentscope_runtime(workdir=tmp_path)
+    custom = replace(effective_params(stored={}), temperature=0.13, context_size=32768)
+    runtime.apply_model_params(custom)
+    runtime.apply_profile(PROFILES["execute"], web_search=True)
+
+    assert runtime._agent.model.parameters.temperature == 0.13
+    assert runtime._agent.model.context_size == 32768
 
 
 def _tail_messages(mw: object, history: list[object]) -> list[str]:

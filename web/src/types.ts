@@ -849,6 +849,13 @@ export interface ModelValues {
   context_buffer_ratio: number;
 }
 
+/** 一层的参数覆盖：`null` = 删掉本层的覆盖、回落下层（与后端 apply_patch 同义）。
+ *
+ * 不能用 `Partial<ModelValues>`：那会把 `context_size` 这类非空字段收窄成
+ * `number | undefined`，清空时只能写回继承值，「取消覆盖」就无从表达。
+ */
+export type ModelPatch = { [K in keyof ModelValues]?: ModelValues[K] | null };
+
 /** 一个字段的取值区间：滑杆上下限与越界提示都来自它，前端不自己写死数字。 */
 export interface ModelBound {
   kind: 'int' | 'float' | 'str' | 'bool' | 'enum';

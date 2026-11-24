@@ -711,7 +711,7 @@ const HANDLERS: Record<string, EventHandler> = {
   RUN_DONE: (s, e) => ({
     ...s,
     text: e.text ? e.text : s.text,
-    runId: e.run_id ?? null,
+    runId: e.run_id ?? s.runId,
     inputTokens: e.input_tokens ?? s.inputTokens,
     outputTokens: e.output_tokens ?? s.outputTokens,
     cacheInputTokens: e.cache_input_tokens ?? s.cacheInputTokens,
@@ -725,14 +725,19 @@ const HANDLERS: Record<string, EventHandler> = {
     ...s,
     error: e.error ?? '未知错误',
     running: false,
-    steps: upsertStep(s.steps, {
-      id: 'run-error',
-      kind: 'error',
-      label: '运行失败',
-      detail: e.error ?? '未知错误',
-      state: 'error',
-      at: eventAt(e),
-    }),
+    // 与 RUN_DONE 一样收尾：失败后不该留着转圈的步骤、挂起卡片或没有终点的耗时
+    awaiting: null,
+    steps: finishRunningSteps(
+      upsertStep(s.steps, {
+        id: 'run-error',
+        kind: 'error',
+        label: '运行失败',
+        detail: e.error ?? '未知错误',
+        state: 'error',
+        at: eventAt(e),
+      }),
+    ),
+    endedAt: s.endedAt ?? e.created_at ?? null,
   }),
 };
 
@@ -757,24 +762,34 @@ export async function consumeStream(
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      // 流结束时把解码器里残留的字节与未闭合的尾帧一起 flush，避免丢掉最后一帧。
-      buffer += decoder.decode();
-      break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        // 流结束时把解码器里残留的字节与未闭合的尾帧一起 flush，避免丢掉最后一帧。
+        buffer += decoder.decode();
+        break;
+      }
+      onActivity?.();
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+      const frames = buffer.split('\n\n');
+      buffer = frames.pop() ?? '';
+      for (const frame of frames) {
+        const event = parseFrame(frame);
+        if (event) onEvent(event);
+      }
     }
-    onActivity?.();
-    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-    const frames = buffer.split('\n\n');
-    buffer = frames.pop() ?? '';
-    for (const frame of frames) {
-      const event = parseFrame(frame);
-      if (event) onEvent(event);
+    const tail = parseFrame(buffer);
+    if (tail) onEvent(tail);
+  } finally {
+    // 读失败或回调抛错时也要解锁：否则 body 一直被锁住，调用方连重读都做不到。
+    // 仍有未 settle 的 read 时 releaseLock 会抛，这里忽略——不能拿清理的错盖掉原始异常。
+    try {
+      reader.releaseLock();
+    } catch {
+      // 忽略
     }
   }
-  const tail = parseFrame(buffer);
-  if (tail) onEvent(tail);
 }
 
 /** 发起一次 POST 流式运行并逐帧回调；调用方负责 abort 与状态收尾。 */

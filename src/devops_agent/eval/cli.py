@@ -355,6 +355,38 @@ def _apply_baseline(summary: dict[str, Any], baseline_path: str) -> str:
     return ""
 
 
+def _not_comparable_message(summary: dict[str, Any]) -> str:
+    """把不可比的原因拼进提示，避免只报一句「不可比」让人无处排查。"""
+    compare = summary.get("compare")
+    compat = compare.get("compatibility") if isinstance(compare, dict) else None
+    reasons = compat.get("reasons") if isinstance(compat, dict) else None
+    detail = "；".join(str(reason) for reason in reasons) if reasons else "对比因子不一致"
+    return f"错误: 基线不可比：{detail}，请刷新基线或去掉 --baseline"
+
+
+def _exit_code(summary: dict[str, Any], allow_warn: bool) -> int:
+    """把最终 verdict 折算成退出码。
+
+    - `fail`：硬失败或门禁未达 —— 必须红；
+    - `warn`：与基线比有退化（超过精度上限）—— 同样必须红，否则「-20pp 回归
+      只报个警告」会被习惯性忽略；
+    - `not_comparable`：基线因子变了，对比没做成 —— 必须红；
+    - `insufficient`：题库没到门禁样本量，属正常状态，不红；
+    - `pass`：绿。
+
+    `--allow-warn` 只给手动排查用，nightly 不传。
+    """
+    # 不可比必须单独变红：`not_comparable` 不在 `_BLOCKING_VERDICTS` 里，
+    # 若不显式拦下，suite_sha / 判卷口径 / 裁判模型变了时门禁会静默变成 exit 0
+    # ——「要做的对比没做成」等于没给结论，不能当绿灯。
+    if summary["verdict"] == "not_comparable":
+        print(_not_comparable_message(summary), file=sys.stderr)
+        return 2
+    if summary["verdict"] in _BLOCKING_VERDICTS and not allow_warn:
+        return 1
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """真实运行一套用例并落库、写报告。"""
     load_env()
@@ -414,17 +446,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     _write_outputs(Path(args.out), summary, runs)
     _print_summary(summary, batch_id)
-    # 退出码语义：
-    # - `fail`：硬失败或门禁未达 —— 必须红；
-    # - `warn`：与基线比有退化（超过精度上限）—— 同样必须红，否则「-20pp 回归
-    #   只报个警告」会被习惯性忽略；
-    # - `insufficient`：题库没到门禁样本量，属正常状态，不红；
-    # - `pass`：绿。
-    #
-    # `--allow-warn` 只给手动排查用，nightly 不传。
-    if summary["verdict"] in _BLOCKING_VERDICTS and not args.allow_warn:
-        return 1
-    return 0
+    return _exit_code(summary, args.allow_warn)
 
 
 def cmd_compare(args: argparse.Namespace) -> int:

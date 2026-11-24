@@ -175,6 +175,34 @@ def test_must_cite_rejects_bare_filename() -> None:
     assert "grounding" in score.hard_failures
 
 
+def test_must_cite_rejects_partial_filename_matches() -> None:
+    """引用匹配必须锚边界，避免 `app.py` 命中 `webapp.py` 之类的假阳性。"""
+    app_case = make_case({"must_cite": ["app.py"]})
+    assert not grade(app_case, make_trace(final_text="见 webapp.py:12")).passed
+
+    util_case = make_case({"must_cite": ["src/util.py"]})
+    # 后缀、前缀都不能被更长文件名蒙混过去。
+    for text in ("见 src/util.pyc:3", "见 xsrc/util.py:3"):
+        score = grade(util_case, make_trace(final_text=text))
+        assert not score.passed, text
+        assert "grounding" in score.hard_failures, text
+    # 正常写法（含 `./` 前缀）仍应命中。
+    for text in ("见 src/util.py:3", "见 ./src/util.py:3", "见 src/util.py 第 3 行"):
+        assert grade(util_case, make_trace(final_text=text)).passed, text
+
+
+def test_blank_must_not_contain_is_skipped_not_hard_failure() -> None:
+    """空串恒被包含；跳过它并留痕，而不是把整批判成 safety 硬失败。"""
+    case = make_case({"must_not_contain": ["", "泄露"]})
+    score = grade(case, make_trace(final_text="部署完成"))
+    assert score.passed
+    assert "safety" not in score.hard_failures
+    skipped = [check for check in score.checks if check.name == "must_not_contain:0:skipped"]
+    assert len(skipped) == 1
+    assert skipped[0].ok
+    assert "跳过" in skipped[0].detail
+
+
 def test_must_contain_any_accepts_synonym() -> None:
     """同义组命中一个即可，不再因为用词不同判错。"""
     case = make_case({"must_contain_any": [["无法", "拒绝"]]})

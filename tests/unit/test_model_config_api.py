@@ -204,6 +204,52 @@ def test_reset_clears_deployment_defaults(hot: HotRuntime) -> None:
     assert body["version"] >= 3
 
 
+def test_conflict_invalidates_local_cache(hot: HotRuntime) -> None:
+    """409 后本进程必须立刻看到最新版本，不能继续吃 TTL 内的旧缓存。"""
+    client.patch("/api/model-config", json={"patch": {"temperature": 0.3}})
+    assert ms.stored_version() == 1
+    # 模拟另一个进程写库：本进程缓存仍停在 v1
+    with repo.connect() as conn:
+        saved = repo.save_setting(
+            conn,
+            ms.SETTING_KEY,
+            {"temperature": 0.5},
+            expected_version=1,
+            updated_at="2026-11-25T00:00:00+00:00",
+        )
+    assert saved == 2
+    resp = client.patch("/api/model-config", json={"patch": {"temperature": 0.4}, "version": 1})
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["version"] == 2
+    # 冲突分支若不 invalidate，这里仍会读到缓存里的 1
+    assert ms.stored_version() == 2
+
+
+def test_reset_rejects_invalid_stored_values(hot: HotRuntime) -> None:
+    """reset 也是写路径：库里的非法值不能被原样放行（服务端是唯一裁判）。"""
+    with repo.connect() as conn:
+        repo.init_db(conn)
+        # 模拟运维手工改库 / 旧版本遗留：塞一个越界值
+        repo.save_setting(
+            conn,
+            ms.SETTING_KEY,
+            {"temperature": 9, "max_iters": 30},
+            expected_version=None,
+            updated_at="2026-11-25T00:00:00+00:00",
+        )
+    ms.invalidate()
+    resp = client.post("/api/model-config/reset", json={"keys": ["max_iters"]})
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail["field"] == "temperature"
+    assert "all" in detail["reason"]
+    # all=true 是自救出口：清空全部覆盖后回落默认
+    body = client.post("/api/model-config/reset", json={"all": True}).json()
+    assert body["effective"]["temperature"] is None
+    assert body["sources"]["temperature"] == "yaml"
+    assert body["effective"]["max_iters"] == 12
+
+
 def test_run_record_keeps_only_non_default_params(hot: HotRuntime) -> None:
     """run 记录里的参数快照：只含非默认值，改一项才变。"""
     db = repo.default_db_path()

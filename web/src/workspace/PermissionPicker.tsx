@@ -51,6 +51,8 @@ interface Props {
   current: PermissionKey;
   onChange: (key: PermissionKey) => void;
   disabled?: boolean;
+  /** 运行中切档只影响下一轮：档位已随发起请求锁进当前 run。 */
+  deferred?: boolean;
 }
 
 function ChevronIcon({ open }: { open: boolean }) {
@@ -74,7 +76,7 @@ function ChevronIcon({ open }: { open: boolean }) {
   );
 }
 
-export function PermissionPicker({ current, onChange, disabled }: Props) {
+export function PermissionPicker({ current, onChange, disabled, deferred }: Props) {
   const [open, setOpen] = useState(false);
   const [pendingKey, setPendingKey] = useState<PermissionKey | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -125,6 +127,7 @@ export function PermissionPicker({ current, onChange, disabled }: Props) {
       >
         <span className={`perm-dot risk-${active?.fallback ?? 'deny'}`} aria-hidden="true" />
         <span className="perm-label">{active?.label ?? '权限'}</span>
+        {deferred && <span className="perm-deferred mono">下一轮生效</span>}
         <ChevronIcon open={open} />
       </button>
       {open && (
@@ -133,6 +136,7 @@ export function PermissionPicker({ current, onChange, disabled }: Props) {
             <div className="perm-confirm">
               <p className="perm-confirm-text">
                 放开档会跳过所有逐次确认，只剩一层规则拦截。仅建议在本地或一次性环境使用。
+                {deferred && '当前有任务在跑，切换将在下一轮生效。'}
               </p>
               <div className="perm-confirm-actions">
                 <button type="button" className="ghost-btn" onClick={() => setPendingKey(null)}>

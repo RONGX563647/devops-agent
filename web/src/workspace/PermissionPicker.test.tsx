@@ -32,11 +32,16 @@ const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false 
 function mount(
   current: PermissionKey = 'workspace',
   onChange = vi.fn(),
-  extra: { disabled?: boolean } = {},
+  extra: { disabled?: boolean; deferred?: boolean } = {},
 ): { rerender: (node: ReactElement) => void; onChange: ReturnType<typeof vi.fn> } {
   const node = (next: PermissionKey) => (
     <QueryClientProvider client={queryClient}>
-      <PermissionPicker current={next} onChange={onChange} disabled={extra.disabled} />
+      <PermissionPicker
+        current={next}
+        onChange={onChange}
+        disabled={extra.disabled}
+        deferred={extra.deferred}
+      />
     </QueryClientProvider>
   );
   const { rerender } = render(node(current));
@@ -82,6 +87,21 @@ describe('PermissionPicker', () => {
     expect(items[0].getAttribute('aria-checked')).toBe('false');
     // 兜底动作要有中文标签，用户才能判断越界后果
     expect(screen.getAllByText(FALLBACK_LABEL.ask).length).toBeGreaterThan(0);
+  });
+
+  it('deferred 时按钮可用并显示「下一轮生效」', async () => {
+    mount('execute', vi.fn(), { deferred: true });
+    const button = screen.getByRole('button', { name: '选择权限档位' }) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));
+    expect(screen.getByText('下一轮生效')).toBeTruthy();
+  });
+
+  it('deferred 且选放开档时，二次确认文案说明下一轮生效', async () => {
+    fetchPermissions.mockResolvedValue(catalog(ALL));
+    mount('workspace', vi.fn(), { deferred: true });
+    open();
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: /全放开/ }));
+    expect(screen.getByText(/切换将在下一轮生效/)).toBeTruthy();
   });
 
   it('选普通档位立即生效并收起弹层', async () => {

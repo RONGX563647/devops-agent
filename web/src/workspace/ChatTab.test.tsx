@@ -372,8 +372,38 @@ describe('ChatTab 权限', () => {
     rerender(tab());
 
     expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText('等待你确认上面的操作')).toBeTruthy();
+    expect(screen.getByText('等待你确认下方的操作')).toBeTruthy();
     expect(screen.getByRole('group', { name: '等待确认的操作' })).toBeTruthy();
+  });
+
+  it('确认卡片排在正文之后，不再夹在步骤和回答中间', () => {
+    const { rerender } = render(tab());
+    submit('hi');
+    const last = assistant();
+    if (last) last.text = '这是已经生成的正文';
+    park();
+    rerender(tab());
+
+    const msg = document.querySelector('.chat-msg.assistant');
+    const body = msg?.querySelector('.assistant-body');
+    const card = msg?.querySelector('.confirm-card');
+    expect(body).not.toBeNull();
+    expect(card).not.toBeNull();
+    expect(body!.compareDocumentPosition(card!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('运行中仍可切档位，并提示下一轮生效', async () => {
+    snapshot.running = true;
+    render(tab());
+    await waitFor(() => expect(fetchPermissions).toHaveBeenCalled());
+
+    const picker = screen.getByRole('button', { name: '选择权限档位' }) as HTMLButtonElement;
+    expect(picker.disabled).toBe(false);
+    expect(screen.getByText('下一轮生效')).toBeTruthy();
+
+    fireEvent.click(picker);
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: /只读/ }));
+    expect(setPermission).toHaveBeenCalledWith('s-1', 'readonly');
   });
 
   it('点「允许一次」把这一批调用一起答复', () => {
@@ -407,15 +437,13 @@ describe('ChatTab 权限', () => {
     expect(setPermission).toHaveBeenCalledWith('s-1', 'execute');
   });
 
-  it('用户气泡标出这一轮用的档位，默认档不标', () => {
+  it('用户气泡不显示权限标记：档位留在选择器与轨迹里', () => {
     const { rerender } = render(tab());
     submit('hi');
-    rerender(tab());
-    expect(document.querySelector('.perm-tag')).toBeNull();
-
     snapshot.messages[0].permission = 'readonly';
     rerender(tab());
-    expect(document.querySelector('.perm-tag')?.textContent).toBe('只读');
+    expect(document.querySelector('.perm-tag')).toBeNull();
+    expect(snapshot.messages[0].permission).toBe('readonly');
   });
 });
 

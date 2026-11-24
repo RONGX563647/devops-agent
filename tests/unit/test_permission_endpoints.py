@@ -53,6 +53,9 @@ def park_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pa
     runtime = ParkRuntime()
     app.state.runtime = runtime
     monkeypatch.setenv("DEVOPS_AGENT_DB_PATH", str(tmp_path / "perm.db"))
+    # 这些用例断言的是「默认白名单」语义；本机 .env 可能显式开放了 unrestricted，
+    # 必须清掉开关才能测到默认值，不能让开发环境配置改变测试前提。
+    monkeypatch.delenv("DEVOPS_AGENT_PERMISSION_PROFILES", raising=False)
     try:
         yield runtime
     finally:

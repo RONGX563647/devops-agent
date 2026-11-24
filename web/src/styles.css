@@ -3196,6 +3196,12 @@ a:hover {
   cursor: not-allowed;
   opacity: 0.55;
 }
+.perm-deferred {
+  margin-left: var(--sp-1);
+  font-size: 10px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
 .perm-dot {
   width: 6px;
   height: 6px;
@@ -3277,15 +3283,6 @@ a:hover {
   gap: var(--sp-2);
   justify-content: flex-end;
 }
-.perm-tag {
-  display: inline-block;
-  margin-top: var(--sp-2);
-  padding: 0 var(--sp-2);
-  font-size: 10px;
-  color: var(--ink-soft);
-  background: var(--surface-muted);
-  border-radius: var(--radius-xs);
-}
 
 /* 风险色：点、标签、档位标签共用一套语义 */
 .perm-dot.risk-deny,
@@ -3297,24 +3294,14 @@ a:hover {
 .risk-tag.risk-exec {
   background: var(--accent);
 }
-.risk-tag.risk-write,
-.perm-tag.risk-execute {
+.risk-tag.risk-write {
   background: var(--warn-soft);
   color: var(--warn-ink);
 }
 .perm-dot.risk-hard_deny,
-.risk-tag.risk-danger,
-.perm-tag.risk-unrestricted {
+.risk-tag.risk-danger {
   background: var(--danger-soft);
   color: var(--danger-ink);
-}
-.perm-tag.risk-readonly {
-  background: var(--surface-muted);
-  color: var(--ink-muted);
-}
-.perm-tag.risk-auto {
-  background: var(--warn-soft);
-  color: var(--warn-ink);
 }
 
 /* ---- 确认卡片 ---- */

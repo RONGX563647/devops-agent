@@ -20,15 +20,6 @@ import { formatClock } from './time';
 import { TraceRail } from './TraceRail';
 import { turnsFromMessages } from './trace';
 
-/** 档位在用户气泡上的短标签：事后回看才知道当时放到了哪。 */
-const PERMISSION_TAG: Record<PermissionKey, string> = {
-  readonly: '只读',
-  workspace: '工作区',
-  execute: '可执行',
-  unrestricted: '放开',
-  auto: '无人值守',
-};
-
 interface Props {
   session: string;
   /** 首次发送时通知外层把「新会话」落到 URL 上。 */
@@ -166,14 +157,6 @@ function AssistantMessage({
   return (
     <div className={`chat-msg assistant${message.error ? ' has-error' : ''}`}>
       {message.steps.length > 0 && <StepList steps={message.steps} />}
-      {message.awaiting && message.awaiting.calls.length > 0 && (
-        <PermissionCard
-          calls={message.awaiting.calls}
-          expiresAt={message.awaiting.expiresAt}
-          busy={live}
-          onDecide={onDecide}
-        />
-      )}
       {message.text && (
         <div className="chat-bubble assistant-body">
           <Markdown content={message.text} />
@@ -189,6 +172,14 @@ function AssistantMessage({
         <div className="chat-pending mono" aria-live="polite">
           正在处理…
         </div>
+      )}
+      {message.awaiting && message.awaiting.calls.length > 0 && (
+        <PermissionCard
+          calls={message.awaiting.calls}
+          expiresAt={message.awaiting.expiresAt}
+          busy={live}
+          onDecide={onDecide}
+        />
       )}
       {hasAnswer && (
         <div className="chat-actions">
@@ -415,11 +406,6 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
                         ))}
                       </span>
                     )}
-                    {m.permission && m.permission !== 'workspace' && (
-                      <span className={`perm-tag mono risk-${m.permission}`}>
-                        {PERMISSION_TAG[m.permission]}
-                      </span>
-                    )}
                   </div>
                 </div>
               );
@@ -530,7 +516,7 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
             <PermissionPicker
               current={view.permission}
               onChange={changePermission}
-              disabled={view.running}
+              deferred={view.running}
             />
             <button
               type="button"
@@ -566,9 +552,9 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
             </button>
             <span className="composer-hint">
               {view.awaiting
-                ? '等待你确认上面的操作'
+                ? '等待你确认下方的操作'
                 : view.running
-                  ? '生成中，仍可继续输入，停止后可发送'
+                  ? '生成中可切档位（下一轮生效），停止后可发送'
                   : 'Enter 发送 · Shift+Enter 换行'}
             </span>
             {view.running && (

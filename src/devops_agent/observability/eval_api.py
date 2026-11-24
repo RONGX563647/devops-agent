@@ -175,6 +175,7 @@ def _case_out(row: dict[str, object]) -> dict[str, Any]:
     scores = _as_dict(row.get("scores_json"))
     judge = scores or detail.get("judge")
     tags = detail.get("tags")
+    hard = detail.get("hard_failures")
     return {
         "case_id": str(row.get("case_id") or ""),
         "status": str(row.get("status") or ""),
@@ -186,6 +187,13 @@ def _case_out(row: dict[str, object]) -> dict[str, Any]:
         "tokens": _to_int(row.get("tokens")),
         "checks": _as_list(detail.get("checks")),
         "run_id": row.get("run_id"),
+        # 三档工具轨迹：叫过 / 跑过 / 被拒。前端据此区分
+        # 「模型没试」与「试了但权限拒绝」——这两者在旧契约里长得一样。
+        "tool_names": _as_list(detail.get("tool_names")),
+        "executed_tools": _as_list(detail.get("executed_tools")),
+        "denied_tools": _as_list(detail.get("denied_tools")),
+        "hard_failures": [str(kind) for kind in hard] if isinstance(hard, list) else [],
+        "error": detail.get("error"),
     }
 
 
@@ -222,6 +230,30 @@ def _case_assertions(case: EvalCase) -> list[dict[str, str]]:
     return items
 
 
+def _case_decision(case: EvalCase) -> dict[str, Any]:
+    """该用例的档位可达性：`command_hint` 在声明的档位下判定为什么。
+
+    前端在评测集面板里显示这个徽标，回答「这条用例为什么不可能通过」。
+    延迟 import 的原因同 `_suite_out`：lint 会拖入框架。
+
+    三态而不是布尔，与 lint S8 的分级对齐：
+    - `ok`：档位判定与期望一致；
+    - `mismatch`：档位与期望不符（lint 里是 error，用例结构上不可能通过）；
+    - `defense_in_grader`：`require_executed=False` 且权限层放行——
+      用例本身能跑，但它的防线不在权限层（lint 里是 warning）。
+    """
+    from devops_agent.eval.lint import _achievable  # noqa: PLC0415 - 见上
+
+    problem = _achievable(case)
+    if problem is None:
+        status = "ok"
+    elif case.require_executed:
+        status = "mismatch"
+    else:
+        status = "defense_in_grader"
+    return {"command_hint": case.command_hint, "decision": status, "problem": problem}
+
+
 def _suite_out(suite: Suite) -> dict[str, Any]:
     """评测集目录：构成、阈值、断言清单，供前端画配比与断言构成。"""
     # 延迟 import：lint 会拖入 runtime.agent（进而 import agentscope），
@@ -229,6 +261,10 @@ def _suite_out(suite: Suite) -> dict[str, Any]:
     from devops_agent.eval.lint import assertion_summary
 
     manifest = suite.manifest
+    subjects: dict[str, int] = {}
+    for case in suite.cases:
+        subjects[case.subject] = subjects.get(case.subject, 0) + 1
+    judged = sum(1 for case in suite.cases if case.judge is not None)
     return {
         "suite": manifest.suite,
         "version": manifest.version,
@@ -241,13 +277,19 @@ def _suite_out(suite: Suite) -> dict[str, Any]:
             for key, spec in manifest.thresholds.items()
         },
         "assertions": assertion_summary(suite),
+        # 按 subject 归因与裁判覆盖：前端据此回答
+        # 「这次变化能归到哪个因子」「裁判样本够不够」
+        "subjects": subjects,
+        "judged_cases": judged,
         "cases": [
             {
                 "id": case.id,
                 "tags": list(case.tags),
                 "permission": case.permission,
                 "subject": case.subject,
+                "require_executed": case.require_executed,
                 "assertions": _case_assertions(case),
+                **_case_decision(case),
             }
             for case in suite.cases
         ],
@@ -275,6 +317,7 @@ def _series_point(row: dict[str, object]) -> dict[str, Any]:
     judge = summary.get("judge")
     correctness = judge.get("correctness") if isinstance(judge, dict) else None
     hard = _hard_failures(summary)
+    blocking, scoring = _hard_split(summary)
     return {
         "id": _to_int(row["id"]),
         "started_at": _text(row, "started_at"),
@@ -284,6 +327,9 @@ def _series_point(row: dict[str, object]) -> dict[str, Any]:
         "trajectory_score": summary.get("trajectory_score"),
         "p95_ms": _summary_int(summary, "p95_ms"),
         "hard_total": sum(hard.values()),
+        # 阻断/计分分开：趋势图上「阻断归零但计分上升」是完全不同的故事
+        "hard_blocking": blocking,
+        "hard_scoring": scoring,
         "verdict": _verdict(row, summary),
         "prompt_hash": _text(row, "prompt_sha"),
     }
@@ -357,16 +403,19 @@ def list_batches(
 
 @router.get("/batches/{batch_id}")
 def get_batch(batch_id: int) -> dict[str, Any]:
-    """批次详情 + 标签分布 + 前 50 条用例。"""
+    """批次详情 + 标签分布 + 归因分布 + 前 50 条用例。"""
     batch = _read(lambda conn: repo.get_eval_batch(conn, batch_id))
     if batch is None:
         raise HTTPException(status_code=404, detail="batch_not_found")
     cases = _read(lambda conn: repo.list_eval_cases(conn, batch_id, limit=50)) or []
     summary = _as_dict(batch.get("summary_json"))
     tags = summary.get("tags")
+    subjects = summary.get("subjects")
     return {
         "batch": _batch_out(batch),
         "tags": tags if isinstance(tags, dict) else {},
+        # 按 subject 归因：回答「这次分数变化能算到哪个被测因子」
+        "subjects": subjects if isinstance(subjects, dict) else {},
         "cases": [_case_out(row) for row in cases],
     }
 

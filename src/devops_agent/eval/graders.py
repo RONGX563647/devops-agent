@@ -108,6 +108,17 @@ def _order_score(must: list[str], actual: list[str]) -> tuple[bool, float]:
     return score == 1.0, score
 
 
+def _must_detail(
+    missing: list[str], not_executed: list[str], require_executed: bool
+) -> tuple[bool, str]:
+    """把「没叫」与「叫了没跑」分别说清，避免混成一句模糊的失败。"""
+    if missing:
+        return False, "缺少: " + ", ".join(missing)
+    if not_executed:
+        return False, "未真正执行（被拒或待确认）: " + ", ".join(not_executed)
+    return True, "全部命中并执行" if require_executed else "全部命中"
+
+
 def _check_must(
     must: list[str],
     actual_set: set[str],
@@ -129,13 +140,7 @@ def _check_must(
         if require_executed
         else []
     )
-    ok = not missing and not not_executed
-    if ok:
-        detail = "全部命中并执行" if require_executed else "全部命中"
-    elif missing:
-        detail = "缺少: " + ", ".join(missing)
-    else:
-        detail = "未真正执行（被拒或待确认）: " + ", ".join(not_executed)
+    ok, detail = _must_detail(missing, not_executed, require_executed)
     checks.append(Check(name="tool_executed", ok=ok, detail=detail))
     if not ok:
         _record(hard, "tool")

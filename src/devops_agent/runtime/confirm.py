@@ -185,8 +185,19 @@ def _basename(program: str) -> str:
     return program.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
 
 
+def _is_substitution(command: str, index: int, quote: str | None) -> bool:
+    """当前位置是否是命令替换：`$(...)` 或反引号。
+
+    双引号内仍会执行（`"$HOME"` 这类纯变量不会），单引号内才是字面量。
+    别让 `echo "$(rm -rf /)"` 绕过拆段判定。
+    """
+    if quote == "'":
+        return False
+    return command.startswith("$(", index) or command[index] == "`"
+
+
 def _is_compound(command: str) -> bool:
-    """命令里有没有 shell 分隔符（引号与转义内的不算）。"""
+    """命令里有没有 shell 分隔符或命令替换（字面量引号内的不算）。"""
     quote: str | None = None
     index = 0
     while index < len(command):
@@ -195,9 +206,7 @@ def _is_compound(command: str) -> bool:
             index += 2
             continue
         if quote is not None:
-            # 双引号内 `$()` 与反引号仍会执行命令替换（`"$HOME"` 这类纯变量不会），
-            # 单引号内才是字面量。别让 `echo "$(rm -rf /)"` 绕过拆段判定。
-            if quote == '"' and (command.startswith("$(", index) or char == "`"):
+            if _is_substitution(command, index, quote):
                 return True
             if char == quote:
                 quote = None
@@ -207,11 +216,11 @@ def _is_compound(command: str) -> bool:
             quote = char
             index += 1
             continue
-        # 命令替换：`$(...)` 与反引号 `...` 里能藏任意命令，且首词判定看不见内部，
-        # 不拆段就会把 `echo $(rm -rf /)` 沉淀成 `echo:*` —— 等于放行所有 echo。
-        if command.startswith("$(", index) or char == "`":
-            return True
-        if any(command.startswith(sep, index) for sep in _SEPARATORS):
+        # 命令替换里能藏任意命令，首词判定看不见内部：不拆段就会把
+        # `echo $(rm -rf /)` 沉淀成 `echo:*` —— 等于放行所有 echo。
+        if _is_substitution(command, index, quote) or any(
+            command.startswith(sep, index) for sep in _SEPARATORS
+        ):
             return True
         index += 1
     return False

@@ -136,6 +136,35 @@ function blockStepId(event: StreamEvent, kind: string): string {
   return `${kind}:${event.block_id ?? event.reply_id ?? 'x'}`;
 }
 
+/** 一轮模型调用 = 一个步骤；同一 reply 里的第 N 次调用必须有自己的 id。 */
+function modelStepId(replyId: string, callIndex: number): string {
+  return `model:${replyId || 'x'}:${callIndex}`;
+}
+
+/** 同一 reply 内已有多少模型步骤，下一个就是第几位。 */
+function nextCallIndex(steps: ProcessEntry[], replyId: string): number {
+  return (
+    steps.filter((step) => step.kind === 'model' && (step.replyId ?? '') === replyId).length + 1
+  );
+}
+
+/** END 按 FIFO 关掉该 reply 最早一个仍在跑的模型步骤。 */
+function runningModelStep(steps: ProcessEntry[], replyId: string): ProcessEntry | null {
+  return (
+    steps.find(
+      (step) =>
+        step.kind === 'model' && step.state === 'running' && (step.replyId ?? '') === replyId,
+    ) ?? null
+  );
+}
+
+/** 兼容旧数据：没带 callIndex 时按同组出现顺序反推。 */
+function callIndexOf(steps: ProcessEntry[], step: ProcessEntry, replyId: string): number {
+  if (step.callIndex) return step.callIndex;
+  const group = steps.filter((item) => item.kind === 'model' && (item.replyId ?? '') === replyId);
+  return Math.max(1, group.findIndex((item) => item.id === step.id) + 1);
+}
+
 /** 工具增量没有携带 id 时，回落到最近一个仍在执行的工具步骤。 */
 function lastRunningToolId(steps: ProcessEntry[]): string | null {
   for (let i = steps.length - 1; i >= 0; i -= 1) {
@@ -266,38 +295,59 @@ const HANDLERS: Record<string, EventHandler> = {
     }),
   }),
   REPLY_END: (s, e) => ({ ...s, endedAt: e.created_at ?? s.endedAt }),
-  MODEL_CALL_START: (s, e) => ({
-    ...s,
-    modelName: e.model_name ?? s.modelName,
-    steps: upsertStep(s.steps, {
-      id: blockStepId(e, 'model'),
-      kind: 'model',
-      label: `模型调用 · ${e.model_name ?? '未知'}`,
-      detail: '',
-      state: 'running',
-      at: eventAt(e),
-    }),
-  }),
-  MODEL_CALL_END: (s, e) => ({
-    ...s,
+  MODEL_CALL_START: (s, e) => {
+    const replyId = e.reply_id ?? '';
+    const callIndex = nextCallIndex(s.steps, replyId);
+    return {
+      ...s,
+      modelName: e.model_name ?? s.modelName,
+      steps: upsertStep(s.steps, {
+        id: modelStepId(replyId, callIndex),
+        kind: 'model',
+        label: `模型调用 · ${e.model_name ?? '未知'} · #${callIndex}`,
+        detail: '',
+        state: 'running',
+        at: eventAt(e),
+        replyId,
+        callIndex,
+      }),
+    };
+  },
+  MODEL_CALL_END: (s, e) => {
     // 一轮里模型会被调用多次：这里必须累加，否则 message 上只剩最后一次的量，
     // 而 RUN_DONE 给的 input 是整轮总和 —— 分子分母不同口径，命中率必被低估。
-    inputTokens: s.inputTokens + (e.input_tokens ?? 0),
-    outputTokens: s.outputTokens + (e.output_tokens ?? 0),
-    cacheInputTokens: s.cacheInputTokens + (e.cache_input_tokens ?? 0),
-    steps: patchStep(
-      s.steps,
-      blockStepId(e, 'model'),
-      {
-        state: 'success',
-        endedAt: e.created_at ?? null,
-        tokensIn: e.input_tokens,
-        tokensOut: e.output_tokens,
-        cacheTokens: e.cache_input_tokens,
-      },
-      { kind: 'model', label: '模型调用', detail: '', state: 'success', at: eventAt(e) },
-    ),
-  }),
+    const replyId = e.reply_id ?? '';
+    const open = runningModelStep(s.steps, replyId);
+    const callIndex = open
+      ? callIndexOf(s.steps, open, replyId)
+      : nextCallIndex(s.steps, replyId);
+    return {
+      ...s,
+      inputTokens: s.inputTokens + (e.input_tokens ?? 0),
+      outputTokens: s.outputTokens + (e.output_tokens ?? 0),
+      cacheInputTokens: s.cacheInputTokens + (e.cache_input_tokens ?? 0),
+      steps: patchStep(
+        s.steps,
+        open?.id ?? modelStepId(replyId, callIndex),
+        {
+          state: 'success',
+          endedAt: e.created_at ?? null,
+          tokensIn: e.input_tokens,
+          tokensOut: e.output_tokens,
+          cacheTokens: e.cache_input_tokens,
+        },
+        {
+          kind: 'model',
+          label: `模型调用 · ${e.model_name ?? '模型'} · #${callIndex}`,
+          detail: '',
+          state: 'success',
+          at: eventAt(e),
+          replyId,
+          callIndex,
+        },
+      ),
+    };
+  },
   HINT_BLOCK: (s, e) => {
     // AgentScope 会把系统提醒（如当前时间）也作为 HINT_BLOCK 发出，与执行过程无关。
     if (!e.hint || e.hint.includes('<system-reminder>')) return s;

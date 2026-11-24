@@ -37,12 +37,17 @@ const PERSIST_MS = 500;
 /** 新会话的默认档位；服务端会用 /api/permissions 的真实默认覆盖它。 */
 export const DEFAULT_PERMISSION: PermissionKey = 'workspace';
 
+/**
+ * 能识别并持久化的档位名。老会话里可能还存着 `execute` / `auto` / `unrestricted`
+ * —— 后端会把这些别名映射到新档，前端这里遇到不认识的值直接回落默认档，
+ * 所以老 localStorage 不会让界面崩，只是回到「工作区可写」。
+ */
 const PERMISSION_KEYS: readonly PermissionKey[] = [
   'readonly',
   'workspace',
-  'execute',
-  'unrestricted',
-  'auto',
+  'cautious',
+  'unattended',
+  'container',
 ];
 
 function resolvePermission(raw: string | null): PermissionKey {

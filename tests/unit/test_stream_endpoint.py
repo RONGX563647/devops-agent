@@ -221,9 +221,7 @@ def test_client_disconnect_marks_run_finished(
         request = Request({"type": "http", "headers": [], "app": app})
         # 直接调路由不会经过 FastAPI 的依赖注入，X-Request-ID 要显式给 None，
         # 否则拿到的是 Header 默认对象，写库时会绑定失败。
-        response = await run_stream(
-            RunRequest(session_id="s1", user_input="hi"), request, None
-        )
+        response = await run_stream(RunRequest(session_id="s1", user_input="hi"), request, None)
         iterator = cast(AsyncIterator[str], response.body_iterator)
         await iterator.__anext__()  # 首帧注释心跳
         # 第二帧时 recorder.start 已执行，run 已经落库为 running

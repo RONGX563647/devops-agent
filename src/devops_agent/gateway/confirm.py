@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from devops_agent.gateway.deps import _profile_or_403, _recorder_for, _registry
 from devops_agent.gateway.schemas import ConfirmRequest
 from devops_agent.gateway.sse import _SSE_HEADERS, _sse_frame
-from devops_agent.gateway.stream import _stream_entry
+from devops_agent.gateway.stream import SessionLease, _finish_or_park
 from devops_agent.governance.profiles import (
     PermissionProfile,
     UnknownProfile,
@@ -108,7 +108,10 @@ async def confirm_run(run_id: int, req: ConfirmRequest, request: Request) -> Str
         try:
             yield ": ping\n\n"
             source = entry.runtime.resume(decisions)  # type: ignore[attr-defined]
-            async for frame in _stream_entry(entry, recorder, source):
+            lease = SessionLease(
+                entry=entry, recorder=recorder, registry=registry, session_id=req.session_id
+            )
+            async for frame in _finish_or_park(lease, source):
                 yield frame
         except Exception as exc:
             recorder.finish(status="failed", error=f"{type(exc).__name__}: {exc}")

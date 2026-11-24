@@ -65,6 +65,12 @@ PYTHONPATH=src E:/code/devops-agent/.venv/Scripts/python.exe -m pytest --cov=dev
 
 覆盖率门槛：任何新增源码分支都要有测试，`--cov-fail-under=80` 不得放宽。
 
+文件行数棘轮（源码单文件 ≤500 行，存量基线只能下降）：
+
+```bash
+python scripts/check_file_size.py
+```
+
 ### 2.3 提交与推送
 
 ```bash
@@ -113,6 +119,13 @@ git fetch origin && git checkout main && git pull
    新增能力先 introspect 真实签名再写，不要凭记忆猜 API。
 5. **未知即占位**：缺参数或缺文件时用占位符并继续交付，不要停下来只提问。
 6. **证据优先**：不编造哈希、偏移量、测试结果；未运行的步骤显式标注 `NOT RUN` 和复现命令。
+7. **注释规范与单文件行数**：
+   - 源码文件（不含测试）单文件硬上限 **500 物理行**，由 `scripts/check_file_size.py` +
+     `config/gates.yaml` 执行；`eval/` 下 4 个存量文件记录在 `config/size-baseline.json`，
+     只能下降。新增超限文件必须先拆职责，禁止用 `eslint-disable`、压缩空行或堆注释规避。
+   - 注释分三层：模块 docstring 写不变量与长「为什么」；函数 docstring 一句话职责，
+     超过 20 行的编排函数写 3–6 条编号步骤；行内注释只写顺序、不变量、反直觉实现，
+     单条不超过 3 行，禁止复述代码。长解释放 docstring / ADR，不在函数中间堆段落。
 
 ---
 
@@ -120,8 +133,10 @@ git fetch origin && git checkout main && git pull
 
 - [ ] `git rev-parse --show-toplevel` 指向 worktree，不是主仓库根目录
 - [ ] 当前分支不是 `main`
-- [ ] 五条本地检查全部通过
+- [ ] 本地质量门禁全部通过（含文件行数棘轮）
 - [ ] 新增代码有测试覆盖，覆盖率门禁未被放宽
+- [ ] 源码文件 ≤500 行（超限已拆分）
+- [ ] 编排函数有步骤注释且行内长注释已收敛
 - [ ] 提交信息符合 `<type>: <描述>`
 - [ ] 没有 force push、没有 `--no-verify`
 - [ ] CI `quality` 通过后才请求合并

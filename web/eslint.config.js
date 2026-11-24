@@ -29,7 +29,7 @@ export default tseslint.config(
     files: ['src/**/*.{ts,tsx}'],
     ignores: ['src/**/*.test.{ts,tsx}'],
     rules: {
-      // 新文件硬上限；存量超标文件在下方显式豁免，拆分后逐条删除。
+      // 所有前端文件统一受 max-lines 约束；拆分后不再保留存量豁免。
       'max-lines': [
         'error',
         {
@@ -39,18 +39,5 @@ export default tseslint.config(
         },
       ],
     },
-  },
-  {
-    files: [
-      'src/types.ts',
-      'src/api/useRunStream.ts',
-      'src/pages/EvalBatches.tsx',
-      'src/workspace/TraceList.tsx',
-      'src/workspace/ChatTab.tsx',
-      'src/workspace/store.ts',
-      'src/workspace/trace.ts',
-      'src/workspace/ModelConfigPopover.tsx',
-    ],
-    rules: { 'max-lines': 'off' },
   },
 );

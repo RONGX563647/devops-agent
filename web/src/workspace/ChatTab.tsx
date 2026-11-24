@@ -1,4 +1,7 @@
-/** 对话 tab：订阅会话 store 渲染消息与过程时间线，SSE 生命周期由 store 托管。 */
+/** 对话 tab：订阅会话 store 渲染消息与过程时间线，SSE 生命周期由 store 托管。
+ *
+ * 图标、附件文案与消息气泡按职责拆到 ./chat/ 下，本文件保留容器与原有公开导出。
+ */
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -15,18 +18,22 @@ import type {
   PendingAttachment,
   PermissionKey,
 } from '../types';
+import { attachMeta } from './chat/attachments';
+import { GitHubIcon, GlobeIcon, PaperclipIcon, SendIcon, SparkIcon } from './chat/icons';
+import { AssistantMessage } from './chat/Message';
 import { newId } from './id';
 import { extractLinks } from './links';
-import { Markdown } from './Markdown';
 import { ModelConfigPopover } from './ModelConfigPopover';
 import { PermissionCard } from './PermissionCard';
 import { PermissionPicker } from './PermissionPicker';
 import { confirm, refreshPending, send, setPermission, stop, useSession } from './store';
 import { CompressionTimeline, ContextRing } from './ContextRing';
-import { StepList } from './StepRow';
 import { formatClock } from './time';
 import { TraceRail } from './TraceRail';
 import { turnsFromMessages } from './trace';
+
+export { attachMeta, formatSize } from './chat/attachments';
+export { formatClock };
 
 interface Props {
   session: string;
@@ -48,58 +55,6 @@ export function shouldStickToBottom(
   return scrollHeight - scrollTop - clientHeight < threshold;
 }
 
-export { formatClock };
-
-/** 文件大小的人类可读形式：附件动辄几 MB，纯字节数看不出来体量。 */
-export function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-/** 附件芯片右侧的计量文案：上传中 / 解析失败 / 体积与字数。 */
-export function attachMeta(item: Attachment): string {
-  if (item.status === 'uploading') return '上传中…';
-  if (item.status === 'error') return '无法解析';
-  const truncated = item.truncated ? '（已截断）' : '';
-  return `${formatSize(item.size)} · ${item.chars} 字${truncated}`;
-}
-
-function GitHubIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
-    </svg>
-  );
-}
-
-function GlobeIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.2" />
-      <path
-        d="M2 8h12M8 2c1.9 2 1.9 10 0 12M8 2c-1.9 2-1.9 10 0 12"
-        stroke="currentColor"
-        strokeWidth="1.2"
-      />
-    </svg>
-  );
-}
-
-function PaperclipIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M9.8 6.2 5.4 10.6a2 2 0 0 0 2.8 2.8l4.9-4.9a3.2 3.2 0 0 0-4.5-4.5L4 8.9"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 /** 空状态的示例问题：点一下直接发起会话。 */
 const SAMPLES = [
   '这个仓库的 CI 流程是怎么跑的？',
@@ -107,107 +62,6 @@ const SAMPLES = [
   '帮我给流水线加一个 lint 关卡',
   '最近失败最多的阶段是哪个？',
 ];
-
-function SendIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M8 13V3.6M8 3.6 3.6 8M8 3.6 12.4 8"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function SparkIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-      <path
-        d="M10 3.2l1.5 4.1 4.1 1.5-4.1 1.5L10 14.4 8.5 10.3 4.4 8.8l4.1-1.5L10 3.2Z"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M15.2 13.2l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7.7-1.9Z"
-        fill="currentColor"
-        opacity=".55"
-      />
-    </svg>
-  );
-}
-
-/** 复制正文；非安全上下文没有 clipboard 时静默跳过。 */
-async function copyText(text: string): Promise<void> {
-  try {
-    await navigator.clipboard?.writeText(text);
-  } catch {
-    // 忽略
-  }
-}
-
-/** 助手消息：已完成的过程在正文上方，仍在进行的步骤在正文下方；确认卡片不在这里。 */
-function AssistantMessage({
-  message,
-  live,
-  onRetry,
-}: {
-  message: ChatMessage;
-  live: boolean;
-  onRetry: (message: ChatMessage) => void;
-}) {
-  const hasAnswer = Boolean(message.text) || Boolean(message.error);
-  // 按每条步骤自己的状态分栏，而不是整段跟着 live 一起搬：
-  // 已完成的思考/调用归档到正文上方，仍在进行中的留在正文下方贴着输入区。
-  // 运行结束时 finishRunningSteps 会把 running 收尾，整段自然回到上方。
-  const settled = message.steps.filter((step) => step.state !== 'running');
-  const active = message.steps.filter((step) => step.state === 'running');
-  const settledSteps = settled.length > 0 ? <StepList steps={settled} label="已完成过程" /> : null;
-  const activeSteps =
-    active.length > 0 ? <StepList steps={active} label="进行中" live /> : null;
-  const body = message.text && (
-    <div className="chat-bubble assistant-body">
-      <Markdown content={message.text} />
-    </div>
-  );
-  const error = message.error && (
-    <div className="chat-error-line">
-      <span className="chat-error-tag">中断</span>
-      <span>{message.error}</span>
-    </div>
-  );
-  return (
-    <div className={`chat-msg assistant${message.error ? ' has-error' : ''}`}>
-      {settledSteps}
-      {body}
-      {error}
-      {activeSteps}
-      {message.pending && !message.text && message.steps.length === 0 && (
-        <div className="chat-pending mono" aria-live="polite">
-          正在处理…
-        </div>
-      )}
-      {hasAnswer && (
-        <div className="chat-actions">
-          <button
-            onClick={() => {
-              void copyText(message.text);
-            }}
-          >
-            复制
-          </button>
-          <button onClick={() => onRetry(message)} disabled={live}>
-            重试
-          </button>
-          <span className="chat-time">{formatClock(message.endedAt ?? message.at)}</span>
-        </div>
-      )}
-    </div>
-  );
-}
 
 export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
   const view = useSession(session);
@@ -620,9 +474,9 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
             )}
             <button
               className={`send-btn${canSend ? ' ready' : ''}`}
+              aria-label="发送"
               onClick={submit}
               disabled={!canSend}
-              aria-label="发送"
             >
               <SendIcon />
             </button>

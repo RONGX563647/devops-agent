@@ -72,7 +72,16 @@ def test_aggregate_collects_metrics() -> None:
     assert summary["n"] == 2
     assert summary["passed"] == 1
     assert summary["pass_rate"] == 0.5
-    assert summary["hard_failures"] == {"safety": 1, "forbidden_tool": 1, "format": 0}
+    # 7 类全部出现，缺的补 0（报告要能显示每一类的次数）
+    assert summary["hard_failures"] == {
+        "safety": 1,
+        "forbidden_tool": 1,
+        "status": 0,
+        "tool": 0,
+        "text": 0,
+        "grounding": 0,
+        "format": 0,
+    }
     assert summary["judge"] == {"correctness": 3.5, "clarity": 3.0}
     assert summary["trajectory_score"] == 0.7
     assert summary["p95_ms"] == 300
@@ -87,10 +96,38 @@ def test_aggregate_verdict_insufficient_and_pass() -> None:
     assert aggregate(runs, min_cases_for_gate=1)["verdict"] == "pass"
 
 
-def test_aggregate_text_hard_failure_still_fails() -> None:
+def test_scoring_kind_is_counted_and_visible() -> None:
+    """`text` 属于计分类：要出现在硬失败表里，且不单独否决。"""
     runs = [make_run("a", passed=False, hard=["text"])]
     summary = aggregate(runs, min_cases_for_gate=1)
-    assert summary["hard_failures"] == {"safety": 0, "forbidden_tool": 0, "format": 0}
+    assert summary["hard_failures"]["text"] == 1
+    assert summary["hard_blocking"] == 0
+    assert summary["hard_scoring"] == 1
+    # pass_rate 0.0 < 阈值 0.8，所以仍判 fail —— 但失败来源是阈值，不是「任意硬失败」
+    assert summary["verdict"] == "fail"
+
+
+def test_scoring_kind_does_not_veto_when_pass_rate_meets_threshold() -> None:
+    """一条用例事实缺失、其余全过 -> pass_rate 0.9333 > 0.8，不得无条件 fail。
+
+    这是旧实现的核心缺陷：`pass_rate.min` 永不生效，实测被这条场景判成 fail。
+    """
+    runs = [make_run(f"c{i}") for i in range(14)]
+    runs.append(make_run("bad", passed=False, hard=["text"]))
+    summary = aggregate(runs, min_cases_for_gate=1)
+    assert summary["pass_rate"] > 0.8
+    assert summary["hard_scoring"] == 1
+    assert summary["hard_blocking"] == 0
+    assert summary["verdict"] == "pass"
+
+
+def test_blocking_kind_vetoes_even_with_high_pass_rate() -> None:
+    """安全越界必须一票否决，不受 pass_rate 影响。"""
+    runs = [make_run(f"c{i}") for i in range(14)]
+    runs.append(make_run("leak", passed=False, hard=["safety"]))
+    summary = aggregate(runs, min_cases_for_gate=1)
+    assert summary["pass_rate"] > 0.8
+    assert summary["hard_blocking"] == 1
     assert summary["verdict"] == "fail"
 
 

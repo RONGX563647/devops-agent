@@ -11,9 +11,13 @@ from math import ceil
 from typing import Any
 
 from devops_agent.eval.judge import JUDGE_DIMENSIONS
+from devops_agent.eval.kinds import (
+    BLOCKING_KEYS,
+    HARD_KINDS,
+    zero_counts,
+)
 from devops_agent.eval.runner import CaseRun
 
-_HARD_KINDS: tuple[str, ...] = ("safety", "forbidden_tool", "format")
 # 指标口径：True 表示越大越好
 _METRIC_KEYS: tuple[tuple[str, bool], ...] = (
     ("pass_rate", True),
@@ -54,8 +58,12 @@ def _judge_means(runs: Iterable[CaseRun]) -> dict[str, float] | None:
 
 
 def _count_hard(items: Sequence[CaseRun]) -> dict[str, int]:
-    """逐分类统计硬失败用例数（同类只算一次）。"""
-    hard = {kind: 0 for kind in _HARD_KINDS}
+    """逐分类统计硬失败用例数（同类只算一次）。
+
+    遍历全部 7 类而不是只统计 3 类：判卷层会产出 `status`/`text`/`tool`/`grounding`，
+    漏掉它们会让「14/15 通过、结论 fail」的报告显示成「三行全 0 硬失败」。
+    """
+    hard = zero_counts()
     for run in items:
         for kind in set(run.score.hard_failures):
             if kind in hard:
@@ -128,14 +136,22 @@ def _gate_rows(
         value, samples = _gate_value(
             key, passed, n, judge_means, judge_counts, trajectory, trajectory_n
         )
+        # reason 区分三种「不能判」：报表不能只写一句「样本不足」，
+        # 否则「题库太小」「裁判没跑」「裁判样本不够」三种完全不同的处置
+        # 在报告里长得一模一样。
+        reason: str | None = None
         if n < min_cases_for_gate:
-            state = "insufficient"
+            state, reason = "insufficient", "n_below_gate"
         elif value is None or samples <= 0:
-            state = "insufficient"
+            state, reason = "insufficient", "no_samples"
         elif samples < int(spec["min_samples"]):
-            state = "insufficient"
+            state, reason = "insufficient", "samples_below_min"
         else:
             state = "pass" if value >= spec["min"] else "fail"
+        # 阈值本身的结论，与「样本够不够判」无关。
+        # 小样本下 pass_rate=0.0 依然是明确的坏结果：不能因为 n < 门禁量就
+        # 只剩一句「样本不足」，那会让一次全灭的 nightly 退 0 码（绿灯）。
+        threshold_state = None if value is None else ("pass" if value >= spec["min"] else "fail")
         rows.append(
             {
                 "key": key,
@@ -144,6 +160,8 @@ def _gate_rows(
                 "min_samples": int(spec["min_samples"]),
                 "samples": samples,
                 "state": state,
+                "reason": reason,
+                "threshold_state": threshold_state,
             }
         )
     return rows
@@ -169,9 +187,29 @@ def _gate_value(
     return None, 0
 
 
-def _verdict_from_gates(gates: Sequence[dict[str, Any]], has_hard: bool) -> str:
-    """硬失败 > 全体样本不足 > 任一门禁未达 > 通过。"""
-    if has_hard:
+def _verdict_from_gates(gates: Sequence[dict[str, Any]], blocking_hard: bool) -> str:
+    """阻断性硬失败 > 小样本下的阈值未达 > 全体样本不足 > 任一门禁未达 > 通过。
+
+    只有 blocking 类（safety / forbidden_tool / status）才一票否决。
+    scoring 类（tool / text / grounding / format）已经体现在该用例的
+    `passed=False` 上，进而体现在 `pass_rate` 里——由阈值统一判，不再单独否决。
+    旧实现用「任意 hard 失败即 fail」，让 `thresholds.pass_rate` 永不生效：
+    实测 pass_rate=0.9333（> 阈值 0.8）仍被判 fail。
+
+    小样本（`n < min_cases_for_gate`）也要看 `threshold_state`：题库没到门禁量时
+    `pass_rate=0.0` 是明确的坏结果，不能因为「样本不足」就退 0 码。
+    但这条只对 `pass_rate` 生效——`judge_correctness` / `trajectory` 在小样本下
+    本来就不可判（3 条裁判均值没有意义），不能拿它否决整批。
+    """
+    if blocking_hard:
+        return "fail"
+    small_sample_fail = any(
+        str(gate.get("state")) == "insufficient"
+        and str(gate.get("key")) == "pass_rate"
+        and str(gate.get("threshold_state")) == "fail"
+        for gate in gates
+    )
+    if small_sample_fail:
         return "fail"
     states = {str(gate.get("state")) for gate in gates}
     if gates and states <= {"insufficient"}:
@@ -195,6 +233,71 @@ def _round_or_none(value: float | None, digits: int = 4) -> float | None:
     return round(value, digits) if value is not None else None
 
 
+def _is_blocking(run: CaseRun) -> bool:
+    """这条用例是否带阻断性硬失败。"""
+    return bool(BLOCKING_KEYS.intersection(run.score.hard_failures))
+
+
+def _is_scoring_only(run: CaseRun) -> bool:
+    """只有计分类硬失败（不含任何阻断类）。"""
+    return bool(set(run.score.hard_failures) - BLOCKING_KEYS)
+
+
+def _mean_trajectory(items: Sequence[CaseRun]) -> tuple[float | None, int]:
+    """轨迹分均值与样本数。分开返回是因为门禁要同时判「值」与「够不够」。"""
+    values = [run.score.trajectory_score for run in items if run.score.trajectory_score is not None]
+    return _round_or_none(_mean(values)), len(values)
+
+
+def _case_rows_of(items: Sequence[CaseRun]) -> list[dict[str, Any]]:
+    """逐用例的通过快照（compare 用它算「哪几条翻转了」）。"""
+    return [
+        {"case_id": run.case.id, "passed": run.score.passed, "status": run.trace.status}
+        for run in items
+    ]
+
+
+def _count_by(items: Sequence[CaseRun], predicate: Callable[[CaseRun], bool]) -> int:
+    """按谓词计数（把带条件的生成器从 summary 拼装里挪出来）。"""
+    return sum(1 for run in items if predicate(run))
+
+
+def _summary_payload(
+    items: Sequence[CaseRun],
+    *,
+    gates: list[dict[str, Any]],
+    judge_means: dict[str, float] | None,
+    trajectory: float | None,
+    min_cases_for_gate: int,
+) -> dict[str, Any]:
+    """拼装配好的 summary 字段。
+
+    单独一个函数是为了把「一堆带条件的分支」和「编排」隔开：
+    圈复杂度门禁是每函数 ≤10，混在一起会双双超标。
+    """
+    n = len(items)
+    passed = _count_by(items, lambda run: run.score.passed)
+    has_blocking = any(_is_blocking(run) for run in items)
+    return {
+        "n": n,
+        "passed": passed,
+        "pass_rate": round(passed / n, 4) if n else 0.0,
+        "hard_failures": _count_hard(items),
+        "hard_blocking": _count_by(items, _is_blocking),
+        "hard_scoring": _count_by(items, _is_scoring_only),
+        "judge": judge_means,
+        "trajectory_score": trajectory,
+        "p95_ms": _p95([run.latency_ms for run in items]),
+        "tokens_total": sum(run.tokens for run in items),
+        "tags": _tag_counts(items),
+        "subjects": _subject_counts(items),
+        "min_cases_for_gate": min_cases_for_gate,
+        "gates": gates,
+        "verdict": _verdict_from_gates(gates, has_blocking),
+        "cases": _case_rows_of(items),
+    }
+
+
 def aggregate(
     runs: Iterable[CaseRun],
     min_cases_for_gate: int = 40,
@@ -206,45 +309,26 @@ def aggregate(
     verdict 由 gates 归约而来，不再是一句 `n < 40 → insufficient` 的硬编码。
     """
     items = list(runs)
-    n = len(items)
     passed = sum(1 for run in items if run.score.passed)
-
-    trajectories = [
-        run.score.trajectory_score for run in items if run.score.trajectory_score is not None
-    ]
-    trajectory = _round_or_none(_mean(trajectories))
+    trajectory, trajectory_n = _mean_trajectory(items)
     judge_means = _judge_means(items)
     gates = _gate_rows(
         passed=passed,
-        n=n,
+        n=len(items),
         judge_means=judge_means,
         judge_counts=_judge_counts(items),
         trajectory=trajectory,
-        trajectory_n=len(trajectories),
+        trajectory_n=trajectory_n,
         thresholds=_normalized_thresholds(thresholds),
         min_cases_for_gate=min_cases_for_gate,
     )
-    has_hard = any(run.score.hard_failures for run in items)
-
-    return {
-        "n": n,
-        "passed": passed,
-        "pass_rate": round(passed / n, 4) if n else 0.0,
-        "hard_failures": _count_hard(items),
-        "judge": judge_means,
-        "trajectory_score": trajectory,
-        "p95_ms": _p95([run.latency_ms for run in items]),
-        "tokens_total": sum(run.tokens for run in items),
-        "tags": _tag_counts(items),
-        "subjects": _subject_counts(items),
-        "min_cases_for_gate": min_cases_for_gate,
-        "gates": gates,
-        "verdict": _verdict_from_gates(gates, has_hard),
-        "cases": [
-            {"case_id": run.case.id, "passed": run.score.passed, "status": run.trace.status}
-            for run in items
-        ],
-    }
+    return _summary_payload(
+        items,
+        gates=gates,
+        judge_means=judge_means,
+        trajectory=trajectory,
+        min_cases_for_gate=min_cases_for_gate,
+    )
 
 
 def _subject_counts(items: Sequence[CaseRun]) -> dict[str, dict[str, int]]:
@@ -322,10 +406,15 @@ def _metric_rows(
 
 
 def _has_hard_failure(report: dict[str, Any]) -> bool:
-    """当前报告是否有硬失败（任一分类 > 0 或整体结论 fail）。"""
+    """当前报告是否有**阻断性**硬失败（决定 compare 直接判 fail）。
+
+    只看 blocking 类：scoring 类失败已经体现在 pass_rate 上，该由 delta 判，
+    否则「一条用例事实缺失」会让整批对比无条件 fail，阈值和 delta 都失去意义。
+    """
     hard = report.get("hard_failures")
-    if isinstance(hard, dict) and any(int(value or 0) > 0 for value in hard.values()):
-        return True
+    if isinstance(hard, dict):
+        if any(int(hard.get(key) or 0) > 0 for key in BLOCKING_KEYS):
+            return True
     return report.get("verdict") == "fail"
 
 
@@ -481,10 +570,21 @@ def _render_compare(metrics: list[Any]) -> list[str]:
 
 
 def _render_hard(hard: dict[str, Any]) -> list[str]:
-    """硬失败分类表。"""
-    lines = ["## 硬失败", "", "| 分类 | 次数 |", "| --- | --- |"]
-    for key in _HARD_KINDS:
-        lines.append(f"| {key} | {hard.get(key, 0)} |")
+    """硬失败分类表：阻断类与计分类分开，全部 7 类都出现。
+
+    只渲染 3 类会让「14/15 通过、结论 fail」的报告看起来像「零硬失败」。
+    """
+    lines = [
+        "## 硬失败",
+        "",
+        "| 分类 | 严重度 | 次数 | 说明 |",
+        "| --- | --- | --- | --- |",
+    ]
+    for kind in HARD_KINDS:
+        severity = "阻断" if kind.severity == "blocking" else "计分"
+        lines.append(
+            f"| {kind.label}（{kind.key}） | {severity} | {hard.get(kind.key, 0)} | {kind.hint} |"
+        )
     lines.append("")
     return lines
 
@@ -509,16 +609,53 @@ def _render_tags(tags: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _render_subjects(subjects: dict[str, Any]) -> list[str]:
+    """按 subject 归因：这次分数变化能归到哪个被测因子。
+
+    这套分组此前算出来却从不渲染，「capability 类用例不算提示词因果」
+    这个设计意图在报告里完全看不见。
+    """
+    lines = [
+        "## 归因分布",
+        "",
+        "| 被测因子 | 用例 | 通过 | 通过率 |",
+        "| --- | --- | --- | --- |",
+    ]
+    for subject, bucket in sorted(subjects.items()):
+        if not isinstance(bucket, dict):
+            continue
+        n = bucket.get("n", 0)
+        passed = bucket.get("passed", 0)
+        rate = f"{passed / n:.1%}" if n else "-"
+        lines.append(f"| {subject} | {n} | {passed} | {rate} |")
+    lines.append("")
+    return lines
+
+
+_GATE_REASON_TEXT: dict[str, str] = {
+    "n_below_gate": "题库样本不足",
+    "no_samples": "裁判未运行",
+    "samples_below_min": "裁判样本不足",
+}
+
+
 def _render_gates(gates: list[Any]) -> list[str]:
     """门禁三态表：通过的、未达的、样本不足的分开看。"""
     state_text = {"pass": "通过", "fail": "未达", "insufficient": "样本不足"}
-    lines = ["## 门禁", "", "| 指标 | 值 | 阈值 | 样本 | 结论 |", "| --- | --- | --- | --- | --- |"]
+    lines = [
+        "## 门禁",
+        "",
+        "| 指标 | 值 | 阈值 | 样本 | 结论 | 原因 |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
     for gate in gates:
         if not isinstance(gate, dict):
             continue
+        reason = _GATE_REASON_TEXT.get(str(gate.get("reason") or ""), "-")
         lines.append(
             f"| {gate.get('key')} | {_fmt(gate.get('value'))} | {_fmt(gate.get('min'))} "
-            f"| {_fmt(gate.get('samples'))} | {state_text.get(str(gate.get('state')), '-')} |"
+            f"| {_fmt(gate.get('samples'))} | {state_text.get(str(gate.get('state')), '-')} "
+            f"| {reason} |"
         )
     lines.append("")
     return lines
@@ -543,6 +680,7 @@ _SECTIONS: tuple[tuple[str, type, bool, Callable[[Any], list[str]]], ...] = (
     ("metrics", list, True, _render_compare),
     ("hard_failures", dict, True, _render_hard),
     ("judge", dict, False, _render_judge),
+    ("subjects", dict, False, _render_subjects),
     ("tags", dict, False, _render_tags),
 )
 

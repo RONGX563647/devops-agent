@@ -1,6 +1,6 @@
 # SPEC-0003：评测打分引擎迁移到 DeepEval
 
-- 状态：Draft（待评审）
+- 状态：Superseded by SPEC-0004（打分引擎部分被 0004 吸收，替换面不变）
 - 日期：2026-11-25
 - 相关：`src/devops_agent/eval/{judge,dataset,graders,runner,report,cli}.py`、
   `src/devops_agent/observability/{eval_api,repository}.py`、`web/src/pages/EvalBatches.tsx`、

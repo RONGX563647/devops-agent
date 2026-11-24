@@ -73,6 +73,53 @@ def build_context_config(params: ModelParams) -> ContextConfig:
     )
 
 
+def _resolve_wire_params(params: ModelParams | None) -> ModelParams:
+    """省略 params 时按「部署默认」解一遍，保证默认值只有一处。"""
+    return params if params is not None else effective_params(stored={})
+
+
+def _build_model_kwargs(active: ModelParams, enable_search: bool | None) -> dict[str, Any]:
+    """读凭据 env 并组装 `OpenAIChatModel` 的构造参数（缺失抛 RuntimeError，不打印 key）。
+
+    `stream=True` 是框架默认值，显式写出以固定契约：模型边生成边返回 chunk，
+    AgentScope 才会逐块发出 TEXT_BLOCK_DELTA；关闭后整段文本会在回复结束时
+    一次性补发，前端表现为「一次性渲染」（实测 SET 到 DELTA 仅差 0.07ms）。
+    联网搜索默认关闭：它带来额外计费与供应商侧的不确定错误，必须显式开启。
+    """
+    api_key = os.environ.get("DEVOPS_AGENT_API_KEY")
+    base_url = os.environ.get("DEVOPS_AGENT_BASE_URL")
+    model_name = active.name or None
+    missing = [
+        n
+        for n, v in (
+            ("DEVOPS_AGENT_API_KEY", api_key),
+            ("DEVOPS_AGENT_BASE_URL", base_url),
+            ("DEVOPS_AGENT_MODEL", model_name),
+        )
+        if not v
+    ]
+    if missing:
+        raise RuntimeError(f"缺少环境变量: {', '.join(missing)}")
+    assert api_key is not None and base_url is not None and model_name is not None
+    return {
+        "credential": OpenAICredential(api_key=SecretStr(api_key), base_url=base_url),
+        "model": model_name,
+        # None 必须过滤：thinking_enable 等字段是非空 bool，传 None 会被 pydantic 判类型错误
+        "parameters": OpenAIChatModel.Parameters(
+            **{key: value for key, value in active.sampling().items() if value is not None}
+        ),
+        "stream": True,
+        "max_retries": active.model_max_retries,
+        "context_size": active.context_size,
+        "extra_body": _search_extra_body(enable_search),
+    }
+
+
+def _build_model(kwargs: dict[str, Any]) -> OpenAIChatModel:
+    """用组装好的参数构造模型对象。"""
+    return OpenAIChatModel(**kwargs)
+
+
 def build_chat_model(
     enable_search: bool | None = None,
     params: ModelParams | None = None,
@@ -97,38 +144,9 @@ def build_chat_model(
 
     enable_search 显式传入时优先于环境变量：前端逐请求的「联网」开关走这条路。
     """
-    # 省略 params 时按「部署默认」解一遍，保证只有一处默认值
-    active = params if params is not None else effective_params(stored={})
-    api_key = os.environ.get("DEVOPS_AGENT_API_KEY")
-    base_url = os.environ.get("DEVOPS_AGENT_BASE_URL")
-    model_name = active.name or None
-    missing = [
-        n
-        for n, v in (
-            ("DEVOPS_AGENT_API_KEY", api_key),
-            ("DEVOPS_AGENT_BASE_URL", base_url),
-            ("DEVOPS_AGENT_MODEL", model_name),
-        )
-        if not v
-    ]
-    if missing:
-        raise RuntimeError(f"缺少环境变量: {', '.join(missing)}")
-    assert api_key is not None and base_url is not None and model_name is not None
-    credential = OpenAICredential(api_key=SecretStr(api_key), base_url=base_url)
-    # stream=True（框架默认值，显式写出以固定契约）：模型边生成边返回 chunk，
-    # AgentScope 才会逐块发出 TEXT_BLOCK_DELTA。若关闭，整段文本会作为单个 delta
-    # 在回复结束时瞬间补发 —— 前端表现为「一次性渲染」，实测 SET 到 DELTA 仅差 0.07ms。
-    # 联网搜索默认关闭：它会带来额外计费与供应商侧的不确定错误，必须显式开启。
-    return OpenAIChatModel(
-        credential=credential,
-        model=model_name,
-        # None 必须过滤掉：`Parameters` 里 `thinking_enable` 是非空 bool，
-        # 传 None 会被 pydantic 判成类型错误（框架 2.0.10 实测）。
-        parameters=OpenAIChatModel.Parameters(
-            **{key: value for key, value in active.sampling().items() if value is not None}
-        ),
-        stream=True,
-        max_retries=active.model_max_retries,
-        context_size=active.context_size,
-        extra_body=_search_extra_body(enable_search),
-    )
+    # 1) 解析参数：省略时按部署默认
+    active = _resolve_wire_params(params)
+    # 2) 读 env 凭据并组装构造参数（含联网请求体字段）
+    kwargs = _build_model_kwargs(active, enable_search)
+    # 3) 构造模型对象
+    return _build_model(kwargs)

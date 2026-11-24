@@ -15,8 +15,8 @@ from typing import Any
 from agentscope.agent import Agent
 from agentscope.event import ConfirmResult, UserConfirmResultEvent
 from agentscope.message import Msg, TextBlock, ToolCallBlock
-from agentscope.permission import PermissionBehavior, PermissionRule
-from agentscope.tool import ToolMiddlewareBase
+from agentscope.permission import PermissionBehavior, PermissionContext, PermissionRule
+from agentscope.tool import Toolkit, ToolMiddlewareBase
 
 from devops_agent.governance.policy import build_permission_context
 from devops_agent.governance.profiles import PermissionProfile, default_profile
@@ -39,6 +39,20 @@ from devops_agent.tools.catalog import build_toolkit_for
 # 的 mode 都是 accept_edits，只比 mode 时切档等于什么都没变（白名单永不装配），
 # 反向切回来又会把上一档点「本会话允许」攒下的规则带进新档。
 PROFILE_KEY = "permission_profile"
+
+
+def _copy_permission_context(target: PermissionContext, fresh: PermissionContext) -> None:
+    """把新档位的判定字段逐项写回旧对象（不整体替换）。
+
+    Agent 构造时 `PermissionEngine(self.state.permission_context)` 持有的是
+    对象引用；换对象后引擎仍按旧档判定，界面却显示新档。旧档攒下的
+    allow_rules 随赋值丢弃，与「切档即换信任级别」一致。
+    """
+    target.mode = fresh.mode
+    target.working_directories = fresh.working_directories
+    target.allow_rules = fresh.allow_rules
+    target.deny_rules = fresh.deny_rules
+    target.ask_rules = fresh.ask_rules
 
 
 class AgentScopeRuntime:
@@ -94,38 +108,48 @@ class AgentScopeRuntime:
 
         **不能整体替换 state.permission_context**：Agent 构造时
         `self._engine = PermissionEngine(self.state.permission_context)` 持有的是
-        对象引用；换对象后引擎仍按旧档判定，界面却显示新档。只能逐字段写回。
-        旧档攒下的 allow_rules 随这次赋值丢弃，与「切档即换信任级别」一致。
+        对象引用；换对象后引擎仍按旧档判定，界面却显示新档。只能逐字段写回
+        （见 `_copy_permission_context`）。
 
+        旧档攒下的 allow_rules 随这次赋值丢弃，与「切档即换信任级别」一致。
         toolkit 整体换（Agent 每次调用现取 schema），但必须重挂密钥中间件；
         模型只在联网开关真的变化时重建，避免无谓丢掉前缀缓存。
         """
+        # 1) 权限上下文逐字段写回：引擎持有的是旧对象的引用
         fresh = build_permission_context(profile=profile, workdir=self._workdir)
-        context = self._agent.state.permission_context
-        context.mode = fresh.mode
-        context.working_directories = fresh.working_directories
-        context.allow_rules = fresh.allow_rules
-        context.deny_rules = fresh.deny_rules
-        context.ask_rules = fresh.ask_rules
+        _copy_permission_context(self._agent.state.permission_context, fresh)
+        # 2) 工具按新档位重装，密钥注入中间件与档位说明同步更新
+        self._agent.toolkit = self._rebuild_toolkit(profile)
+        if self._note_middleware is not None:
+            self._note_middleware.set_profile(profile)
+        # 3) 联网开关真的变化时才重建模型（带上会话参数）
+        self._maybe_rebuild_model(web_search)
+        # 4) 快照记下本轮按哪个档装配，运行时档位同步
+        self._agent.state.middle_context[PROFILE_KEY] = profile.key
+        self._profile = profile
 
-        self._agent.toolkit = build_toolkit_for(
+    def _rebuild_toolkit(self, profile: PermissionProfile) -> Toolkit:
+        """按档位重装工具；密钥注入中间件必须一并重挂，否则工具边界不再脱敏。"""
+        return build_toolkit_for(
             profile.tools,
             self._workdir,
             middlewares=self._toolkit_middlewares or None,
         )
+
+    def _maybe_rebuild_model(self, web_search: bool | None) -> None:
+        """只在联网开关真的变化时重建模型，避免无谓丢掉前缀缓存。
+
+        重建必须带上会话级参数：省略 params 会回落到部署默认，用户面板里设的
+        temperature / context_size / max_iters 会被这个开关静默重置。
+        开关换了末尾说明也要跟着换，否则检索结果已在上下文里，模型却仍按
+        「没有联网能力」作答。
+        """
+        if web_search is None or web_search == self._web_search:
+            return
+        self._agent.model = build_chat_model(enable_search=web_search, params=self._params)
+        self._web_search = web_search
         if self._note_middleware is not None:
-            self._note_middleware.set_profile(profile)
-        if web_search is not None and web_search != self._web_search:
-            # 必须带上会话级参数：省略 params 会回落到部署默认，
-            # 用户面板里设的 temperature / context_size / max_iters 会被这个开关静默重置。
-            self._agent.model = build_chat_model(enable_search=web_search, params=self._params)
-            self._web_search = web_search
-            # 开关换了，末尾说明也要跟着换：否则检索结果已在上下文里，
-            # 模型却仍按「没有联网能力」作答。
-            if self._note_middleware is not None:
-                self._note_middleware.set_web_search(web_search)
-        self._agent.state.middle_context[PROFILE_KEY] = profile.key
-        self._profile = profile
+            self._note_middleware.set_web_search(web_search)
 
     # --- 模型参数热替换 -------------------------------------------------
     def _model_changed(self, params: ModelParams) -> bool:

@@ -6,10 +6,12 @@ import { StatusBadge } from '../components/StatusBadge';
 import type { Span, TraceStep } from '../types';
 import { summarizeArgs, summarizeResult } from './trace';
 import { TraceInspector } from './TraceInspector';
+import { formatDuration } from './time';
 
 /** 落库的 span → 检查面板认识的步骤：字段一一对应，只差展示用的摘要。 */
 function spanToStep(span: Span, index: number): TraceStep {
   const status = span.status === 'error' ? 'error' : 'success';
+  const durationMs = span.duration_ms ?? 0;
   return {
     id: `span-${span.id}`,
     kind: span.type === 'tool' ? 'tool' : 'model',
@@ -18,8 +20,16 @@ function spanToStep(span: Span, index: number): TraceStep {
     title: span.name,
     text: span.error ?? '',
     at: span.start_offset_ms,
-    durationMs: span.duration_ms ?? 0,
+    // 落库 span 的耗时是 recorder 记账的结果，只能算「反推」而非前端实测
+    timing: {
+      start: span.start_offset_ms,
+      end: span.start_offset_ms + durationMs,
+      durationMs,
+      source: 'derived',
+    },
+    durationMs,
     measured: true,
+    share: 0,
     status,
     toolName: span.type === 'tool' ? span.name : undefined,
     args: span.input,
@@ -80,7 +90,13 @@ export function RunTrace({ runId, onClose }: Props) {
           <div><span className="detail-key">域</span><span>{r.domain}</span></div>
           <div><span className="detail-key">状态</span><StatusBadge status={r.status} /></div>
           <div><span className="detail-key">模型</span><span>{r.model}</span></div>
-          <div><span className="detail-key">耗时</span><span>{r.duration_ms ?? '—'} ms</span></div>
+          <div>
+            <span className="detail-key">耗时</span>
+            <span>
+              {r.work_ms ? `实测 ${formatDuration(r.work_ms)}` : '—'}
+              {r.wall_ms ? ` · 墙钟 ${formatDuration(r.wall_ms)}` : ''}
+            </span>
+          </div>
           <div><span className="detail-key">Token</span><span>输入 {r.input_tokens} / 输出 {r.output_tokens}</span></div>
         </div>
         <div className="io-block"><b>输入</b><pre>{r.input}</pre></div>

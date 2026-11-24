@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import time
+from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -35,6 +37,30 @@ def _elapsed_ms(start: str, end: str) -> int:
         return 0
 
 
+def _union_ms(intervals: list[tuple[int, int]]) -> int:
+    """多个区间的并集长度。
+
+    模型调用与工具调用可能嵌套（思考发生在模型调用内部、并行工具互相重叠），
+    直接求和会把同一段时间算两次；并集才是「真正在干活」的时间。
+    """
+    total = 0
+    cur_start: int | None = None
+    cur_end = 0
+    for start, end in sorted(intervals):
+        if end <= start:
+            continue
+        if cur_start is None:
+            cur_start, cur_end = start, end
+        elif start <= cur_end:
+            cur_end = max(cur_end, end)
+        else:
+            total += cur_end - cur_start
+            cur_start, cur_end = start, end
+    if cur_start is not None:
+        total += cur_end - cur_start
+    return total
+
+
 def _iso_to_epoch_ms(value: str) -> int:
     """ISO 时间 → epoch 毫秒；解析失败退化为当前时间，埋点不该拖垮主流程。"""
     try:
@@ -53,6 +79,12 @@ def _as_int(value: object) -> int:
         except ValueError:
             return 0
     return 0
+
+
+def _pending_t0(pending: dict[str, object]) -> int:
+    """取 pending 里记下的单调时钟起点（纳秒）；缺省回 0。"""
+    value = pending.get("t0", 0)
+    return value if isinstance(value, int) else 0
 
 
 class RunRecorder:
@@ -75,6 +107,13 @@ class RunRecorder:
         self._run_id: int | None = None
         self._started_at = ""
         self._started_monotonic_ms = 0
+        # 单调时钟：created_at 缺失时唯一的耗时依据。_t0 是本 recorder 的起点，
+        # _offset_base_ms 是「run 已经跑了多久」（挂起续跑时不为 0）。
+        self._t0 = time.perf_counter_ns()
+        self._offset_base_ms = 0
+        # run 内 span 序号与最近一次模型 span：泳道/列表共用顺序，工具挂到发起它的模型下
+        self._seq = 0
+        self._last_model_span_id: int | None = None
         self._input_tokens = 0
         self._output_tokens = 0
         # 前缀缓存：命中量（从缓存读）与创建量（本次写入缓存）。两者都按调用累加，
@@ -85,6 +124,9 @@ class RunRecorder:
         self._finished_reason = ""
         self._finished = False
         self._pending: dict[str, dict[str, object]] = {}
+        # 模型调用按 reply_id 排队：一轮 ReAct 里同一 reply 会连续调多次模型，
+        # 只用 reply_id 当键会让第二次 START 覆盖第一次，落库只剩最后一次。
+        self._model_pending: dict[str, deque[dict[str, object]]] = {}
         # 最近的工具调用 id：部分 delta 事件不带 tool_call_id，只能回落到上一个工具
         self._last_tool_key = ""
         # 输入解析阶段在过程中先缓存，finish 时随 run 一起落库（run_id 此时才齐备）
@@ -96,6 +138,8 @@ class RunRecorder:
             return self._run_id
         self._started_at = utc_now()
         self._started_monotonic_ms = _iso_to_epoch_ms(self._started_at)
+        self._t0 = time.perf_counter_ns()
+        self._offset_base_ms = 0
         run = RunRecord(
             id=None,
             session_id=session_id,
@@ -126,11 +170,21 @@ class RunRecorder:
         with repo.connect(self._db_path) as conn:
             repo.init_db(conn)
             record = repo.get_run(conn, run_id)
+            spans = repo.list_spans(conn, run_id)
         if record is None or record.session_id != session_id:
             raise LookupError(f"run {run_id} 不存在或不属于会话 {session_id}")
         self._run_id = run_id
         self._started_at = record.started_at
         self._started_monotonic_ms = _iso_to_epoch_ms(record.started_at)
+        # 续跑：新 span 的偏移要接上前半段，序号也接着已有 span 往下排
+        self._offset_base_ms = max(
+            0,
+            int(datetime.now(UTC).timestamp() * 1000) - self._started_monotonic_ms,
+        )
+        self._t0 = time.perf_counter_ns()
+        self._seq = max((span.seq for span in spans), default=0)
+        model_ids = [span.id for span in spans if span.type == "model" and span.id is not None]
+        self._last_model_span_id = max(model_ids, default=None)
         self._final_text = record.output
         self._input_tokens = record.input_tokens
         self._output_tokens = record.output_tokens
@@ -165,16 +219,33 @@ class RunRecorder:
             return  # REPLY_START 与所有 delta 类事件无需落库动作
         getattr(self, handler_name)(event)
 
-    @staticmethod
-    def _event_time(event: dict[str, object]) -> str:
-        return str(event.get("created_at", "")) or utc_now()
+    def _rel_ms(self, t_ns: int) -> int:
+        """单调时钟 → 相对 run 起点的毫秒偏移。"""
+        return self._offset_base_ms + max(0, (t_ns - self._t0) // 1_000_000)
+
+    def _span_offset(self, pending: dict[str, object]) -> int:
+        """起点偏移：与耗时同一口径——有事件时间戳就用它，缺失才退回单调时钟。
+
+        两个时钟混用会让「起点偏移」和「耗时」落在两条时间轴上，
+        span 并集（work_ms）就再也对不上。
+        """
+        start_at = str(pending.get("start", "") or "")
+        if pending.get("has_time") and start_at:
+            return _elapsed_ms(self._started_at, start_at)
+        return self._rel_ms(_pending_t0(pending))
 
     def _on_model_start(self, event: dict[str, object]) -> None:
-        self._pending[str(event.get("reply_id", ""))] = {
-            "type": "model",
-            "name": str(event.get("model_name", "model")),
-            "start": self._event_time(event),
-        }
+        raw_at = str(event.get("created_at", "") or "")
+        reply = str(event.get("reply_id", ""))
+        self._model_pending.setdefault(reply, deque()).append(
+            {
+                "type": "model",
+                "name": str(event.get("model_name", "model")),
+                "start": raw_at,
+                "has_time": bool(raw_at),
+                "t0": time.perf_counter_ns(),
+            }
+        )
 
     def _on_model_end(self, event: dict[str, object]) -> None:
         in_tok = _as_int(event.get("input_tokens", 0))
@@ -185,9 +256,14 @@ class RunRecorder:
         self._output_tokens += out_tok
         self._cache_input_tokens += cache_read
         self._cache_creation_input_tokens += cache_write
-        self._close_span(
-            str(event.get("reply_id", "")),
-            self._event_time(event),
+        reply = str(event.get("reply_id", ""))
+        pending = self._pop_model(reply)
+        if pending is None:
+            return  # 没有起点就不造 span：凭空补一条会让调用数虚高
+        self._write_span(
+            pending,
+            str(event.get("created_at", "") or ""),
+            time.perf_counter_ns(),
             in_tok + out_tok,
             input_tokens=in_tok,
             output_tokens=out_tok,
@@ -195,13 +271,26 @@ class RunRecorder:
             cache_creation_input_tokens=cache_write,
         )
 
+    def _pop_model(self, reply: str) -> dict[str, object] | None:
+        """按 FIFO 取该 reply 最早一个未闭合的模型起点。"""
+        queue = self._model_pending.get(reply)
+        if not queue:
+            return None
+        pending = queue.popleft()
+        if not queue:
+            self._model_pending.pop(reply, None)
+        return pending
+
     def _on_tool_start(self, event: dict[str, object]) -> None:
         key = str(event.get("tool_call_id", ""))
+        raw_at = str(event.get("created_at", "") or "")
         self._last_tool_key = key
         self._pending[key] = {
             "type": "tool",
             "name": str(event.get("tool_call_name", "tool")),
-            "start": self._event_time(event),
+            "start": raw_at,
+            "has_time": bool(raw_at),
+            "t0": time.perf_counter_ns(),
             "input": "",
             "output": "",
         }
@@ -232,7 +321,8 @@ class RunRecorder:
         )
         self._close_span(
             str(event.get("tool_call_id", "")),
-            self._event_time(event),
+            str(event.get("created_at", "") or ""),
+            time.perf_counter_ns(),
             0,
             status="ok" if ok else "error",
         )
@@ -242,9 +332,13 @@ class RunRecorder:
 
     def _on_exceed_iters(self, event: dict[str, object]) -> None:
         self._finished_reason = "exceed_max_iters"
-        self._close_span(
-            str(event.get("reply_id", "")),
-            self._event_time(event),
+        pending = self._pop_model(str(event.get("reply_id", "")))
+        if pending is None:
+            return
+        self._write_span(
+            pending,
+            str(event.get("created_at", "") or ""),
+            time.perf_counter_ns(),
             0,
             name="exceed_max_iters",
         )
@@ -277,6 +371,7 @@ class RunRecorder:
         self,
         key: str,
         end_at: str,
+        end_ns: int,
         tokens: int,
         *,
         name: str | None = None,
@@ -286,22 +381,50 @@ class RunRecorder:
         cache_input_tokens: int = 0,
         cache_creation_input_tokens: int = 0,
     ) -> None:
-        """把 pending 中的起点配对成一条 span 落库；无起点则忽略。"""
-        if self._run_id is None:
-            return
+        """把 pending 中的工具起点配对成一条 span 落库；无起点则忽略。"""
         pending = self._pending.pop(key, None)
         if pending is None:
             return
-        start = str(pending.get("start", ""))
-        offset = _elapsed_ms(self._started_at, start)
-        duration = _elapsed_ms(start, end_at)
+        self._write_span(
+            pending,
+            end_at,
+            end_ns,
+            tokens,
+            name=name,
+            status=status,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_input_tokens=cache_input_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+        )
+
+    def _write_span(
+        self,
+        pending: dict[str, object],
+        end_at: str,
+        end_ns: int,
+        tokens: int,
+        *,
+        name: str | None = None,
+        status: str = "ok",
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_input_tokens: int = 0,
+        cache_creation_input_tokens: int = 0,
+    ) -> None:
+        """落一条 span：偏移/耗时走单调时钟，工具挂到最近一次模型调用下。"""
+        if self._run_id is None:
+            return
+        start_at = str(pending.get("start", ""))
+        is_tool = str(pending.get("type", "model")) == "tool"
+        self._seq += 1
         span = SpanRecord(
             id=None,
             run_id=self._run_id,
             type=str(pending.get("type", "model")),
             name=name or str(pending.get("name", "step")),
-            start_offset_ms=offset,
-            duration_ms=duration,
+            start_offset_ms=self._span_offset(pending),
+            duration_ms=self._span_duration(pending, start_at, end_at, end_ns),
             input=str(pending.get("input", "")),
             output=str(pending.get("output", "")),
             tokens=tokens,
@@ -311,12 +434,34 @@ class RunRecorder:
             output_tokens=output_tokens,
             cache_input_tokens=cache_input_tokens,
             cache_creation_input_tokens=cache_creation_input_tokens,
+            seq=self._seq,
+            parent_id=self._last_model_span_id if is_tool else None,
         )
         with repo.connect(self._db_path) as conn:
-            repo.add_span(conn, span)
+            span_id = repo.add_span(conn, span)
+        if not is_tool:
+            self._last_model_span_id = span_id
 
-    def finish(self, status: str | None = None) -> int:
-        """回填 run 的终态与汇总，返回 run_id。重复调用幂等。"""
+    @staticmethod
+    def _span_duration(pending: dict[str, object], start_at: str, end_at: str, end_ns: int) -> int:
+        """优先用事件时间戳（真实发生时刻），缺失时退回单调时钟差值。
+
+        created_at 缺失时旧实现把起止都填成 utc_now()，于是每条 span 都是 0ms；
+        单调时钟不依赖事件字段，才画得出真实宽度。
+        """
+        if pending.get("has_time") and end_at:
+            measured = _elapsed_ms(start_at, end_at)
+            if measured > 0:
+                return measured
+        t0 = _pending_t0(pending)
+        return max(0, (end_ns - t0) // 1_000_000)
+
+    def finish(self, status: str | None = None, error: str | None = None) -> int:
+        """回填 run 的终态与汇总，返回 run_id。重复调用幂等。
+
+        error 只在失败时给：把异常原文落库，否则 status=failed 只是个标签，
+        刷新后既看不到原因也复现不了（实测出现过 span 全绿却 failed 的情况）。
+        """
         if self._run_id is None:
             return -1
         if self._finished:
@@ -329,6 +474,19 @@ class RunRecorder:
                 "failed" if self._finished_reason in ("error", "exceed_max_iters") else "success"
             )
         with repo.connect(self._db_path) as conn:
+            spans = repo.list_spans(conn, self._run_id)
+            # 实测耗时 = 所有 span 区间的并集；墙钟 = 起止差（含用户空闲）。
+            # 实测不可能超过墙钟（事件时钟偶尔会比 run 起点更早），超了就以墙钟封顶。
+            wall_ms = max(0, duration)
+            work_ms = min(
+                _union_ms(
+                    [
+                        (span.start_offset_ms, span.start_offset_ms + (span.duration_ms or 0))
+                        for span in spans
+                    ]
+                ),
+                wall_ms,
+            )
             repo.add_input_stages(conn, self._run_id, self._input_stages)
             repo.finish_run(
                 conn,
@@ -343,6 +501,11 @@ class RunRecorder:
                 output_tokens=self._output_tokens,
                 cache_input_tokens=self._cache_input_tokens,
                 cache_creation_input_tokens=self._cache_creation_input_tokens,
+                work_ms=work_ms,
+                wall_ms=wall_ms,
+                # 失败时优先用显式传入的异常原文；没传但被标成 failed 时留一句兜底，
+                # 免得又出现「有状态没原因、只能靠猜」的记录
+                error=error or ("" if final_status == "success" else "未捕获到异常信息"),
             )
         self._input_stages = []
         self._finished = True

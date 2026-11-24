@@ -77,6 +77,40 @@ def test_recorder_explicit_failed_and_ok_state(tmp_path: Path) -> None:
         assert spans[0].status == "error"
 
 
+def test_recorder_persists_failure_reason(tmp_path: Path) -> None:
+    """失败原因必须落库：只记 status 时，「span 全绿却 failed」无法复盘。"""
+    rec = RunRecorder(tmp_path / "t.db")
+    run_id = rec.start("s", "a")
+    rec.finish(status="failed", error="APIConnectionError: connection reset")
+    with repo.connect(tmp_path / "t.db") as conn:
+        stored = repo.get_run(conn, run_id)
+    assert stored is not None
+    assert stored.status == "failed"
+    assert "APIConnectionError" in stored.error
+
+
+def test_recorder_fills_reason_when_failed_without_detail(tmp_path: Path) -> None:
+    """显式标 failed 却没给原因时也要留一句兜底，不留空白字段。"""
+    rec = RunRecorder(tmp_path / "t.db")
+    run_id = rec.start("s", "a")
+    rec.finish(status="failed")
+    with repo.connect(tmp_path / "t.db") as conn:
+        stored = repo.get_run(conn, run_id)
+    assert stored is not None
+    assert stored.error
+
+
+def test_recorder_success_has_no_error_text(tmp_path: Path) -> None:
+    rec = RunRecorder(tmp_path / "t.db")
+    run_id = rec.start("s", "a")
+    rec.finish()
+    with repo.connect(tmp_path / "t.db") as conn:
+        stored = repo.get_run(conn, run_id)
+    assert stored is not None
+    assert stored.status == "success"
+    assert stored.error == ""
+
+
 def test_close_span_without_connection_is_noop(tmp_path: Path) -> None:
     rec = RunRecorder(tmp_path / "t.db")
     # 未 start 就触发需要配对 span 的事件：_close_span 在无 conn 时直接返回
@@ -133,6 +167,10 @@ def test_sse_error_path(monkeypatch: object, tmp_path: Path) -> None:
             runs = repo.list_runs(conn)
             assert len(runs) == 1
             assert runs[0].status == "failed"
+            # 终态之外还要留原因：只看到 failed 的时候，谁也不知道是模型断了
+            # 还是落库失败，实测就撞上过「37 个 span 全绿却 failed」的记录。
+            assert "RuntimeError" in runs[0].error
+            assert "simulated" in runs[0].error
     finally:
         app.state.runtime = original
 

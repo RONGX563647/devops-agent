@@ -1,10 +1,11 @@
 """事件转译与记录器单测（假事件对象，不发真实模型请求）。"""
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from devops_agent.observability import repository as repo
-from devops_agent.observability.recorder import RunRecorder, _elapsed_ms
+from devops_agent.observability.recorder import RunRecorder, _elapsed_ms, _union_ms
 from devops_agent.runtime.events import event_to_dict
 
 
@@ -366,3 +367,114 @@ def test_recorder_ignores_orphan_tool_delta(tmp_path: Path) -> None:
 
     with repo.connect(tmp_path / "t.db") as conn:
         assert repo.list_spans(conn, run_id) == []
+
+
+def test_recorder_pairs_every_model_call_in_one_reply(tmp_path: Path) -> None:
+    """一轮 ReAct 里同一 reply 会连续调多次模型：必须落三条，不能只剩最后一条。"""
+    rec = RunRecorder(tmp_path / "m.db")
+    rec.start("s", "q")
+    for i in range(3):
+        rec.consume(
+            _evt(
+                "MODEL_CALL_START",
+                reply_id="r1",
+                model_name="qwen",
+                created_at=f"2026-11-23T14:00:0{i}+00:00",
+            )
+        )
+        rec.consume(
+            _evt(
+                "MODEL_CALL_END",
+                reply_id="r1",
+                created_at=f"2026-11-23T14:00:0{i + 1}+00:00",
+                input_tokens=10,
+                output_tokens=5,
+            )
+        )
+    run_id = rec.finish()
+
+    with repo.connect(tmp_path / "m.db") as conn:
+        spans = repo.list_spans(conn, run_id)
+    assert [s.type for s in spans] == ["model", "model", "model"]
+    assert [s.duration_ms for s in spans] == [1000, 1000, 1000]
+    assert rec.token_usage == (30, 15)
+
+
+def test_span_duration_falls_back_to_monotonic_clock() -> None:
+    """created_at 缺失时用单调时钟兜底，不能因为「起点终点都取 utc_now」算出 0ms。"""
+    pending = {"has_time": False, "t0": time.perf_counter_ns() - 5_000_000}
+    duration = RunRecorder._span_duration(pending, "", "", time.perf_counter_ns())
+    assert 4 <= duration < 1_000
+    # 有真实时间戳时仍然以事件时间为准（同一事件由框架补时戳的情况）
+    timed = {"has_time": True, "t0": time.perf_counter_ns()}
+    assert (
+        RunRecorder._span_duration(
+            timed, "2026-11-23T14:00:00+00:00", "2026-11-23T14:00:02+00:00", time.perf_counter_ns()
+        )
+        == 2000
+    )
+
+
+def test_recorder_numbers_spans_and_links_tool_to_model(tmp_path: Path) -> None:
+    """seq 单调、工具 span 记下发起它的模型 span：泳道与列表共用同一顺序。"""
+    rec = RunRecorder(tmp_path / "seq.db")
+    rec.start("s", "q")
+    rec.consume(_evt("MODEL_CALL_START", reply_id="r1", model_name="qwen"))
+    rec.consume(_evt("MODEL_CALL_END", reply_id="r1", created_at="2026-11-23T14:00:02+00:00"))
+    rec.consume(_evt("TOOL_CALL_START", tool_call_id="t1", tool_call_name="Bash"))
+    rec.consume(_evt("TOOL_CALL_END", tool_call_id="t1", created_at="2026-11-23T14:00:03+00:00"))
+    run_id = rec.finish()
+
+    with repo.connect(tmp_path / "seq.db") as conn:
+        spans = repo.list_spans(conn, run_id)
+    assert [s.seq for s in spans] == [1, 2]
+    assert spans[0].parent_id is None
+    assert spans[1].parent_id == spans[0].id
+
+
+def test_recorder_records_work_and_wall_ms(tmp_path: Path) -> None:
+    """双口径耗时：work 是 span 并集，wall 是起止差，两者都要落库。"""
+    rec = RunRecorder(tmp_path / "w.db")
+    rec.start("s", "q")
+    rec.consume(
+        _evt(
+            "MODEL_CALL_START",
+            reply_id="r1",
+            model_name="qwen",
+            created_at="2026-11-23T14:00:00+00:00",
+        )
+    )
+    rec.consume(_evt("MODEL_CALL_END", reply_id="r1", created_at="2026-11-23T14:00:02+00:00"))
+    rec.consume(
+        _evt(
+            "TOOL_CALL_START",
+            tool_call_id="t1",
+            tool_call_name="Bash",
+            created_at="2026-11-23T14:00:03+00:00",
+        )
+    )
+    rec.consume(_evt("TOOL_CALL_END", tool_call_id="t1", created_at="2026-11-23T14:00:04+00:00"))
+    run_id = rec.finish()
+
+    with repo.connect(tmp_path / "w.db") as conn:
+        run = repo.get_run(conn, run_id)
+        spans = repo.list_spans(conn, run_id)
+    assert run is not None
+    # work 是 span 并集（事件时钟可能比 run 起点更早，因此以墙钟封顶）
+    expected = _union_ms(
+        [(span.start_offset_ms, span.start_offset_ms + (span.duration_ms or 0)) for span in spans]
+    )
+    assert expected > 0
+    assert run.work_ms == min(expected, run.wall_ms)
+    # wall 记的是起止差（含用户空闲），因此永远不小于 work
+    assert run.wall_ms == run.duration_ms
+    assert run.wall_ms >= run.work_ms
+
+
+def test_union_ms_merges_overlapping_intervals() -> None:
+    """嵌套/重叠的调用只算一次：求和会把思考时间算两遍。"""
+    assert _union_ms([]) == 0
+    assert _union_ms([(0, 100), (100, 200)]) == 200
+    assert _union_ms([(0, 100), (20, 60)]) == 100
+    assert _union_ms([(0, 100), (200, 260)]) == 160
+    assert _union_ms([(50, 50)]) == 0

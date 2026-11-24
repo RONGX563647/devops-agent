@@ -2,8 +2,11 @@
  *
  * 三级粒度：顶部泳道看「时间花在哪」，中间列表看「做了什么」，右侧看「具体参数」。
  * 运行记录（后端快照）仍保留为另一个视图，用于回看落库后的历史运行。
+ *
+ * 视图控制（折叠态、显示轮数、仅看异常）放在本层：它是会话级状态，
+ * 需要跨 tab 持久化（sessionStorage），列表只负责渲染。
  */
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchContext, fetchRuns } from '../api/client';
 import { StatusBadge } from '../components/StatusBadge';
@@ -23,9 +26,9 @@ interface Props {
 }
 
 const MODE_HINTS: Record<TraceMode, string> = {
-  time: '按耗时降序，最慢的排最前',
-  turn: '按轮次分组，点标题折叠整轮',
-  call: '按工具聚合，看谁被喊得最多',
+  time: '按耗时降序，最慢的排最前；模型调用也在内',
+  turn: '按轮次分组，点标题折叠整轮；再点胶囊可全部折叠/展开',
+  call: '按模型与工具聚合，点一行展开每一次调用',
 };
 
 // 轮次视图是默认入口：能一眼看到每轮装了什么上下文、跑了哪些步
@@ -34,6 +37,34 @@ const MODES: { key: TraceMode; label: string }[] = [
   { key: 'time', label: '时长' },
   { key: 'call', label: '调用' },
 ];
+
+/** 折叠态存 sessionStorage：切 tab / 刷新回来还是同一屏，不用重新点。 */
+function collapseKey(session: string): string {
+  return `trace:collapsed:${session}`;
+}
+
+function loadCollapsed(session: string): Record<string, boolean> {
+  try {
+    const raw = sessionStorage.getItem(collapseKey(session));
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).map(([key, value]) => [key, Boolean(value)]),
+    );
+  } catch {
+    // 隐私模式/禁用存储：退化为「不记住」，不影响功能
+    return {};
+  }
+}
+
+function saveCollapsed(session: string, value: Record<string, boolean>): void {
+  try {
+    sessionStorage.setItem(collapseKey(session), JSON.stringify(value));
+  } catch {
+    // 同上：存不进去就不存
+  }
+}
 
 function RunTable({
   items,
@@ -76,11 +107,15 @@ function RunTable({
   );
 }
 
-/** 默认选中「全会话最费时的一步」：打开就能看到最值得看的那一条。 */
+/** 默认选中「全会话最费时的一步」：打开就能看到最值得看的那一条。
+ *
+ * 估算值与模型正文不参与评选：插值出来的「最慢」会把真实瓶颈挤掉。
+ */
 function slowestStep(turns: TraceTurn[]): { step: TraceStep; turn: TraceTurn } | null {
   let best: { step: TraceStep; turn: TraceTurn } | null = null;
   for (const turn of turns) {
     for (const step of turn.items) {
+      if (step.synthetic || step.timing.source === 'estimated') continue;
       if (!best || step.durationMs > best.step.durationMs) best = { step, turn };
     }
   }
@@ -105,7 +140,7 @@ function StatusBar({
   return (
     <div className="trace-status mono">
       <span>
-        {stats.turns} 轮 · {stats.steps} 步 · {stats.tools} 工具
+        {stats.turns} 轮 · {stats.steps} 步 · {stats.tools} 工具 · {stats.modelCalls} 模型
       </span>
       {stats.tokPerSec !== null && <span>{stats.tokPerSec.toFixed(1)} tok/s</span>}
       <span>
@@ -114,8 +149,8 @@ function StatusBar({
         {cold && <span className="trace-status-cold"> · 首枪 {cold}</span>}
       </span>
       <span className={stats.errors > 0 ? 'has-error' : ''}>异常 {stats.errors}</span>
-      <span className="trace-status-right">
-        {running ? '生成中…' : `会话 ${formatDuration(stats.totalMs)}`}
+      <span className="trace-status-right" title="实测 = 所有步骤占用区间的并集；墙钟 = 首轮问题到末轮结束">
+        {running ? '生成中…' : `实测 ${formatDuration(stats.measuredMs)} · 墙钟 ${formatDuration(stats.wallMs)}`}
       </span>
     </div>
   );
@@ -143,7 +178,15 @@ function SessionTrace({
   const [ask, setAsk] = useState('');
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
+  // 只记「用户显式改过的轮」，没记过的用默认策略（只展开最后一轮）
+  const [overrides, setOverrides] = useState<Record<string, boolean>>(() => loadCollapsed(session));
+  const [visibleTurns, setVisibleTurns] = useState<number | null>(5);
+  const [onlyErrors, setOnlyErrors] = useState(false);
   const searchRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    saveCollapsed(session, overrides);
+  }, [session, overrides]);
 
   // 第 0 步要展示的系统提示词与工具清单来自后端装配区，读不到就显示为空而不编造
   const context = useQuery({
@@ -157,6 +200,20 @@ function SessionTrace({
   const stats = useMemo(() => traceStats(turns, lanes), [turns, lanes]);
   const initial = useMemo(() => slowestStep(turns), [turns]);
 
+  const shownTurns = useMemo(
+    () => (onlyErrors ? turns.filter((turn) => turn.failed || turn.errorCount > 0) : turns),
+    [turns, onlyErrors],
+  );
+  /** 默认只展开最后一轮：长会话全展开等于没有折叠。 */
+  const lastIndex = shownTurns[shownTurns.length - 1]?.index;
+  const collapsed = useMemo(() => {
+    const map: Record<string, boolean> = {};
+    for (const turn of shownTurns) {
+      map[turn.id] = overrides[turn.id] ?? turn.index !== lastIndex;
+    }
+    return map;
+  }, [shownTurns, overrides, lastIndex]);
+
   const activeStepId = selectedStepId ?? initial?.step.id ?? null;
   const flat = useMemo(() => turns.flatMap((turn) => turn.items), [turns]);
   const activeStep = flat.find((step) => step.id === activeStepId) ?? null;
@@ -165,9 +222,32 @@ function SessionTrace({
     turns.find((turn) => turn.id === selectedTurnId) ||
     null;
 
-  /** j/k 或上下键在步骤间移动；/ 聚焦搜索；Esc 清掉手选。 */
+  function toggleTurn(id: string) {
+    setOverrides((prev) => ({ ...prev, [id]: !(prev[id] ?? collapsed[id] ?? false) }));
+  }
+
+  function setAllCollapsed(value: boolean) {
+    setOverrides(Object.fromEntries(shownTurns.map((turn) => [turn.id, value])));
+  }
+
+  /** 胶囊 toggle 语义：已在「轮次」时再点一次 = 全部折叠，再点 = 全部展开。 */
+  function toggleAllTurns() {
+    const anyExpanded = shownTurns.some((turn) => !collapsed[turn.id]);
+    setAllCollapsed(anyExpanded);
+  }
+
+  function activate(key: TraceMode) {
+    if (key === 'turn' && layout === 'turn') {
+      toggleAllTurns();
+      return;
+    }
+    setLayout(key);
+  }
+
+  /** j/k 或上下键在步骤间移动；/ 聚焦搜索；[ ] 切轮；Enter 折叠当前轮；Esc 清手选。 */
   function handleKey(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (event.target instanceof HTMLInputElement) return;
+    const target = event.target;
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
     const index = flat.findIndex((step) => step.id === activeStepId);
     if (event.key === 'j' || event.key === 'ArrowDown') {
       event.preventDefault();
@@ -178,8 +258,28 @@ function SessionTrace({
     } else if (event.key === '/') {
       event.preventDefault();
       searchRef.current?.focus();
+    } else if (event.key === '[' || event.key === ']') {
+      // 切换轮次：清掉步骤手选，否则 activeTurn 永远被选中步骤牵着走
+      event.preventDefault();
+      const current = Math.max(
+        0,
+        shownTurns.findIndex((turn) => turn.id === activeTurn?.id),
+      );
+      const next = event.key === ']'
+        ? Math.min(shownTurns.length - 1, current + 1)
+        : Math.max(0, current - 1);
+      const turn = shownTurns[next];
+      if (turn) {
+        setSelectedStepId(null);
+        setSelectedTurnId(turn.id);
+      }
+    } else if (event.key === 'Enter' && !(target instanceof HTMLButtonElement) && activeTurn) {
+      // 按钮上的 Enter 交给按钮自己（否则会既触发点击又折叠一次）
+      event.preventDefault();
+      toggleTurn(activeTurn.id);
     } else if (event.key === 'Escape') {
       setSelectedStepId(null);
+      setSelectedTurnId(null);
     }
   }
 
@@ -196,7 +296,8 @@ function SessionTrace({
         <div>
           <h2 className="ws-trace-title">会话轨迹</h2>
           <p className="ws-trace-sub mono">
-            {turns.length} 轮 · {stats.tools} 次工具 · {formatDuration(stats.totalMs)}
+            {turns.length} 轮 · {stats.modelCalls} 次模型 · {stats.tools} 次工具 · 实测{' '}
+            {formatDuration(stats.measuredMs)} · 墙钟 {formatDuration(stats.wallMs)}
             {view.running ? ' · 生成中' : ''}
           </p>
         </div>
@@ -230,12 +331,41 @@ function SessionTrace({
                   aria-selected={layout === item.key}
                   className={layout === item.key ? 'active' : ''}
                   title={MODE_HINTS[item.key]}
-                  onClick={() => setLayout(item.key)}
+                  onClick={() => activate(item.key)}
                 >
                   {item.label}
                 </button>
               ))}
             </div>
+            {layout === 'turn' && (
+              <div className="trace-actions" role="group" aria-label="轮次操作">
+                <button type="button" onClick={() => setAllCollapsed(true)}>
+                  全部折叠
+                </button>
+                <button type="button" onClick={() => setAllCollapsed(false)}>
+                  全部展开
+                </button>
+                <button
+                  type="button"
+                  className={onlyErrors ? 'active' : ''}
+                  aria-pressed={onlyErrors}
+                  onClick={() => setOnlyErrors((value) => !value)}
+                >
+                  仅看异常
+                </button>
+                <select
+                  aria-label="显示轮数"
+                  value={visibleTurns === null ? 'all' : String(visibleTurns)}
+                  onChange={(e) =>
+                    setVisibleTurns(e.target.value === 'all' ? null : Number(e.target.value))
+                  }
+                >
+                  <option value="5">显示 5 轮</option>
+                  <option value="10">显示 10 轮</option>
+                  <option value="all">全部轮次</option>
+                </select>
+              </div>
+            )}
             <input
               ref={searchRef}
               className="session-search trace-search"
@@ -256,12 +386,16 @@ function SessionTrace({
           <div className="trace-body" tabIndex={0} role="group" aria-label="轨迹步骤">
             <div className="trace-scroll">
               <TraceList
-                turns={turns}
+                turns={shownTurns}
                 mode={layout}
                 query={query}
                 activeStepId={activeStepId}
                 activeTurnId={activeTurn?.id ?? null}
                 context={context.data ?? null}
+                collapsed={collapsed}
+                visibleTurns={visibleTurns}
+                onToggleTurn={toggleTurn}
+                onLoadMore={() => setVisibleTurns(null)}
                 onSelectStep={(step) => setSelectedStepId(step.id)}
                 onSelectTurn={(turn) => setSelectedTurnId(turn.id)}
               />
@@ -271,7 +405,7 @@ function SessionTrace({
               key={activeStep?.id ?? 'none'}
               step={activeStep}
               turn={activeTurn}
-              totalMs={stats.totalMs}
+              totalMs={stats.measuredMs}
               profile={context.data?.profile}
             />
           </div>
@@ -334,6 +468,8 @@ export function TraceTab({ session, onAsk }: Props) {
 
   return (
     <SessionTrace
+      // 换会话就重置折叠/搜索等视图状态，避免把上一个会话的折叠态带过来
+      key={session}
       session={session}
       runs={items}
       runsLoading={runs.isLoading}

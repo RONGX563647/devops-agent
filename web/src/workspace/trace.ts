@@ -1,7 +1,10 @@
 /** 把会话消息派生为轨迹视图：轮次 + 步骤 + 真实耗时 + 三条资源泳道 + 聚合指标。
  *
- * 关键点：耗时不靠相邻步骤相减估算——`endedAt` 是工具/模型结束事件的真实时间戳，
- * 只有旧数据缺失结束事件时才回退到「下一步时间」，并标记 measured=false。
+ * 三条视图（时长/调用/轮次）读的是同一份 TraceStep，计时也只有一个来源：
+ * - measured：起止事件都在；
+ * - derived：阶段自报耗时（解析）或落库 span 反推；
+ * - estimated：相邻步骤插值，只能看趋势，默认沉底且不参与「最慢 Top N」。
+ * 会话级同时给两个口径：实测（span 并集）与墙钟（起止差），差值就是用户空闲。
  */
 import type {
   ChatMessage,
@@ -12,6 +15,7 @@ import type {
   TraceSpan,
   TraceStats,
   TraceStep,
+  TraceTiming,
   TraceTurn,
 } from '../types';
 
@@ -24,6 +28,28 @@ function toMs(value?: string | null): number {
   if (!value) return 0;
   const ms = new Date(value).getTime();
   return Number.isNaN(ms) ? 0 : ms;
+}
+
+/** 区间并集长度：模型与工具可能嵌套/重叠，直接求和会把同一段时间算两次。 */
+export function unionLength(intervals: Array<[number, number]>): number {
+  let total = 0;
+  let curStart: number | null = null;
+  let curEnd = 0;
+  for (const [start, end] of [...intervals].sort((a, b) => a[0] - b[0])) {
+    if (end <= start) continue;
+    if (curStart === null) {
+      curStart = start;
+      curEnd = end;
+    } else if (start <= curEnd) {
+      curEnd = Math.max(curEnd, end);
+    } else {
+      total += curEnd - curStart;
+      curStart = start;
+      curEnd = end;
+    }
+  }
+  if (curStart !== null) total += curEnd - curStart;
+  return total;
 }
 
 function shortQuestion(text: string): string {
@@ -114,34 +140,56 @@ function kindOf(step: ProcessEntry): TraceStep['kind'] {
   if (step.kind === 'parse') return 'parse';
   if (step.kind === 'error') return 'error';
   if (step.kind === 'control') return step.state === 'error' ? 'error' : 'text';
+  if (step.kind === 'model') return 'model';
   return 'text';
 }
 
-/** 过程步骤 → 轨迹步骤；lifecycle 是运行日志、model 只进泳道，都不作为列表条目。 */
+/** 行首标题只留「是谁」：徽标已经说明了类别，标题里不再重复「模型调用 ·」这类前缀。 */
+function stepTitle(step: ProcessEntry): string {
+  if (step.kind === 'thinking') return '思考';
+  if (step.kind === 'model') return step.label.replace(/^模型调用\s*·\s*/, '') || '模型';
+  if (step.kind === 'tool') return step.toolName ?? step.label.replace(/^调用工具\s*·\s*/, '');
+  return step.label;
+}
+
+/** 唯一的计时口径：有起止事件就是 measured，只有阶段自报就是 derived，都没有先留空。 */
+function timingOf(at: number, ended: number, selfMs: number): TraceTiming {
+  if (ended > at) {
+    const durationMs = Math.min(MAX_STEP_MS, ended - at);
+    return { start: at, end: at + durationMs, durationMs, source: 'measured' };
+  }
+  if (selfMs > 0) {
+    const durationMs = Math.min(MAX_STEP_MS, selfMs);
+    return { start: at, end: at + durationMs, durationMs, source: 'derived' };
+  }
+  return { start: at, end: at, durationMs: 0, source: 'estimated' };
+}
+
+/** 过程步骤 → 轨迹步骤；只有 lifecycle（运行日志）不是耗时步骤。
+ *
+ * 模型调用必须留在列表里：泳道里画着它占用的长条，列表里却没有对应行，
+ * 「时长」页就永远答不了「这轮到底慢在哪」。
+ */
 function stepToTrace(step: ProcessEntry, index: number): TraceStep | null {
-  if (step.kind === 'lifecycle' || step.kind === 'text' || step.kind === 'model') return null;
+  if (step.kind === 'lifecycle') return null;
   const toolName = step.toolName;
-  const title =
-    step.kind === 'thinking'
-      ? '思考'
-      : step.kind === 'tool'
-        ? (toolName ?? step.label.replace(/^调用工具\s*·\s*/, ''))
-        : step.label;
   const at = toMs(step.at);
   const ended = toMs(step.endedAt);
-  // 解析阶段没有配对的起止事件，耗时取各阶段自报的 ms
+  // 解析阶段没有配对的起止事件，耗时取各阶段自报的 ms（derived）
   const stagesMs = (step.parseStages ?? []).reduce((sum, stage) => sum + stage.ms, 0);
-  const measured = ended > at;
+  const timing = timingOf(at, ended, stagesMs);
   return {
     id: step.id,
     kind: kindOf(step),
     layer: layerOf(step),
     index,
-    title,
+    title: stepTitle(step),
     text: step.detail,
     at,
-    durationMs: Math.min(MAX_STEP_MS, measured ? ended - at : stagesMs),
-    measured: measured || stagesMs > 0,
+    timing,
+    durationMs: timing.durationMs,
+    measured: timing.source !== 'estimated',
+    share: 0,
     status: step.state,
     toolCallId: step.toolCallId,
     toolName,
@@ -217,8 +265,11 @@ function pushFailure(turn: TraceTurn, message: ChatMessage, at: number): void {
     title: '运行失败',
     text: message.error ?? '',
     at,
+    timing: { start: at, end: at, durationMs: 0, source: 'derived' },
     durationMs: 0,
-    measured: false,
+    measured: true,
+    share: 0,
+    synthetic: true,
   });
 }
 
@@ -268,14 +319,18 @@ function appendAssistant(turn: TraceTurn, message: ChatMessage): void {
       title: '模型输出',
       text: message.text,
       at: endedAt,
+      // 最终正文是在最后一次模型调用里产出的，再记一次时长就把模型时间算了两遍
+      timing: { start: endedAt, end: endedAt, durationMs: 0, source: 'derived' },
       durationMs: 0,
-      measured: false,
+      measured: true,
+      share: 0,
+      synthetic: true,
     });
   }
   if (message.stopped) turn.failed = true;
 }
 
-/** 排序、编序号、给缺真实计时的步骤补一个估算值（并标 measured=false）。 */
+/** 排序、编序号、给缺真实计时的步骤补一个估算值（并标记 source=estimated）。 */
 function finalizeTurn(turn: TraceTurn): void {
   turn.items.sort((a, b) => a.at - b.at);
   turn.items.forEach((item, i) => {
@@ -283,15 +338,44 @@ function finalizeTurn(turn: TraceTurn): void {
   });
   for (let i = 0; i < turn.items.length; i += 1) {
     const item = turn.items[i];
-    if (item.measured) continue;
+    // 正文/异常这类合成行本来就没有耗时，插值只会造出一条假的「最慢」
+    if (item.synthetic || item.timing.source !== 'estimated' || item.timing.durationMs > 0) continue;
     const nextAt = turn.items[i + 1]?.at ?? turn.endedAt;
-    item.durationMs = Math.min(MAX_STEP_MS, Math.max(0, nextAt - item.at));
+    const durationMs = Math.min(MAX_STEP_MS, Math.max(0, nextAt - item.at));
+    item.timing = { start: item.at, end: item.at + durationMs, durationMs, source: 'estimated' };
+    item.durationMs = durationMs;
   }
   turn.steps = turn.items.length;
   turn.tools = turn.items.filter((item) => item.kind === 'tool').length;
   turn.errorCount = turn.items.filter(
     (item) => item.kind === 'error' || item.status === 'error',
   ).length;
+  turn.wallMs = Math.max(0, turn.endedAt - turn.startedAt);
+  turn.measuredMs = unionLength(turn.spans.map((span) => [span.start, span.end]));
+}
+
+/** 占比分母：全会话非估算、非合成步骤的耗时之和。
+ *
+ * 估算值不进分母，否则「插值出来的 30 秒」会把真实步骤的占比压小。
+ */
+function applyShares(turns: TraceTurn[]): void {
+  const total = turns.reduce(
+    (sum, turn) =>
+      sum +
+      turn.items.reduce(
+        (acc, item) =>
+          acc + (item.synthetic || item.timing.source === 'estimated' ? 0 : item.durationMs),
+        0,
+      ),
+    0,
+  );
+  if (total <= 0) return;
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      item.share =
+        item.synthetic || item.timing.source === 'estimated' ? 0 : item.durationMs / total;
+    }
+  }
 }
 
 /**
@@ -320,6 +404,8 @@ export function turnsFromMessages(messages: ChatMessage[]): TraceTurn[] {
         tools: 0,
         failed: false,
         items: [],
+        measuredMs: 0,
+        wallMs: 0,
         attachments: message.attachments?.length,
         spans: [],
         tokens: { in: 0, out: 0, cache: 0 },
@@ -332,6 +418,7 @@ export function turnsFromMessages(messages: ChatMessage[]): TraceTurn[] {
     if (current) appendAssistant(current, message);
   }
   if (current) finalizeTurn(current);
+  applyShares(turns);
   return turns;
 }
 
@@ -370,10 +457,46 @@ export function buildLanes(turns: TraceTurn[]): TraceLanes {
   };
 }
 
-/** 顶部状态栏用的聚合指标。 */
+/** 实测耗时的区间来源：模型/工具用 span 并集，输入解析用阶段自报区间。 */
+function workIntervals(turns: TraceTurn[], lanes: TraceLanes): Array<[number, number]> {
+  const intervals = [...lanes.model, ...lanes.tool].map(
+    (span) => [span.start, span.end] as [number, number],
+  );
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      if (item.kind === 'parse' && !item.synthetic && item.durationMs > 0) {
+        intervals.push([item.at, item.at + item.durationMs]);
+      }
+    }
+  }
+  return intervals;
+}
+
+/** 两个数相除给比例；分子为 0 时返回 null（0% 与「没数据」必须可区分）。 */
+function ratio(value: number, total: number): number | null {
+  if (total <= 0 || value <= 0) return null;
+  return value / total;
+}
+
+/** 允许分子为 0 的比例：首枪命中 0 是必然成本，不能当成「没数据」。 */
+function shareOfTotal(value: number, total: number): number | null {
+  return total > 0 ? value / total : null;
+}
+
+/** 吞吐：输出 token ÷ 模型占用毫秒，没有模型耗时就给 null。 */
+function throughput(modelMs: number, tokensOut: number): number | null {
+  if (modelMs <= 0 || tokensOut <= 0) return null;
+  return (tokensOut / modelMs) * 1000;
+}
+
+/** 顶部状态栏用的聚合指标：实测与墙钟分开给，差值才是用户空闲。 */
 export function traceStats(turns: TraceTurn[], lanes: TraceLanes): TraceStats {
   const steps = turns.reduce((sum, turn) => sum + turn.items.length, 0);
   const tools = turns.reduce((sum, turn) => sum + turn.tools, 0);
+  const modelCalls = turns.reduce(
+    (sum, turn) => sum + turn.items.filter((item) => item.kind === 'model').length,
+    0,
+  );
   const errors = turns.reduce((sum, turn) => sum + turn.errorCount, 0);
   const tokensIn = turns.reduce((sum, turn) => sum + turn.tokens.in, 0);
   const tokensOut = turns.reduce((sum, turn) => sum + turn.tokens.out, 0);
@@ -382,18 +505,23 @@ export function traceStats(turns: TraceTurn[], lanes: TraceLanes): TraceStats {
   const last = turns.reduce((max, turn) => Math.max(max, turn.endedAt), first);
   const modelMs = lanes.model.reduce((sum, span) => sum + (span.end - span.start), 0);
   const cold = firstCalls(turns);
+  // 实测 = 所有真实占用区间的并集；墙钟 = 起止差，差值即用户空闲
+  const measuredMs = unionLength(workIntervals(turns, lanes));
   return {
-    totalMs: Math.max(0, last - first),
+    totalMs: measuredMs,
+    measuredMs,
+    wallMs: Math.max(0, last - first),
     turns: turns.length,
     steps,
     tools,
+    modelCalls,
     errors,
     tokensIn,
     tokensOut,
     cacheTokens,
-    tokPerSec: modelMs > 0 && tokensOut > 0 ? (tokensOut / modelMs) * 1000 : null,
-    cacheRate: tokensIn > 0 && cacheTokens > 0 ? cacheTokens / tokensIn : null,
-    firstCallRate: cold.in > 0 && cold.seen > 0 ? cold.cache / cold.in : null,
+    tokPerSec: throughput(modelMs, tokensOut),
+    cacheRate: ratio(cacheTokens, tokensIn),
+    firstCallRate: cold.seen === 0 ? null : shareOfTotal(cold.cache, cold.in),
   };
 }
 
@@ -413,4 +541,50 @@ function firstCalls(turns: TraceTurn[]): { in: number; cache: number; seen: numb
     if (turn.firstCall.cache !== undefined) seen += 1;
   }
   return { in: inTok, cache: cacheTok, seen };
+}
+
+/** 时长榜的一行：步骤 + 它属于第几轮（平铺表格里必须标出来）。 */
+export interface TraceRow {
+  step: TraceStep;
+  turnIndex: number;
+}
+
+/** 时长榜排序：估算值沉底，其余按耗时降序。
+ *
+ * 估算值是「下一步时间 − 本步时间」插出来的，把它排进 Top 3 会把真正慢的步骤挤掉。
+ */
+export function byDurationDesc(a: { step: TraceStep }, b: { step: TraceStep }): number {
+  const estimated = (row: { step: TraceStep }) => (row.step.timing.source === 'estimated' ? 1 : 0);
+  if (estimated(a) !== estimated(b)) return estimated(a) - estimated(b);
+  return b.step.durationMs - a.step.durationMs;
+}
+
+/** 时长视图的行集合：纳入模型、思考、工具、解析、异常；正文行不参与排名。 */
+export function durationRows(
+  turns: TraceTurn[],
+  match: (step: TraceStep) => boolean,
+): TraceRow[] {
+  return turns
+    .flatMap((turn) =>
+      turn.items
+        .filter((step) => !step.synthetic && match(step))
+        .map((step) => ({ step, turnIndex: turn.index })),
+    )
+    .sort(byDurationDesc);
+}
+
+/** p95（nearest-rank）。样本不足 2 个时没有「分位」可言，返回 null 让界面显示 —。 */
+export function percentile(values: number[], p: number): number | null {
+  if (values.length < 2) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1));
+  return sorted[index];
+}
+
+/** 前 n 步的合计占比：一句话说清「慢得集中还是分散」。 */
+export function topShare(rows: TraceRow[], n: number): number {
+  return rows
+    .filter((row) => row.step.timing.source !== 'estimated')
+    .slice(0, n)
+    .reduce((sum, row) => sum + row.step.share, 0);
 }

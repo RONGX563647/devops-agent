@@ -7,6 +7,7 @@ import type {
   EvalCaseList,
   EvalCompare,
   EvalTrends,
+  Health,
   InputStage,
   PendingState,
   PermissionCatalog,
@@ -210,4 +211,9 @@ export async function postFeedback(
     throw new Error(`反馈失败 ${resp.status}`);
   }
   return (await resp.json()) as { id: number; run_id: number; score: number };
+}
+
+/** 运行时模式：Echo 兜底时前端要把它显式说出来，否则回显会被当成「答非所问」 */
+export function fetchHealth(): Promise<Health> {
+  return getJson<Health>('/health');
 }

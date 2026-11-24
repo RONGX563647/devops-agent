@@ -49,9 +49,12 @@ def test_init_db_adds_columns_to_old_database(tmp_path: Path) -> None:
         legacy = repo.get_run(live, 1)
 
     assert {"permission", "parked", "pending_json", "expires_at", "ask_count"} <= columns
+    # 失败原因列同样是给老库补的：缺了它，历史 run 永远只有 status 没有原因
+    assert "error" in columns
     # 老数据保留，新列取默认值
     assert legacy is not None and legacy.input == "legacy"
     assert legacy.permission == ""
+    assert legacy.error == ""
 
 
 def test_unpark_is_conditional_and_expiry_aware(tmp_path: Path) -> None:

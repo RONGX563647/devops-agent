@@ -22,14 +22,21 @@ export const FALLBACK_PROFILES: PermissionMeta[] = [
     label: '工作区可写',
     note: '可在工作区内建/删/改文件；越界会先弹卡片问你。',
     fallback: 'ask',
-    write: false,
+    write: true,
+  },
+  {
+    key: 'execute',
+    label: '可执行',
+    note: '工作区权限 + 白名单命令（pytest / npm run 等）；越界仍会先问。',
+    fallback: 'ask',
+    write: true,
   },
   {
     key: 'auto',
     label: '无人值守',
-    note: '给定时任务用：越界一律拒绝，不弹确认。',
+    note: '给定时任务用：工作区内可读写，越界一律拒绝且不弹确认。',
     fallback: 'deny',
-    write: false,
+    write: true,
   },
 ];
 

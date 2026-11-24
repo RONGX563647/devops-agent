@@ -54,6 +54,38 @@ def test_rule_content_scopes() -> None:
     assert rule_content_for("prefix", "Bash", "{}") is None
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        # 子命令粒度：点「这类命令」不等于放行整个 git
+        ("git commit -m x", "git commit:*"),
+        ("git push --force", "git push:*"),
+        ("npm run build", "npm run:*"),
+        ("docker compose up -d", "docker compose:*"),
+        # 包装层要剥掉，否则沉淀成 timeout:* 等于放行所有被 timeout 包住的命令
+        ("timeout 30 npm test", "npm test:*"),
+        ("timeout -s KILL 30 npm test", "npm test:*"),
+        ("nice -n 5 pytest -q", "pytest:*"),
+        ("env FOO=1 npm run build", "npm run:*"),
+        ("nohup python -m pytest -q", "python -m pytest:*"),
+        # 复合命令一律不沉淀：首词 cd 沉淀成 cd:* 会顺带放过后半段的 rm
+        ("cd /repo && rm -rf build", None),
+        ("ls; rm -rf b", None),
+        # 引号里的分隔符不算复合命令
+        ("echo 'a && b'", "echo:*"),
+        # 这些一旦沉淀就是「任意执行」的后门
+        ("rm -rf build", None),
+        ("rm a.txt", None),
+        ("sudo apt install x", None),
+        ("bash -c 'rm -rf /'", None),
+        ("python -c 'print(1)'", None),
+    ],
+)
+def test_prefix_rule_is_narrow_enough(command: str, expected: str | None) -> None:
+    """前缀沉淀的粒度：能覆盖「同类命令」，但绝不覆盖比它更危险的命令。"""
+    assert rule_content_for("prefix", "Bash", _bash(command)) == expected
+
+
 def test_effective_scope_downgrades_danger_to_once() -> None:
     """一秒钟的勾选不该变成永久放行 rm -rf。"""
     assert effective_scope("Bash", _bash("rm -rf /"), "prefix") == "once"

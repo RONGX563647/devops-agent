@@ -60,7 +60,10 @@ PROFILES: dict[str, PermissionProfile] = {
         key="workspace",
         label="工作区可写",
         mode="accept_edits",
-        tools=READONLY_TOOLS,
+        # 说明里承诺「可在工作区内建/删/改文件」，那就必须真给写工具：
+        # 只挂只读四件套时，这一档与只读档的唯一差别只剩「越界问不问」，
+        # 用户看到的是「切了档什么都没变」。
+        tools=READONLY_TOOLS + WRITE_TOOLS,
         fallback="ask",
         note="可在工作区内建/删/改文件；越界操作会先弹卡片问你。",
     ),
@@ -68,7 +71,9 @@ PROFILES: dict[str, PermissionProfile] = {
         key="execute",
         label="可执行",
         mode="accept_edits",
-        tools=READONLY_TOOLS,
+        # 「工作区权限 + 白名单命令」：写工具同样要带，否则白名单里的
+        # 构建命令改不了产物，等于只能跑不能干。
+        tools=READONLY_TOOLS + WRITE_TOOLS,
         fallback="ask",
         note="工作区权限 + 白名单命令（pytest / npm run 等）；越界仍会先问。",
         allowlist=True,
@@ -85,9 +90,11 @@ PROFILES: dict[str, PermissionProfile] = {
         key="auto",
         label="无人值守",
         mode="dont_ask",
-        tools=READONLY_TOOLS,
+        # 与工作区档同权限、只是不问人：dont_ask 把「工作区内的写」放行、
+        # 把越界降级成拒绝。不给写工具的话，定时任务连产物都存不下来。
+        tools=READONLY_TOOLS + WRITE_TOOLS,
         fallback="deny",
-        note="给定时任务用：越界一律拒绝，不弹确认（因为没人在）。",
+        note="给定时任务用：工作区内可读写，越界一律拒绝且不弹确认（因为没人在）。",
     ),
 }
 

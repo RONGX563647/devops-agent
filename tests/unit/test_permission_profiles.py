@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from agentscope.permission import PermissionContext, PermissionMode
+from agentscope.permission import PermissionContext, PermissionEngine, PermissionMode
 
 from devops_agent.governance.policy import build_permission_context
 from devops_agent.governance.profiles import (
@@ -34,10 +34,55 @@ def test_profiles_bind_mode_tools_and_fallback() -> None:
     assert PROFILES["workspace"].fallback == "ask"
     assert PROFILES["auto"].mode == "dont_ask"
     assert PROFILES["unrestricted"].fallback == "hard_deny"
-    # 只有放开档带写工具：其它档位切过去不该突然能改文件
-    assert set(PROFILES["unrestricted"].tools) - set(READONLY_TOOL_NAMES) == set(WRITE_TOOL_NAMES)
-    for key in ("readonly", "workspace", "execute", "auto"):
-        assert "write" not in PROFILES[key].tools
+
+
+def test_writable_profiles_mount_write_tools() -> None:
+    """说明里承诺「可在工作区内建/删/改文件」的档位，必须真的挂上写工具。
+
+    只挂只读四件套时，workspace / execute 与只读档的唯一差别只剩「越界问不问」，
+    用户看到的就是「切了档什么都没变」——这个断言就是防它再退回去。
+    """
+    for key in ("workspace", "execute", "auto", "unrestricted"):
+        assert set(PROFILES[key].tools) - set(READONLY_TOOL_NAMES) == set(WRITE_TOOL_NAMES), key
+    # 只读档不给写工具：这是工具集层面的硬保证，不依赖 mode 是否被改错
+    assert "write" not in PROFILES["readonly"].tools
+    assert "edit" not in PROFILES["readonly"].tools
+
+
+def test_only_readonly_profile_denies_writes(tmp_path: Path) -> None:
+    """判定交给真实引擎：只读档写不进去，其余档在工作区内可写、越界按兜底处理。"""
+    from agentscope.tool import LocalBackend, Write
+
+    inside = str(tmp_path / "sub" / "out.txt")
+    outside = str(tmp_path.parent / "escape.txt")
+
+    def decide(profile_key: str, target: str) -> str:
+        engine = PermissionEngine(
+            build_permission_context(profile=PROFILES[profile_key], workdir=tmp_path)
+        )
+        tool = Write(backend=LocalBackend(workdir=str(tmp_path)))
+        decision = asyncio.run(engine.check_permission(tool, {"file_path": target, "content": "x"}))
+        return decision.behavior.value
+
+    assert decide("readonly", inside) == "deny"
+    for key in ("workspace", "execute", "auto", "unrestricted"):
+        assert decide(key, inside) == "allow", key
+    # 越界：workspace / execute 问一句，auto 直接拒，unrestricted 放行
+    assert decide("workspace", outside) == "ask"
+    assert decide("execute", outside) == "ask"
+    assert decide("auto", outside) == "deny"
+    assert decide("unrestricted", outside) == "allow"
+
+
+def test_workdir_is_registered_so_writes_count_as_in_workspace(tmp_path: Path) -> None:
+    """workdir 必须登记进 working_directories。
+
+    框架判「在不在工作区内」用的是 `os.getcwd() + working_directories`，而部署时
+    真正的工作区常由 DEVOPS_AGENT_WORKDIR 指到别处。不登记的话，accept_edits 档
+    写文件会被当成「工作区外」，每次都要确认——用户看到的就是「选了可写还要问」。
+    """
+    context = build_permission_context(profile=PROFILES["workspace"], workdir=tmp_path)
+    assert str(tmp_path.resolve()) in context.working_directories
 
 
 def test_available_respects_env_and_skips_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -98,13 +143,13 @@ def test_context_without_profile_still_reads_yaml() -> None:
     assert context.mode == PermissionMode.DONT_ASK
 
 
-def test_build_toolkit_for_only_writes_in_unrestricted(tmp_path: Path) -> None:
+def test_build_toolkit_for_mounts_profile_tools(tmp_path: Path) -> None:
     def registered(names: tuple[str, ...]) -> set[str]:
         toolkit = build_toolkit_for(names, tmp_path)
         return {asyncio.run(toolkit.get_tool(name.capitalize())).name for name in names}
 
     assert registered(PROFILES["readonly"].tools) == {"Bash", "Read", "Glob", "Grep"}
-    assert {"Write", "Edit"} <= registered(PROFILES["unrestricted"].tools)
+    assert {"Write", "Edit"} <= registered(PROFILES["workspace"].tools)
 
 
 def test_build_toolkit_for_rejects_unknown_tool(tmp_path: Path) -> None:

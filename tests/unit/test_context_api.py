@@ -51,12 +51,21 @@ def test_context_reports_size_and_prefix() -> None:
 
 
 def test_fingerprint_survives_profile_switch() -> None:
-    """切档不改前缀：指纹必须相同——这正是历史还能命中缓存的依据。"""
+    """同档位下前缀稳定；可写档之间前缀一致，只读档因为少两个写工具而不同。
+
+    这条以前断言「所有档位指纹相同」——那是把「档位不动工具集」当成了不变量。
+    代价是只读档也得挂着写工具，靠 mode 兜；现在只读档从工具集层面就没有写能力，
+    换来的成本仅是「从只读档切出去」时前缀缓存失效一次（只读档本来也写不了东西，
+    切出去就是能力变了，重新算一次前缀是合理的）。
+    """
     first = client.get("/api/context?profile=readonly").json()
     second = client.get("/api/context?profile=readonly").json()
     workspace = client.get("/api/context?profile=workspace").json()
+    execute = client.get("/api/context?profile=execute").json()
+
     assert first["prefix_fingerprint"] == second["prefix_fingerprint"]
-    assert first["prefix_fingerprint"] == workspace["prefix_fingerprint"]
+    assert workspace["prefix_fingerprint"] == execute["prefix_fingerprint"]
+    assert first["prefix_fingerprint"] != workspace["prefix_fingerprint"]
     # 档位说明本身仍然不同，只是放在消息末尾而不是前缀里
     assert first["policy_note"] != workspace["policy_note"]
     assert "只读" in first["policy_note"]
@@ -78,7 +87,7 @@ def test_context_unknown_profile_falls_back_to_default() -> None:
 
 
 def test_estimate_tokens_calibrated_on_real_context() -> None:
-    """估算要和实测同量级：409 字提示 + 一万字符 schema 实测约 3060 token。"""
+    """估算要和实测同量级：提示 + 六个工具的 schema 实测约 3700 token。"""
     body = client.get("/api/context").json()
-    assert 2600 < body["prefix_tokens"] < 3400
+    assert 3000 < body["prefix_tokens"] < 4500
     assert estimate_tokens("中文四个字") == 3  # 5 个汉字 ÷ 1.4

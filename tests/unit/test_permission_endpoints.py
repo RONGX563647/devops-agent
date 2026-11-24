@@ -233,3 +233,47 @@ def test_ask_limit_auto_rejects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     # 第一次是用户的批准，第二次是服务端自动发出的拒绝
     assert runtime.resumed[0][0].confirmed is True
     assert all(item.confirmed is False for item in runtime.resumed[1])
+
+
+class StuckRuntime(ParkRuntime):
+    """模拟框架的保护逻辑：挂起没结清就再开跑，会抛「received no event」。
+
+    真实报错来自 `Agent._check_incoming_event`：它数着还有 N 个调用在等结果，
+    而新事件里没有确认结果，于是直接抛错，整轮变成 RUN_ERROR。
+    假运行时必须照着抛，否则「结清挂起」这段代码被删掉测试也发现不了。
+    """
+
+    async def stream(self, session_id: str, user_input: str) -> AsyncIterator[dict[str, Any]]:
+        if self.pending:
+            raise RuntimeError(
+                f"Agent is waiting for {len(self.pending)} tool calls and external execution "
+                "results for 0 tool calls, but received no event."
+            )
+        async for frame in super().stream(session_id, user_input):
+            yield frame
+
+
+def test_new_message_after_park_settles_previous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """卡片弹出后没作答就发新消息：先把旧的按拒绝结清，新版照常跑起来。
+
+    这是用户报的「运行失败 / Agent is waiting for 1 tool calls ... but received
+    no event」的直接回归测试。
+    """
+    original = app.state.runtime
+    runtime = StuckRuntime()
+    app.state.runtime = runtime
+    monkeypatch.setenv("DEVOPS_AGENT_DB_PATH", str(tmp_path / "settle.db"))
+    try:
+        _park(_post_stream({"session_id": "s1", "user_input": "删掉 dist"}))
+        body = _post_stream({"session_id": "s1", "user_input": "算了，换一个"})
+    finally:
+        app.state.runtime = original
+        app.state.sessions = None
+        app.state.sessions_base = None
+
+    assert "RUN_ERROR" not in body, body
+    assert "received no event" not in body
+    # 结清必须是拒绝：没批准的调用不能因为「又发了一条消息」被放行
+    assert runtime.resumed and all(item.confirmed is False for item in runtime.resumed[0])

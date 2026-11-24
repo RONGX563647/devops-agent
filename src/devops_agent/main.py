@@ -267,6 +267,35 @@ def _rejections(pending: list[dict[str, Any]]) -> list[ConfirmDecision]:
     ]
 
 
+# 结清挂起时最多允许多少轮追跑：模型被拒后通常会换个方案再试一次，
+# 再被拒还继续要确认就是它自己的问题，不必无限追。
+SETTLE_ROUNDS = 2
+
+
+async def _settle_abandoned(runtime: AgentRuntime) -> bool:
+    """把上一轮没作答的挂起按「拒绝」结清，好让新一轮能正常开跑。
+
+    为什么非有这一步：卡片弹出后用户可能直接点中断或关掉页面，前端只是 abort
+    了请求，**服务端仍停在 ASKING**。这时再发一条消息，框架的
+    `_check_incoming_event` 发现「等着 N 个调用、进来的事件里却没有确认结果」，
+    直接抛 `Agent is waiting for N tool calls ... but received no event` ——
+    用户看到的就是「对话运行失败」「怎么搞的你」。
+
+    结清方式固定是**拒绝**：没被批准的调用一条都不执行，发条消息不会顺手放行。
+    模型被拒后会自己换方案，这一段追跑的输出直接丢弃（它回答的是上一个问题）。
+    """
+    for _ in range(SETTLE_ROUNDS):
+        pending = pending_of(runtime)
+        if not pending:
+            return True
+        resume = getattr(runtime, "resume", None)
+        if not callable(resume):
+            return False
+        async for _frame in resume(_rejections(pending)):
+            pass  # 帧不推给前端：这是上一轮的收尾，不属于这一轮的回答
+    return not pending_of(runtime)
+
+
 def _park(runtime: AgentRuntime, recorder: RunRecorder, pending: list[dict[str, Any]]) -> str:
     """落库挂起态并返回 `event: parked` 帧。
 
@@ -384,6 +413,13 @@ async def run_stream(
             # 避免这段推理空窗被当成空闲连接断开（SSE 注释帧前端会忽略）。
             yield ": ping\n\n"
             recorder.start(req.session_id, req.user_input)
+            # 上一轮可能停在 ASKING（用户点了中断/关了页面），不结清就直接开跑
+            # 会撞上框架的「waiting for N tool calls but received no event」，
+            # 整轮变成 RUN_ERROR。先按拒绝结清，再开始这一轮。
+            if pending_of(entry.runtime) and not await _settle_abandoned(entry.runtime):
+                raise RuntimeError(
+                    "上一次的确认还没结清（模型又被要求了一次确认），请先在卡片上作答再发新消息。"
+                )
             # 输入解析在真正调用 Agent 之前完成：事件照常推给前端画轨迹，
             # 但只有 prepared.text 会进入模型上下文——密钥与裁剪细节不外泄。
             payload = req.user_input

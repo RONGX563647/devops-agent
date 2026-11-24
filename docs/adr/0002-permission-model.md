@@ -417,3 +417,6 @@ def test_matrix(...): ...
 
 1. `container` 档是否需要 `network_access` 开关（Codex 的 `workspace-write` 默认禁网）。当前项目的 Bash 没有任何网络管控，联网搜索走的是模型侧 `enable_search`，与工具执行无关。
 2. 规则文件是否需要支持「按 workdir 分组」（不同项目的常用命令不同）。当前设计是全局一份，若将来出现互相干扰再引入。
+3. `readonly` 档的「会问」清单恒为空：`explore` 把 ask 降级为 deny，属刻意留白，但界面只显示一个 `—`，用户读不出原因。
+
+> 三条已在 **ADR-0003**（`0003-permission-open-questions.md`）处置：1 采纳「部署级 `permission.network`」、2 采纳「按 workdir 分桶」、3 采纳「不新增档位、改呈现」。本节的描述保留为当时的判断，不再改动。

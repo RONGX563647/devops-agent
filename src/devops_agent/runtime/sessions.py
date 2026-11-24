@@ -36,6 +36,18 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _effective_search(runtime: AgentRuntime, requested: bool | None) -> bool:
+    """运行时解析后的联网状态；替身（Echo / 测试桩）没有该属性时退回入参。
+
+    不能写成 bool(requested)：None 表示「按部署默认」，压成 False 会让
+    `DEVOPS_AGENT_ENABLE_SEARCH=1` 的部署在会话重建时静默关掉检索。
+    """
+    effective = getattr(runtime, "web_search", None)
+    if isinstance(effective, bool):
+        return effective
+    return bool(requested)
+
+
 @dataclass
 class SessionEntry:
     """一个会话的内存态。"""
@@ -89,14 +101,16 @@ class SessionRegistry:
             self._entries.pop(victim, None)
             logger.debug("会话实例被回收: %s", victim)
 
-    def _build(self, session_id: str, profile: Any, web_search: bool) -> SessionEntry:
+    def _build(self, session_id: str, profile: Any, web_search: bool | None) -> SessionEntry:
         state_json = self._load_state(session_id)
         runtime = self._factory(session_id, profile, state_json, web_search)
         entry = SessionEntry(
             session_id=session_id,
             runtime=runtime,
             profile=str(getattr(profile, "key", "")),
-            web_search=web_search,
+            # 记「实际生效值」而不是入参：入参 None 表示按部署默认，
+            # 交给运行时解析后才知道到底联没联网，照抄 None 会让开关比较失真。
+            web_search=_effective_search(runtime, web_search),
             last_used=_now().timestamp(),
         )
         return entry
@@ -124,7 +138,7 @@ class SessionRegistry:
             # 切换档位/开关：先把旧状态存下来，再用新配置重建同一个会话
             self.save(session_id)
             self._entries.pop(session_id, None)
-        fresh = self._build(session_id, profile, bool(web_search))
+        fresh = self._build(session_id, profile, web_search)
         self._entries[session_id] = fresh
         self._evict()
         return fresh

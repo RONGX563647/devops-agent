@@ -1,4 +1,4 @@
-"""档位约束的下发位置 —— 追加在模型请求的最后一条消息，而不是写进系统提示。
+"""档位约束与联网说明的下发位置 —— 追加在模型请求的最后一条消息，而不是写进系统提示。
 
 为什么值得单独一个模块：前缀缓存按字节比对，系统提示在请求最前面，
 那里改一个字，后面的工具 schema 与整段历史全部作废。实测（同一段 10 轮历史）：
@@ -7,6 +7,7 @@
 - 同样的说明放在消息末尾，跨档命中 9216 / 9628 ≈ 96%。
 
 约束本身仍然每次下发，只是换了位置；不写进历史快照，所以下一轮不会重复累积。
+联网说明同理：它随开关逐轮变化，写进系统提示等于每切一次开关就丢一次缓存。
 """
 
 from __future__ import annotations
@@ -61,11 +62,27 @@ def policy_note(profile: PermissionProfile) -> str:
     )
 
 
-class ProfileNoteMiddleware(MiddlewareBase):
-    """在 messages 末尾补一条档位说明；只改本次请求，不进入会话历史。"""
+# 联网说明：检索结果由供应商塞进同一次请求的上下文，但模型看不出那些段落是检索来的，
+# 于是按手里的文件工具理解世界，回答「我没有联网能力」，用户以为按钮坏了。
+# 这句话只描述「结果已在手边」，不承诺检索范围，避免模型编造来源。
+_SEARCH_ON_NOTE = (
+    "本轮已开启联网检索：本次请求的上下文里已附带搜索结果。"
+    "涉及「今天 / 最新 / 当前」这类时效事实时，优先依据检索结果回答并说明来源；"
+    "检索结果与文件工具的输出冲突时，以检索结果为准。"
+)
 
-    def __init__(self, profile: PermissionProfile) -> None:
+
+def search_note(web_search: bool) -> str:
+    """联网开关的一句话说明；关闭时返回空串（不占末尾位置，不动请求形状）。"""
+    return _SEARCH_ON_NOTE if web_search else ""
+
+
+class ProfileNoteMiddleware(MiddlewareBase):
+    """在 messages 末尾补档位说明与联网说明；只改本次请求，不进入会话历史。"""
+
+    def __init__(self, profile: PermissionProfile, web_search: bool = False) -> None:
         self._profile = profile
+        self._web_search = web_search
 
     def set_profile(self, profile: PermissionProfile) -> None:
         """运行中切档：下一条模型请求带的档位说明就用新档位。
@@ -73,6 +90,10 @@ class ProfileNoteMiddleware(MiddlewareBase):
         只改这一个字段，不重建中间件列表 —— 系统提示保持逐字节稳定。
         """
         self._profile = profile
+
+    def set_web_search(self, web_search: bool) -> None:
+        """运行中开/关联网：下一轮请求末尾才带（或不带）检索说明。"""
+        self._web_search = web_search
 
     async def on_model_call(
         self,
@@ -82,4 +103,7 @@ class ProfileNoteMiddleware(MiddlewareBase):
     ) -> Any:
         messages: list[Msg] = list(input_kwargs.get("messages") or [])
         messages.append(UserMsg(name="system", content=policy_note(self._profile)))
+        note = search_note(self._web_search)
+        if note:
+            messages.append(UserMsg(name="system", content=note))
         return await next_handler(messages=messages)

@@ -453,6 +453,7 @@ describe('streamRun', () => {
       session_id: 's-1',
       user_input: '看下这个文件',
       attachments: ['a1b2c3d4e5f60718'],
+      web_search: false,
     });
     expect(events.map((event) => event.type)).toEqual(['RUN_DONE']);
   });
@@ -468,8 +469,9 @@ describe('streamRun', () => {
     expect(body.attachments).toEqual([]);
     // 没选档位就不发字段：让服务端用默认档，前端不猜
     expect('permission' in body).toBe(false);
-    // 没开联网也不发字段：避免误触发供应商检索计费
-    expect('web_search' in body).toBe(false);
+    // 联网必须显式表态：省略会被服务端当成「按部署默认」，
+    // 部署开了检索时界面上的「关」就关不掉这一轮。
+    expect(body.web_search).toBe(false);
   });
 
   it('选过档位才把 permission 写进请求体', async () => {
@@ -482,7 +484,7 @@ describe('streamRun', () => {
     expect(JSON.parse(String(spy.mock.calls[0][1]?.body)).permission).toBe('readonly');
   });
 
-  it('开启联网时才把 web_search 写进请求体', async () => {
+  it('开启联网时把 web_search=true 写进请求体', async () => {
     const spy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue(new Response(okStream(), { status: 200 }));

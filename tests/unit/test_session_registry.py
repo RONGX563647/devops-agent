@@ -110,6 +110,38 @@ def test_switching_web_search_rebuilds_but_confirm_reuses(db: Path) -> None:
     assert registry.acquire("s1", PROFILES["workspace"]) is on
 
 
+def test_omitted_web_search_follows_deployment_default(db: Path) -> None:
+    """请求里省略联网字段 = 按部署默认，不能被压成 False。
+
+    以前 `_build` 写的是 `bool(web_search)`，None 变成 False：
+    `DEVOPS_AGENT_ENABLE_SEARCH=1` 的部署在一次会话重建之后就静默关掉了检索。
+    """
+    built: list[bool | None] = []
+
+    class EnvDefaultRuntime(FakeRuntime):
+        """模拟真实运行时：自己解析部署默认，外部只看到解析后的布尔值。"""
+
+        def __init__(self, requested: bool | None) -> None:
+            super().__init__("")
+            self.web_search = True if requested is None else requested
+
+    def factory(
+        session_id: str, profile: Any, state_json: str | None, web_search: bool | None = None
+    ) -> FakeRuntime:
+        built.append(web_search)
+        return EnvDefaultRuntime(web_search)
+
+    registry = SessionRegistry(factory, db_path=db)
+    entry = registry.acquire("s1", PROFILES["workspace"])
+
+    assert built == [None]  # 原样透传给运行时，不在注册表里提前拍板
+    assert entry.web_search is True  # 记的是实际生效值
+    # 下一次省略字段时命中复用，不会因为「None != True」反复重建
+    assert registry.acquire("s1", PROFILES["workspace"]) is entry
+    # 显式关闭仍然要重建：显式 > 部署默认
+    assert registry.acquire("s1", PROFILES["workspace"], False) is not entry
+
+
 def test_acquire_restores_snapshot_from_db(db: Path) -> None:
     """缓存未命中（如进程重启 / 另一个实例）时从库里重建 Agent。"""
     with repo.connect(db) as conn:

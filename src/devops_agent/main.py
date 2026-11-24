@@ -140,8 +140,10 @@ class RunRequest(BaseModel):
     attachments: list[str] = Field(default_factory=list)
     # 权限档位；省略用服务端默认档
     permission: str | None = None
-    # 逐请求的联网搜索开关：默认关闭，前端「联网」按钮控制
-    web_search: bool = False
+    # 逐请求的联网搜索开关：省略 = 按部署默认（DEVOPS_AGENT_ENABLE_SEARCH），
+    # 显式 true/false = 这一轮就按它来。默认值不能写 False ——
+    # 那样「没带字段」会被当成「关」，环境变量就永远不生效。
+    web_search: bool | None = None
 
 
 class ConfirmItem(BaseModel):

@@ -31,7 +31,9 @@ jobs:
       - name: quality gates (config/gates.yaml)
         run: python scripts/check_gates.py
       - name: eval suite validate
-        run: python -m devops_agent.eval validate --suite eval/suites/devops-core.v2.jsonl
+        # --strict：题库已达门禁量，「样本不足」这类 warning 也该阻断 ——
+        # 否则题库会安静地停在 insufficient，评测一直跑但从不给结论。
+        run: python -m devops_agent.eval validate --suite eval/suites/devops-core.v2.jsonl --strict
       # 清单必须与题库同步：`sha256` 是 `compare` 判断「同一套题」的依据，
       # 改了 JSONL 却忘了跑 `eval manifest` 会让新旧批次的 delta 无声失效。
       # 比对 JSON 语义而非字节，避免 CRLF/缩进差异造成假红。

@@ -18,6 +18,7 @@
 - [ADR-0002 权限模型](../adr/0002-permission-model.md)
 - [ADR-0003 模型参数配置](../adr/0003-model-parameter-config.md)
 - [SPEC-0001 模型参数配置](../specs/0001-model-parameter-config.md)
+- [SPEC-0002 评测 UI 控制台](../specs/0002-eval-ui-console.md)
 
 ## 一句话定位
 

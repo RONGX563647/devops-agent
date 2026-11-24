@@ -182,27 +182,9 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 | `DEVOPS_AGENT_JUDGE_MODEL` | 评测裁判模型（nightly 使用） |
 | `DEVOPS_AGENT_EVAL_DB_PATH` | 评测库路径 |
 
----
+### 模型侧联网搜索
 
-| 环境变量 | 作用 |
-|---|---|
-| `DEVOPS_AGENT_API_KEY` / `_BASE_URL` / `_MODEL` | 模型接入（key 为空即 Echo） |
-| `DEVOPS_AGENT_CONFIG_DIR` | 覆盖 `config/` 位置（测试/部署用） |
-| `DEVOPS_AGENT_DOMAIN` | 运行域标记，写入 `runs.domain`，缺省 `debug` |
-| `DEVOPS_AGENT_WORKDIR` | Agent 工具的工作目录（shell cwd + 文件工具路径基准） |
-| `DEVOPS_AGENT_WORKSPACE` | 输入管线解析本地引用的根目录，缺省进程 cwd |
-| `DEVOPS_AGENT_ALLOW_REMOTE_FETCH` | 设为 1 才允许输入管线抓取远程 URL（默认关闭） |
-| `DEVOPS_AGENT_DB_PATH` | 观测库路径，缺省 `workspace/observability.db` |
-| `DEVOPS_AGENT_ATTACHMENT_DIR` | 附件目录，缺省 `workspace/attachments` |
-| `DEVOPS_AGENT_SECRET_KEY` | Fernet 主密钥（base64，优先级最高） |
-| `DEVOPS_AGENT_SECRET_KEY_FILE` | Fernet 主密钥文件，缺省库同目录 `.secret.key` |
-| `DEVOPS_AGENT_ENABLE_SEARCH` | 设为 1 时请求体附 `enable_search=true`（默认关闭） |
-| `DEVOPS_AGENT_PERMISSION_PROFILES` | 覆盖开放档位（逗号分隔） |
-| `DEVOPS_AGENT_DEFAULT_PROFILE` | 覆盖默认档位 |
-| `DEVOPS_AGENT_JUDGE_MODEL` | 评测裁判模型（nightly 使用） |
-| `DEVOPS_AGENT_EVAL_DB_PATH` | 评测库路径 |
-
----
+`DEVOPS_AGENT_ENABLE_SEARCH=1` 时，模型请求体会附加 `enable_search=true`，由供应商（如 DashScope 兼容接口）执行联网检索。**默认关闭**。这是环境变量层的部署默认；前端另有逐请求的「联网」开关。
 
 只有 `enable_search` 是不够的：它只是**授权**模型可以搜，搜不搜由模型自由裁量。实测同一份请求体（system prompt + 4 个工具定义 + 只读提示），带与不带 `enable_search` 的 `prompt_tokens` 完全一致（3150 vs 3150）——模型一次都没检索，用户看到的就是一个按下去没反应的按钮。因此默认还会下发 `search_options = {"forced_search": true, "search_strategy": "standard"}`，由供应商无条件检索并把结果注入上下文（同一请求体升到 4436 tokens）。
 
@@ -217,8 +199,9 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 
 前端输入框下方另有「联网」开关：网页端**每次都显式表态**（开 → 带 `web_search: true`，关 → `false`），所以界面上的「关」在开了环境变量的部署里也真的关得掉。只有直接调 API 时省略该字段才表示「按部署默认」。这样不必为了偶尔查资料把整个部署的检索打开。
 
-档位不是直接暴露 `PermissionMode` —— 只切 mode 而工具集不动，会出现「切了档什么都没变」。
-所以一个档位 = **mode + 工具集 + 越界兜底动作**，三者一起换（[profiles.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/governance/profiles.py#L50-L99)）：
+- 检索发生在供应商侧，事件流里没有工具调用 span，只能看到最终回答，无法审计检索了哪些页面。
+- 供应商或模型不支持该参数时可能直接返回 400；关掉开关即可回退。
+- 检索通常按次计费，开启前请确认额度与共享环境的影响。
 
 ## 权限：5 个档位
 

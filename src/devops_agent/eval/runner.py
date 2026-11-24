@@ -67,6 +67,24 @@ def _add_tokens(event: dict[str, Any]) -> int:
     return total
 
 
+def _note_tool_call(event: dict[str, Any], state: dict[str, Any]) -> None:
+    """记一次工具调用：计数 + 去重后的名字序列（顺序影响轨迹分）。"""
+    names = _split_tool_names(event.get("tool_call_name"))
+    state["tool_call_count"] += len(names)
+    for name in names:
+        key = name.lower()
+        if key not in state["tool_seen"]:
+            state["tool_seen"].add(key)
+            state["tool_names"].append(name)
+
+
+def _note_block_text(event: dict[str, Any], state: dict[str, Any]) -> None:
+    """记整块文本。非流式 provider 只发 `TEXT_BLOCK_END`，delta 全为空。"""
+    text = event.get("text")
+    if isinstance(text, str) and text:
+        state["block_text"] = text
+
+
 async def _consume(
     runtime: Any,
     case: EvalCase,
@@ -80,14 +98,10 @@ async def _consume(
             delta = event.get("delta")
             if isinstance(delta, str):
                 state["final_text"] += delta
+        elif event_type == "TEXT_BLOCK_END":
+            _note_block_text(event, state)
         elif event_type == "TOOL_CALL_START":
-            names = _split_tool_names(event.get("tool_call_name"))
-            state["tool_call_count"] += len(names)
-            for name in names:
-                key = name.lower()
-                if key not in state["tool_seen"]:
-                    state["tool_seen"].add(key)
-                    state["tool_names"].append(name)
+            _note_tool_call(event, state)
         elif event_type in _TOKEN_EVENTS:
             state["tokens"] += _add_tokens(event)
         elif event_type == "REQUIRE_USER_CONFIRM":
@@ -99,6 +113,7 @@ async def _consume(
 def _empty_state() -> dict[str, Any]:
     return {
         "final_text": "",
+        "block_text": "",
         "tool_names": [],
         "tool_call_count": 0,
         "tool_seen": set(),
@@ -170,9 +185,10 @@ async def execute_case(
                 state["status"] = "error"
                 state["error"] = str(exc)
         latency_ms = int((time.monotonic() - started) * 1000)
+        final_text = str(state["final_text"]) or str(state["block_text"])
         trace = TraceResult(
             status=str(state["status"]),
-            final_text=str(state["final_text"]),
+            final_text=final_text,
             tool_names=list(state["tool_names"]),
             tool_call_count=int(state["tool_call_count"]),
             tokens=int(state["tokens"]),

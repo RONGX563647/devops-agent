@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import sys
+from collections import Counter
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,13 +21,18 @@ from typing import Any
 from devops_agent.env import load_env
 from devops_agent.eval import report as report_mod
 from devops_agent.eval.dataset import (
+    GRADER_VERSION,
     EvalCase,
     Suite,
     load_suite,
+    manifest_path_for,
+    scenario_of,
     split_warnings,
+    suite_sha256,
     validate_suite,
 )
 from devops_agent.eval.judge import JudgeError, OpenAIJudge
+from devops_agent.eval.lint import Finding, run_lint, split_findings
 from devops_agent.eval.runner import DEFAULT_FIXTURE_ROOT, CaseRun, case_run_payload, run_suite
 from devops_agent.observability import repository as repo
 from devops_agent.runtime.agent import PROMPT_ID, prompt_fingerprint
@@ -51,6 +57,66 @@ def cmd_validate(args: argparse.Namespace) -> int:
     if errors:
         return 1
     print(f"ok {len(suite.cases)} cases")
+    return 0
+
+
+def _print_findings(findings: Sequence[Finding]) -> None:
+    """error 走 stderr、warning 走 stdout，方便 CI 日志里一眼分开。"""
+    for item in findings:
+        stream = sys.stderr if item.level == "error" else sys.stdout
+        print(f"[{item.level}] {item.rule} {item.where}: {item.message}", file=stream)
+        if item.hint:
+            print(f"         hint: {item.hint}", file=stream)
+
+
+def cmd_prompt_lint(args: argparse.Namespace) -> int:
+    """静态契约检查：不跑模型，查提示词 / 档位 / 题库是否自洽。"""
+    suite = load_suite(args.suite) if args.suite else None
+    fixture_root = _fixture_root_for(args.suite) if args.suite else None
+    findings = run_lint(suite, fixture_root)
+    errors, warnings = split_findings(findings)
+    if args.json:
+        payload = [
+            {
+                "rule": item.rule,
+                "level": item.level,
+                "where": item.where,
+                "message": item.message,
+                "hint": item.hint,
+            }
+            for item in findings
+        ]
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        _print_findings(findings)
+        print(f"findings: {len(errors)} error / {len(warnings)} warning")
+    return 1 if errors else 0
+
+
+def cmd_manifest(args: argparse.Namespace) -> int:
+    """回写清单：重算 sha256 / counts，并记录当前判卷口径。
+
+    加字段就会改变 `suite_sha256()`，不提供回写入口的话，改一次题库就卡在
+    「sha 不匹配」上无法继续。
+    """
+    suite = load_suite(args.suite)
+    counts = Counter(
+        scenario for case in suite.cases if (scenario := scenario_of(case)) is not None
+    )
+    manifest = suite.manifest.model_copy(
+        update={
+            "sha256": suite_sha256(suite.cases),
+            "counts": dict(sorted(counts.items())),
+            "grader_version": GRADER_VERSION,
+        }
+    )
+    payload = json.dumps(manifest.model_dump(mode="json"), ensure_ascii=False, indent=2)
+    if args.dry_run:
+        print(payload)
+        return 0
+    target = manifest_path_for(Path(args.suite))
+    target.write_text(payload + "\n", encoding="utf-8")
+    print(f"updated {target}（{len(suite.cases)} cases, grader {GRADER_VERSION}）")
     return 0
 
 
@@ -139,7 +205,64 @@ def _print_summary(summary: dict[str, Any], batch_id: int) -> None:
     )
     hard = summary.get("hard_failures", {})
     print(f"hard_failures={hard}")
+    gates = summary.get("gates")
+    if isinstance(gates, list):
+        for gate in gates:
+            if isinstance(gate, dict):
+                print(
+                    f"gate {gate.get('key')}: {gate.get('value')} "
+                    f"(min {gate.get('min')}, samples {gate.get('samples')}) "
+                    f"→ {gate.get('state')}"
+                )
     print(f"trajectory={summary.get('trajectory_score')} p95={summary.get('p95_ms')}ms")
+
+
+def _thresholds(suite: Suite) -> dict[str, dict[str, float]]:
+    """把 manifest 的阈值声明转成 aggregate 需要的形状（单一来源在 manifest）。"""
+    return {
+        key: {"min": spec.min, "min_samples": spec.min_samples}
+        for key, spec in suite.manifest.thresholds.items()
+    }
+
+
+def _db_path(override: str | None) -> Path:
+    return Path(override) if override else repo.eval_db_path()
+
+
+def _init_judge(enabled: bool) -> tuple[OpenAIJudge | None, str]:
+    """按需装配裁判；返回 `(judge, error)`，error 为空串代表成功。"""
+    if not enabled:
+        return None, ""
+    try:
+        return OpenAIJudge(), ""
+    except JudgeError as exc:
+        return None, f"错误: 裁判初始化失败: {exc}"
+
+
+def _factors(suite: Suite, profile: str, judge_enabled: bool) -> dict[str, Any]:
+    """写进报告的实验因子。没有它，compare 无法判断两批是不是同一个实验。"""
+    model = os.environ.get("DEVOPS_AGENT_MODEL", "")
+    return {
+        "suite_sha": suite.manifest.sha256,
+        "grader_version": GRADER_VERSION,
+        "prompt_sha": prompt_fingerprint(),
+        "model": model,
+        "profile": profile,
+        "judge_model": (os.environ.get("JUDGE_MODEL") or model) if judge_enabled else "",
+    }
+
+
+def _apply_baseline(summary: dict[str, Any], baseline_path: str) -> str:
+    """把与基线的对比结论写回 summary；返回错误信息（空串代表成功）。"""
+    try:
+        baseline = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return f"错误: 读取基线失败: {exc}"
+    compared = report_mod.compare(summary, baseline)
+    summary["baseline_id"] = baseline.get("id")
+    summary["verdict"] = compared["verdict"]
+    summary["compare"] = compared
+    return ""
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -154,13 +277,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
 
     suite = load_suite(args.suite)
-    judge = None
-    if args.judge:
-        try:
-            judge = OpenAIJudge()
-        except JudgeError as exc:
-            print(f"错误: 裁判初始化失败: {exc}", file=sys.stderr)
-            return 2
+    judge, judge_error = _init_judge(args.judge)
+    if judge_error:
+        print(judge_error, file=sys.stderr)
+        return 2
 
     profile = args.profile or "per-case"
     try:
@@ -177,21 +297,21 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"错误: 评测执行失败: {exc}", file=sys.stderr)
         return 2
 
-    summary = report_mod.aggregate(runs, suite.manifest.min_cases_for_gate)
+    summary = report_mod.aggregate(
+        runs,
+        suite.manifest.min_cases_for_gate,
+        thresholds=_thresholds(suite),
+    )
+    summary.update(_factors(suite, profile, args.judge))
     if args.baseline:
-        try:
-            baseline = json.loads(Path(args.baseline).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            print(f"错误: 读取基线失败: {exc}", file=sys.stderr)
+        baseline_error = _apply_baseline(summary, args.baseline)
+        if baseline_error:
+            print(baseline_error, file=sys.stderr)
             return 2
-        compared = report_mod.compare(summary, baseline)
-        summary["baseline_id"] = baseline.get("id")
-        summary["verdict"] = compared["verdict"]
-        summary["compare"] = compared
 
     try:
         batch_id = _persist(
-            Path(args.db) if args.db else repo.eval_db_path(),
+            _db_path(args.db),
             suite,
             summary,
             runs,
@@ -203,7 +323,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     _write_outputs(Path(args.out), summary, runs)
     _print_summary(summary, batch_id)
-    return 0
+    # 只有 fail 才让 CI 变红：题库没到门禁样本量时 insufficient 是正常状态，
+    # 天天报红只会让人习惯性忽略门禁。
+    return 1 if summary["verdict"] == "fail" else 0
 
 
 def cmd_compare(args: argparse.Namespace) -> int:
@@ -221,6 +343,12 @@ def cmd_compare(args: argparse.Namespace) -> int:
             f"delta={metric['delta']} better={metric['better']}"
         )
     changed = [item for item in compared["cases"] if item["base_passed"] != item["head_passed"]]
+    compat = compared.get("compatibility") or {}
+    print(
+        f"compatibility={compat.get('level')} "
+        f"changed={','.join(compat.get('changed') or []) or '-'}"
+    )
+    print(f"mde={compared.get('mde')}（小于该值的变化视为抖动）")
     print(f"cases_changed={len(changed)} verdict={compared['verdict']}")
     return 0 if compared["verdict"] == "pass" else 1
 
@@ -233,6 +361,16 @@ def build_parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate", help="校验数据集")
     validate.add_argument("--suite", required=True)
     validate.set_defaults(func=cmd_validate)
+
+    lint = sub.add_parser("prompt-lint", help="静态检查提示词/档位/题库是否自洽")
+    lint.add_argument("--suite", default=None, help="不传则只查提示词与档位")
+    lint.add_argument("--json", action="store_true")
+    lint.set_defaults(func=cmd_prompt_lint)
+
+    manifest = sub.add_parser("manifest", help="重算清单的 sha256 / counts")
+    manifest.add_argument("--suite", required=True)
+    manifest.add_argument("--dry-run", action="store_true")
+    manifest.set_defaults(func=cmd_manifest)
 
     run = sub.add_parser("run", help="真实运行评测")
     run.add_argument("--suite", required=True)

@@ -8,6 +8,7 @@
 - `text`：正文必含/必不含/文件内容断言失败；
 - `tool`：工具必须出现但缺失，或调用总数超限；
 - `format`：正则不命中、正则非法、期望文件不存在；
+- `grounding`：要求给出 `路径:行号` 定位但没给（回答缺少可核对的出处）；
 - `safety` / `forbidden_tool`：出现了禁用工具（两者同时记录，报告端都能统计）。
 """
 
@@ -17,7 +18,12 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from devops_agent.eval.dataset import EvalCase, Expected, FileExpectation, ToolExpectations
+from devops_agent.eval.dataset import (
+    EvalCase,
+    Expected,
+    FileExpectation,
+    ToolExpectations,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,8 +135,12 @@ def _check_budget(
 
 
 def _check_order(ordered: bool, must: list[str], actual: list[str], checks: list[Check]) -> float:
-    """需要顺序时追加检查项并返回 order 分量。"""
-    if not ordered:
+    """需要顺序时追加检查项并返回 order 分量。
+
+    只有一个必做工具时「顺序」无意义：`_order_score` 会恒返回 1.0，
+    出一条 ok=True 的检查项等于往分母里塞了一个永远为真的样本（静态检查 S5 会点名）。
+    """
+    if not ordered or len(must) <= 1:
         return 1.0
     ordered_ok, score = _order_score(must, actual)
     checks.append(
@@ -141,6 +151,57 @@ def _check_order(ordered: bool, must: list[str], actual: list[str], checks: list
         )
     )
     return score
+
+
+def _check_contain_any(
+    groups: list[list[str]], text: str, checks: list[Check], hard: list[str]
+) -> None:
+    """同义表述分组：每组至少命中一个词，避免「答得对但用词不同」被判失败。"""
+    for index, group in enumerate(groups):
+        words = [word for word in group if word.strip()]
+        hit = next((word for word in words if word in text), None)
+        checks.append(
+            Check(
+                name=f"must_contain_any:{index}",
+                ok=hit is not None,
+                detail=hit if hit is not None else f"未命中任一同义词: {' / '.join(words)}",
+            )
+        )
+        if hit is None:
+            hard.append("text")
+
+
+# 定位断言的三种写法：`app.py:12` / `app.py 第 12 行` / `app.py line 12`。
+# 只认带行号的引用 —— `app.py 共 40 行` 这种也算提到了行数，属于可接受的宽容量。
+_CITE_TEMPLATES = (
+    r"{path}\s*[:：]\s*\d+",
+    r"{path}\s*第\s*\d+\s*行",
+    r"{path}\s+line\s*\d+",
+)
+
+
+def _cite_hit(path: str, text: str) -> bool:
+    """正文是否给出了 `路径:行号` 形式的定位。"""
+    escaped = re.escape(path)
+    return any(
+        re.search(template.format(path=escaped), text, re.IGNORECASE)
+        for template in _CITE_TEMPLATES
+    )
+
+
+def _check_cite(paths: list[str], text: str, checks: list[Check], hard: list[str]) -> None:
+    """要求正文带行号定位；这是「真读了文件」与「把文件名抄回来」的分界线。"""
+    for index, path in enumerate(paths):
+        ok = _cite_hit(path, text)
+        checks.append(
+            Check(
+                name=f"must_cite:{index}",
+                ok=ok,
+                detail=f"{path} 已定位" if ok else f"缺少 {path}:行号 形式的引用",
+            )
+        )
+        if not ok:
+            hard.append("grounding")
 
 
 def _tool_score(must: list[str], actual: list[str], actual_set: set[str], order: float) -> float:
@@ -234,8 +295,36 @@ def _grade_files(
             hard.append("text")
 
 
+def _check_patterns(
+    patterns: list[str],
+    text: str,
+    checks: list[Check],
+    hard: list[str],
+    *,
+    forbid: bool,
+) -> None:
+    """正则类断言：`forbid=True` 是「不许命中」，否则是「必须命中」。
+
+    两个方向的判定逻辑只差一次取反，放进同一个函数是为了让 `_grade_text`
+    保持可读（圈复杂度门禁 ≤ 10）——句式一致也便于在报告里对照排查。
+    """
+    label = "must_not_regex" if forbid else "regex"
+    kind = "safety" if forbid else "format"
+    for index, pattern in enumerate(patterns):
+        try:
+            hit = re.search(pattern, text)
+            ok = hit is None if forbid else hit is not None
+            detail = pattern if ok or not forbid else f"命中禁止模式: {hit.group(0) if hit else ''}"
+        except re.error as exc:
+            ok = False
+            detail = f"非法正则 {pattern}: {exc}"
+        checks.append(Check(name=f"{label}:{index}", ok=ok, detail=detail))
+        if not ok:
+            hard.append(kind)
+
+
 def _grade_text(expected: Expected, final_text: str, checks: list[Check], hard: list[str]) -> None:
-    """正文必含 / 必不含 / 正则断言。"""
+    """正文必含 / 必不含 / 同义组 / 定位 / 正则断言。"""
     for index, needle in enumerate(expected.must_contain):
         ok = needle in final_text
         checks.append(Check(name=f"must_contain:{index}", ok=ok, detail=needle))
@@ -246,16 +335,10 @@ def _grade_text(expected: Expected, final_text: str, checks: list[Check], hard: 
         checks.append(Check(name=f"must_not_contain:{index}", ok=ok, detail=needle))
         if not ok:
             hard.append("safety")
-    for index, pattern in enumerate(expected.regex):
-        try:
-            ok = re.search(pattern, final_text) is not None
-            detail = pattern
-        except re.error as exc:
-            ok = False
-            detail = f"非法正则 {pattern}: {exc}"
-        checks.append(Check(name=f"regex:{index}", ok=ok, detail=detail))
-        if not ok:
-            hard.append("format")
+    _check_contain_any(expected.must_contain_any, final_text, checks, hard)
+    _check_cite(expected.must_cite, final_text, checks, hard)
+    _check_patterns(expected.must_not_regex, final_text, checks, hard, forbid=True)
+    _check_patterns(expected.regex, final_text, checks, hard, forbid=False)
 
 
 def grade(case: EvalCase, result: TraceResult) -> CaseScore:

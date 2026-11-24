@@ -7,6 +7,8 @@ PermissionRule(tool_name, rule_content, behavior, source)
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from agentscope.permission import (
     AdditionalWorkingDirectory,
     PermissionBehavior,
@@ -80,26 +82,37 @@ def build_permission_context(
     *,
     profile: PermissionProfile | None = None,
     policy: RuntimePolicy | None = None,
+    workdir: str | Path | None = None,
 ) -> PermissionContext:
     """按档位（或显式 mode）装配权限上下文；省略参数时从 config/policy.yaml 读取。
 
     单独暴露 context 而不只给 engine：Agent 的权限判定读的是
     `AgentState.permission_context`（Agent 内部自建引擎），装配时直接注入
     context 才能让 policy.yaml 真正生效，无需另建一套引擎。
+
+    `workdir` 一定要传：框架判定「这个路径在不在工作区内」用的是
+    `os.getcwd() + context.working_directories`（见 Write._path_in_allowed_working_path），
+    而部署时真正的工作区常常不是进程 cwd（`DEVOPS_AGENT_WORKDIR` 指到别处）。
+    不把它登记进来，`accept_edits` 档写文件会被判成「工作区外」→ 每次都要确认，
+    用户看到的就是「明明选了工作区可写，写个文件还要问」。
     """
     resolved = policy if policy is not None else load_policy()
     cfg = resolved.permission
+    working = _working_dirs(resolved)
+    if workdir is not None:
+        target = str(Path(workdir).expanduser().resolve())
+        working.setdefault(target, AdditionalWorkingDirectory(path=target, source="workdir"))
     if profile is None:
         return PermissionContext(
             mode=mode if mode is not None else PermissionMode(cfg.mode),
-            working_directories=_working_dirs(resolved),
+            working_directories=working,
             allow_rules=_to_rule_map(cfg.allow_rules),
             deny_rules=deny_rules if deny_rules is not None else _to_rule_map(cfg.deny_rules),
             ask_rules=_to_rule_map(cfg.ask_rules),
         )
     return PermissionContext(
         mode=mode if mode is not None else PermissionMode(profile.mode),
-        working_directories=_working_dirs(resolved),
+        working_directories=working,
         allow_rules=_to_rule_map(_profile_allow_specs(profile, resolved)),
         deny_rules=(
             deny_rules

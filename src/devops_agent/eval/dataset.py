@@ -13,13 +13,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 SCENARIO_PREFIX = "scenario:"
 SCENARIOS: tuple[str, ...] = ("common", "variant", "edge", "adversarial")
+
+# 判卷口径版本：改了检查项的判定语义就递增，并同步 manifest.grader_version。
+# 没有它的时候，「同一 prompt_sha 分数变了」无法区分是提示词变了还是判卷变严了。
+GRADER_VERSION = "v2"
+
+# 用例对哪个被测因子敏感 —— 报告按它分组，避免把「配置恒真」混进「提示词因果」。
+SUBJECTS: tuple[str, ...] = ("prompt", "tool_desc", "profile", "model", "capability")
 
 # 配比目标（比例区间），允许 ±5pp 绝对容差。
 RATIO_TARGETS: dict[str, tuple[float, float]] = {
@@ -44,7 +53,15 @@ class _StrictModel(BaseModel):
 
 
 class ToolExpectations(_StrictModel):
-    """工具轨迹期望。"""
+    """工具轨迹期望。
+
+    `forbid` 只应列出「该档工具集里确实有、但这次不该用」的工具。
+    列一个该档根本装配的工具，断言恒真，等于没测（静态检查 S5 会直接点名）。
+
+    为什么没有「入参断言」：AgentScope 的 `ToolCallStartEvent` 只带
+    `tool_call_name`，入参不在事件流里。按入参断言就得自己再发一条事件，
+    那是另一个改动；在此之前不做「看起来能测入参、实际永远匹配空串」的假字段。
+    """
 
     must: list[str] = Field(default_factory=list)
     forbid: list[str] = Field(default_factory=list)
@@ -60,11 +77,21 @@ class FileExpectation(_StrictModel):
 
 
 class Expected(_StrictModel):
-    """一条用例期望的最终状态与断言。"""
+    """一条用例期望的最终状态与断言。
+
+    断言分工：
+    - `must_contain`：必须原样出现的事实值（命令名、异常类名、配置键）；
+    - `must_contain_any`：同义表述分组，每组命中一个即可 —— 避免「答得对但用词不同」被判失败；
+    - `must_cite`：必须给出 `路径:行号` 形式的定位，区分「真读了」和「猜的」；
+    - `tool_calls`：轨迹断言，`must_call` / `must_not_call` 看的是入参而不只是工具名。
+    """
 
     status: str = "success"
     must_contain: list[str] = Field(default_factory=list)
     must_not_contain: list[str] = Field(default_factory=list)
+    must_contain_any: list[list[str]] = Field(default_factory=list)
+    must_not_regex: list[str] = Field(default_factory=list)
+    must_cite: list[str] = Field(default_factory=list)
     regex: list[str] = Field(default_factory=list)
     tool_calls: ToolExpectations | None = None
     file_state: list[FileExpectation] = Field(default_factory=list)
@@ -87,8 +114,21 @@ class EvalCase(_StrictModel):
     web_search: bool = False
     fixture: str | None = None
     timeout_s: int = 120
+    # 这条用例主要对哪个因子敏感；报告按它分组算通过率。
+    subject: str = "capability"
     expected: Expected
     judge: JudgeSpec | None = None
+
+
+class ThresholdSpec(_StrictModel):
+    """单个门禁阈值：达标线 + 最小样本数。
+
+    `min_samples` 不是可选项：`judge_correctness` 只有 3 条用例配了裁判时，
+    直接拿 4.0 判会把「没测够」错报成「质量差」。
+    """
+
+    min: float
+    min_samples: int = 0
 
 
 class Manifest(_StrictModel):
@@ -99,7 +139,28 @@ class Manifest(_StrictModel):
     sha256: str
     counts: dict[str, int]
     min_cases_for_gate: int = 40
-    thresholds: dict[str, float] = Field(default_factory=dict)
+    # 旧版写的是裸数字（`{"pass_rate": 0.8}`），加载时归一成 ThresholdSpec。
+    thresholds: dict[str, ThresholdSpec] = Field(default_factory=dict)
+    grader_version: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_thresholds(cls, data: Any) -> Any:
+        """把 `{"pass_rate": 0.8}` 归一成 `{"pass_rate": {"min": 0.8}}`。"""
+        if not isinstance(data, dict):
+            return data
+        raw = data.get("thresholds")
+        if not isinstance(raw, dict):
+            return data
+        upgraded = {
+            key: (
+                {"min": value}
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+                else value
+            )
+            for key, value in raw.items()
+        }
+        return {**data, "thresholds": upgraded}
 
 
 class Suite(_StrictModel):
@@ -166,6 +227,9 @@ def _has_assertion(expected: Expected) -> bool:
         expected.status != "success"
         or expected.must_contain
         or expected.must_not_contain
+        or expected.must_contain_any
+        or expected.must_not_regex
+        or expected.must_cite
         or expected.regex
         or expected.tool_calls is not None
         or expected.file_state
@@ -188,10 +252,39 @@ def _case_errors(case: EvalCase) -> list[str]:
     errors = _case_tag_errors(case)
     if not _has_assertion(case.expected):
         errors.append(f"{case.id}: expected 至少需要一条断言")
+    if case.subject not in SUBJECTS:
+        errors.append(f"{case.id}: 未知 subject: {case.subject}（可选 {', '.join(SUBJECTS)}）")
     if case.judge is not None:
         unknown = sorted(set(case.judge.dimensions) - ALLOWED_JUDGE_DIMENSIONS)
         if unknown:
             errors.append(f"{case.id}: 未知 judge 维度: {', '.join(unknown)}")
+    errors.extend(_assertion_errors(case))
+    return errors
+
+
+def _cite_errors(case_id: str, paths: list[str]) -> list[str]:
+    """`must_cite` 只接受工作区内的相对路径（绝对路径与 `..` 会指向评测机本身）。"""
+    errors: list[str] = []
+    for path in paths:
+        if not path.strip():
+            errors.append(f"{case_id}: must_cite 含空路径")
+        elif path.startswith(("/", "\\")) or ".." in Path(path).parts:
+            errors.append(f"{case_id}: must_cite 只接受工作区内的相对路径: {path}")
+    return errors
+
+
+def _assertion_errors(case: EvalCase) -> list[str]:
+    """断言自身的合法性：路径不许越界、正则必须可编译、语义组不许为空。"""
+    expected = case.expected
+    errors = _cite_errors(case.id, expected.must_cite)
+    for index, group in enumerate(expected.must_contain_any):
+        if not [word for word in group if word.strip()]:
+            errors.append(f"{case.id}: must_contain_any[{index}] 为空组")
+    for pattern in [*expected.regex, *expected.must_not_regex]:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            errors.append(f"{case.id}: 非法正则 {pattern}: {exc}")
     return errors
 
 
@@ -214,6 +307,30 @@ def _ratio_errors(n: int, actual_counts: Counter[str]) -> list[str]:
                 f"scenario:{scenario} 占比 {share:.1%} 超出 "
                 f"[{low:.0%}, {high:.0%}] ±{RATIO_TOLERANCE:.0%}"
             )
+    return errors
+
+
+GATE_KEYS: tuple[str, ...] = ("pass_rate", "judge_correctness", "trajectory")
+# 每个门禁的合法取值区间；用来拦住「pass_rate: 80」这种把百分比当小数的写法。
+_GATE_RANGES: dict[str, tuple[float, float]] = {
+    "pass_rate": (0.0, 1.0),
+    "judge_correctness": (1.0, 5.0),
+    "trajectory": (0.0, 1.0),
+}
+
+
+def _threshold_errors(thresholds: dict[str, ThresholdSpec]) -> list[str]:
+    """阈值必须是已知门禁、取值在量纲内、min_samples 非负。"""
+    errors: list[str] = []
+    for key, spec in thresholds.items():
+        if key not in GATE_KEYS:
+            errors.append(f"warning: 未知门禁 {key}，报告不会消费它")
+            continue
+        low, high = _GATE_RANGES[key]
+        if not (low <= spec.min <= high):
+            errors.append(f"thresholds.{key}.min {spec.min} 超出量纲 [{low}, {high}]")
+        if spec.min_samples < 0:
+            errors.append(f"thresholds.{key}.min_samples 不能为负")
     return errors
 
 
@@ -248,6 +365,18 @@ def validate_suite(suite: Suite) -> list[str]:
         )
     else:
         errors.extend(_ratio_errors(n, actual_counts))
+
+    # 放在最后：既有 warning 的先后顺序（样本量、配比）保持不变，
+    # 依赖 `warnings[0]` 的调用方不会被「清单元数据」类提示挤掉。
+    declared = suite.manifest.grader_version
+    if not declared:
+        errors.append("warning: manifest 未记录 grader_version，判卷口径变更无法追溯")
+    elif declared != GRADER_VERSION:
+        errors.append(
+            f"manifest.grader_version {declared} != 当前判卷口径 {GRADER_VERSION}，"
+            "新旧批次分数不可直接比较"
+        )
+    errors.extend(_threshold_errors(suite.manifest.thresholds))
     return errors
 
 

@@ -6,6 +6,9 @@ import type {
   EvalBatchList,
   EvalCaseList,
   EvalCompare,
+  EvalMatrix,
+  EvalSeries,
+  EvalSuiteList,
   EvalTrends,
   Health,
   InputStage,
@@ -137,6 +140,21 @@ export function fetchEvalCases(id: number, params: EvalCaseQuery = {}): Promise<
   query.set('limit', String(params.limit ?? 50));
   query.set('offset', String(params.offset ?? 0));
   return getJson<EvalCaseList>(`/api/eval/batches/${id}/cases?${query.toString()}`);
+}
+
+/** 评测集目录：题库构成、阈值与断言清单。 */
+export function fetchEvalSuites(): Promise<EvalSuiteList> {
+  return getJson<EvalSuiteList>('/api/eval/suites');
+}
+
+/** 最近 N 个批次的时间序列（趋势图）。 */
+export function fetchEvalSeries(limit = 30): Promise<EvalSeries> {
+  return getJson<EvalSeries>(`/api/eval/series?limit=${limit}`);
+}
+
+/** 用例 × 批次通过矩阵。 */
+export function fetchEvalMatrix(limit = 10): Promise<EvalMatrix> {
+  return getJson<EvalMatrix>(`/api/eval/matrix?limit=${limit}`);
 }
 
 /** 两次批次对比：verdict + 指标 delta + 变化用例。 */

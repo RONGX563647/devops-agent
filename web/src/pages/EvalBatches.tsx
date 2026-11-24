@@ -9,10 +9,23 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { fetchEvalBatch, fetchEvalBatches, fetchEvalCases, fetchEvalCompare } from '../api/client';
+import {
+  fetchEvalBatch,
+  fetchEvalBatches,
+  fetchEvalCases,
+  fetchEvalCompare,
+  fetchEvalMatrix,
+} from '../api/client';
 import type { EvalBatch, EvalCaseItem, EvalCompareMetric } from '../types';
 import { MetricCard } from '../components/MetricCard';
 import { formatDateTime, formatDuration } from '../workspace/time';
+import {
+  HardFailureChart,
+  JudgeRadar,
+  PassMatrix,
+  type HardBarPoint,
+  type JudgePoint,
+} from './quality/charts';
 
 const PAGE_SIZE = 50;
 /** 样本量低于该值时卡片标「样本不足」，且不做红绿染色。 */
@@ -26,6 +39,23 @@ const VERDICT_LABEL: Record<string, string> = {
   fail: '失败',
   insufficient: '样本不足',
   running: '运行中',
+  not_comparable: '不可比',
+};
+
+/** 门禁三态：`insufficient` 不是「未达」，两者必须分开显示。 */
+const GATE_STATE_LABEL: Record<string, string> = {
+  pass: '通过',
+  fail: '未达',
+  insufficient: '样本不足',
+};
+
+const JUDGE_LABEL: Record<string, string> = {
+  correctness: '正确性',
+  coherence: '连贯性',
+  relevance: '相关性',
+  objectivity: '客观性',
+  clarity: '清晰度',
+  conciseness: '简洁性',
 };
 
 function hardTotal(batch: EvalBatch): number {
@@ -65,6 +95,49 @@ function VerdictBadge({ verdict }: { verdict: string }) {
     <span className={`badge verdict-badge verdict-${verdict}`}>
       {VERDICT_LABEL[verdict] ?? verdict}
     </span>
+  );
+}
+
+/** 门禁三态表：解释「为什么是 insufficient」，不在前端重算阈值。 */
+function GatesTable({ batch }: { batch: EvalBatch }) {
+  const gates = batch.gates ?? [];
+  if (gates.length === 0) {
+    return (
+      <p className="hint">
+        本批未记录门禁（旧版 CLI 产出）。用新版 <code>eval run</code> 重跑即可得到三态门禁表。
+      </p>
+    );
+  }
+  return (
+    <table className="data-table eval-gates-table">
+      <thead>
+        <tr>
+          <th>门禁</th>
+          <th>值</th>
+          <th>阈值</th>
+          <th>样本</th>
+          <th>结论</th>
+        </tr>
+      </thead>
+      <tbody>
+        {gates.map((gate) => (
+          <tr key={gate.key}>
+            <td>
+              <code>{gate.key}</code>
+            </td>
+            <td>{gate.value === null ? '—' : gate.value.toFixed(3)}</td>
+            <td>{gate.min}</td>
+            <td>
+              {gate.samples}
+              {gate.min_samples > 0 ? ` / ${gate.min_samples}` : ''}
+            </td>
+            <td className={`gate-state gate-${gate.state}`}>
+              {GATE_STATE_LABEL[gate.state] ?? gate.state}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -201,6 +274,11 @@ export function EvalBatches() {
     enabled: canCompare,
   });
 
+  const matrix = useQuery({
+    queryKey: ['eval-matrix'],
+    queryFn: () => fetchEvalMatrix(10),
+  });
+
   const batch = detail.data?.batch ?? null;
   const tagStats = useMemo(() => detail.data?.tags ?? {}, [detail.data]);
   const tagData = useMemo(
@@ -241,6 +319,19 @@ export function EvalBatches() {
   }
 
   const hard = batch ? hardTotal(batch) : 0;
+  // judge 六维：只放有样本的维度 —— 补 0 会把「没测」画成「很差」。
+  const judgePoints: JudgePoint[] = Object.entries(batch?.judge ?? {})
+    .filter(([, value]) => typeof value === 'number')
+    .map(([key, value]) => ({ dimension: JUDGE_LABEL[key] ?? key, score: value }));
+  const hardPoints: HardBarPoint[] = [...sortedBatches]
+    .slice(0, 10)
+    .reverse()
+    .map((item) => ({
+      label: `#${item.id}`,
+      safety: item.hard_failures.safety,
+      forbidden_tool: item.hard_failures.forbidden_tool,
+      format: item.hard_failures.format,
+    }));
   const enough = batch ? batch.n >= SAMPLE_MIN : false;
   const sampleBadge = enough ? undefined : '样本不足';
   const rateTone: 'default' | 'good' | 'bad' = enough
@@ -388,6 +479,9 @@ export function EvalBatches() {
               批次 #{batch.id} · {batch.suite}@{batch.suite_version} · {batch.model} / {batch.profile}
               {batch.finished_at ? ` · 完成于 ${formatDateTime(batch.finished_at)}` : ''}
             </p>
+
+            <h3>门禁</h3>
+            <GatesTable batch={batch} />
           </section>
 
           <section className="panel">
@@ -420,6 +514,26 @@ export function EvalBatches() {
                 </ResponsiveContainer>
               </div>
             )}
+          </section>
+
+          <section className="panel">
+            <h2>质量维度</h2>
+            <JudgeRadar
+              points={judgePoints}
+              caption={
+                judgePoints.length === 0
+                  ? '本批没有启用裁判，没有维度分。'
+                  : `judge 均分：${judgePoints.map((item) => `${item.dimension} ${item.score.toFixed(2)}`).join('，')}（1–5 分）。`
+              }
+            />
+          </section>
+
+          <section className="panel">
+            <h2>硬失败构成</h2>
+            <HardFailureChart
+              points={hardPoints}
+              caption="按批次堆叠：区分「安全越界」「用了禁用工具」与「格式没对上」，三类处理方式不同。"
+            />
           </section>
 
           <section className="panel">
@@ -517,6 +631,21 @@ export function EvalBatches() {
       )}
 
       <section className="panel">
+        <h2>用例稳定性矩阵</h2>
+        <p className="hint">
+          每一列是一个批次、每一行是一条用例。看的是「整体退化」还是「某条一直挂」。
+        </p>
+        {matrix.isError && <p className="query-error">矩阵加载失败，稍后自动重试。</p>}
+        {matrix.isLoading && <p className="query-loading">正在加载矩阵…</p>}
+        {matrix.data && (
+          <PassMatrix
+            data={matrix.data}
+            caption={`最近 ${matrix.data.batches.length} 个批次 × ${matrix.data.cases.length} 条用例；绿色通过、红色失败、灰色未运行。`}
+          />
+        )}
+      </section>
+
+      <section className="panel">
         <h2>批次对比</h2>
         {sortedBatches.length === 0 && <p className="muted">暂无可对比的批次。</p>}
         {sortedBatches.length > 0 && (
@@ -563,6 +692,27 @@ export function EvalBatches() {
             <div className={`compare-banner verdict-${compare.data.verdict}`} role="status">
               对比结论：{VERDICT_LABEL[compare.data.verdict] ?? compare.data.verdict}
             </div>
+
+            <p className="hint">
+              精度上限 {((compare.data.mde ?? 0) * 100).toFixed(1)}pp：n=
+              {Math.min(compare.data.n, compare.data.base_n)}，小于该值的变化视为抖动。
+              {compare.data.compatibility?.level !== 'clean' && (
+                <>
+                  {' '}
+                  可比性：
+                  <strong>
+                    {compare.data.compatibility?.level === 'blocking'
+                      ? '不可比'
+                      : compare.data.compatibility?.level === 'confounded'
+                        ? '混杂'
+                        : '未知'}
+                  </strong>
+                  {compare.data.compatibility?.reasons?.[0]
+                    ? ` —— ${compare.data.compatibility.reasons[0]}`
+                    : ''}
+                </>
+              )}
+            </p>
 
             <table className="data-table eval-compare-table">
               <thead>

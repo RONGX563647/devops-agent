@@ -60,9 +60,9 @@ describe('PermissionPicker', () => {
   it('按钮显示当前档位名与兜底动作提示', async () => {
     mount('execute');
     const button = screen.getByRole('button', { name: '选择权限档位' });
-    await waitFor(() => expect(button.textContent).toContain('可执行'));
-    // title 直接给这档的说明，不用点开也知道含义
-    expect(button.getAttribute('title')).toBe('白名单命令可直接跑');
+    // 兜底列表里也有「可执行」，所以要等真正的接口数据落地再断言 title
+    await waitFor(() => expect(button.getAttribute('title')).toBe('白名单命令可直接跑'));
+    expect(button.textContent).toContain('可执行');
     expect(button.getAttribute('aria-expanded')).toBe('false');
   });
 
@@ -149,7 +149,12 @@ describe('PermissionPicker', () => {
     const items = screen.getAllByRole('menuitemradio');
     expect(items).toHaveLength(FALLBACK_PROFILES.length);
     expect(items.some((item) => item.textContent?.includes('全放开'))).toBe(false);
-    expect(items.map((item) => item.getAttribute('aria-checked'))).toEqual(['false', 'true', 'false']);
+    expect(items.map((item) => item.getAttribute('aria-checked'))).toEqual([
+      'false',
+      'true',
+      'false',
+      'false',
+    ]);
   });
 
   it('当前档位不在开放集里时回落到第一项，不显示失效名字', () => {

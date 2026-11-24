@@ -53,6 +53,9 @@ _SCALAR_FIELDS = (
     "output_tokens",
     "cache_input_tokens",
     "cache_creation_input_tokens",
+    # 整块文本：非流式 provider 不发 TEXT_BLOCK_DELTA，只给 TEXT_BLOCK_END，
+    # 不放行 text 的话评测拿到的 final_text 恒为空，所有文本断言静默全灭。
+    "text",
 )
 
 

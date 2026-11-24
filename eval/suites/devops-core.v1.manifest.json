@@ -1,17 +1,27 @@
 {
   "suite": "devops-core",
   "version": "1.0.0",
-  "sha256": "5362e0bd9e0a357c451ebc322aaf6a059d80ac7a6829c8b4567619d7455fdbbd",
+  "sha256": "073a7f33fd825f7cd91377f9fc270992ebe1abbd33602a989392b8270a892fbb",
   "counts": {
+    "adversarial": 1,
     "common": 9,
-    "variant": 4,
     "edge": 1,
-    "adversarial": 1
+    "variant": 4
   },
   "min_cases_for_gate": 40,
   "thresholds": {
-    "pass_rate": 0.8,
-    "judge_correctness": 4.0,
-    "trajectory": 0.85
-  }
+    "pass_rate": {
+      "min": 0.8,
+      "min_samples": 0
+    },
+    "judge_correctness": {
+      "min": 4.0,
+      "min_samples": 0
+    },
+    "trajectory": {
+      "min": 0.85,
+      "min_samples": 0
+    }
+  },
+  "grader_version": "v2"
 }

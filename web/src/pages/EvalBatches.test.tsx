@@ -7,6 +7,7 @@ import {
   fetchEvalBatches,
   fetchEvalCases,
   fetchEvalCompare,
+  fetchEvalMatrix,
 } from '../api/client';
 import type { EvalBatch, EvalCaseItem } from '../types';
 import { EvalBatches } from './EvalBatches';
@@ -16,12 +17,22 @@ vi.mock('../api/client', () => ({
   fetchEvalBatch: vi.fn(),
   fetchEvalCases: vi.fn(),
   fetchEvalCompare: vi.fn(),
+  fetchEvalMatrix: vi.fn(),
 }));
 
 const mockBatches = vi.mocked(fetchEvalBatches);
 const mockBatch = vi.mocked(fetchEvalBatch);
 const mockCases = vi.mocked(fetchEvalCases);
 const mockCompare = vi.mocked(fetchEvalCompare);
+const mockMatrix = vi.mocked(fetchEvalMatrix);
+
+/** 可比性默认是 clean，个别用例需要不可比时再覆盖。 */
+const CLEAN_COMPAT = {
+  level: 'clean' as const,
+  changed: [] as string[],
+  missing: [] as string[],
+  reasons: ['所有因子一致，可作为复测样本估计噪声'],
+};
 
 function makeBatch(overrides: Partial<EvalBatch> = {}): EvalBatch {
   return {
@@ -47,6 +58,14 @@ function makeBatch(overrides: Partial<EvalBatch> = {}): EvalBatch {
     cost_total: 0.1,
     baseline_id: null,
     verdict: 'pass',
+    gates: [
+      { key: 'pass_rate', value: 0.9, min: 0.8, min_samples: 0, samples: 100, state: 'pass' },
+      { key: 'judge_correctness', value: 4.2, min: 4, min_samples: 10, samples: 20, state: 'pass' },
+    ],
+    min_cases_for_gate: 40,
+    mde: 0.01,
+    compatibility: null,
+    grader_version: 'v2',
     ...overrides,
   };
 }
@@ -86,7 +105,17 @@ beforeEach(() => {
   mockBatch.mockReset();
   mockCases.mockReset();
   mockCompare.mockReset();
-  mockCompare.mockResolvedValue({ verdict: 'pass', metrics: [], cases: [] });
+  mockMatrix.mockReset();
+  mockMatrix.mockResolvedValue({ batches: [], cases: [] });
+  mockCompare.mockResolvedValue({
+    verdict: 'pass',
+    metrics: [],
+    cases: [],
+    n: 100,
+    base_n: 100,
+    mde: 0.01,
+    compatibility: CLEAN_COMPAT,
+  });
 });
 
 afterEach(cleanup);
@@ -176,6 +205,10 @@ describe('EvalBatches', () => {
         { case_id: 'c2', base_passed: false, head_passed: true },
         { case_id: 'c3', base_passed: true, head_passed: true },
       ],
+      n: 2,
+      base_n: 2,
+      mde: 0.5,
+      compatibility: CLEAN_COMPAT,
     });
     renderBatches();
 

@@ -9,9 +9,11 @@ from agentscope.agent import Agent
 from agentscope.pipeline import GoalPipeline, TeamMember, TeamPipeline
 
 from devops_agent.config import ModelPolicy, ReactPolicy, RuntimePolicy
-from devops_agent.governance.profiles import default_profile
+from devops_agent.governance.profiles import PROFILES, default_profile
 from devops_agent.runtime.agent import (
+    PROFILE_KEY,
     WORKDIR_ENV,
+    _state_for,
     build_agent,
     build_agentscope_runtime,
     build_chat_model,
@@ -213,10 +215,14 @@ def test_resolve_workdir_reads_env(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert resolve_workdir() == tmp_path.resolve()
 
 
-def test_build_agentscope_runtime_wires_readonly_toolkit(
+def test_build_agentscope_runtime_wires_profile_toolkit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """默认档（workspace）必须挂只读四件套，且权限 mode 与该档位一致。"""
+    """默认档（workspace）必须挂上写工具，且权限 mode 与该档位一致。
+
+    以前这里断言的是「没有 Write」——那正是「工作区可写却写不了文件」的成因：
+    说明里承诺能建/删/改，工具集里却只有只读四件套。
+    """
     monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
     monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
@@ -225,5 +231,34 @@ def test_build_agentscope_runtime_wires_readonly_toolkit(
     agent = runtime._agent
     names = {schema["function"]["name"] for schema in asyncio.run(agent.toolkit.get_tool_schemas())}
     assert {"Bash", "Read", "Glob", "Grep"} <= names
-    assert "Write" not in names
+    assert {"Write", "Edit"} <= names
     assert agent.state.permission_context.mode.value == default_profile().mode
+
+
+def test_state_rebuilds_on_profile_switch_even_with_same_mode() -> None:
+    """workspace 与 execute 的 mode 都是 accept_edits，切档必须按 key 判定。
+
+    以前比的是 `permission_context.mode`，于是 workspace → execute 被当成
+    「没换档」：白名单从不装配，可执行档跟工作区档一模一样。
+    """
+    state = _state_for(PROFILES["workspace"], None)
+    assert state.middle_context[PROFILE_KEY] == "workspace"
+    assert state.permission_context.allow_rules == {}  # 工作区档没有命令白名单
+
+    switched = _state_for(PROFILES["execute"], state)
+    assert switched is state  # 只换权限上下文，对话历史不动
+    assert switched.middle_context[PROFILE_KEY] == "execute"
+    prefixes = [rule.rule_content for rule in switched.permission_context.allow_rules["Bash"]]
+    assert "pytest:*" in prefixes
+
+    # 切回工作区：白名单要撤掉，不能把上一档的规则带过来
+    back = _state_for(PROFILES["workspace"], switched)
+    assert back.permission_context.allow_rules == {}
+
+
+def test_same_profile_keeps_session_allow_rules() -> None:
+    """同一档位重复装配不能重建上下文，否则「本会话允许」每轮都被清掉。"""
+    state = _state_for(PROFILES["workspace"], None)
+    before = state.permission_context
+    again = _state_for(PROFILES["workspace"], state)
+    assert again.permission_context is before

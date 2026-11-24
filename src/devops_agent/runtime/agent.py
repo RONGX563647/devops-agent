@@ -26,7 +26,7 @@ from agentscope.event import ConfirmResult, UserConfirmResultEvent
 from agentscope.message import Msg, TextBlock, ToolCallBlock
 from agentscope.middleware import MiddlewareBase
 from agentscope.model import ChatModelBase, OpenAIChatModel
-from agentscope.permission import PermissionBehavior, PermissionMode, PermissionRule
+from agentscope.permission import PermissionBehavior, PermissionRule
 from agentscope.state import AgentState
 from agentscope.tool import Toolkit
 from pydantic import SecretStr
@@ -46,6 +46,12 @@ from devops_agent.secrets.middleware import build_secret_middleware
 from devops_agent.tools.catalog import build_toolkit_for, shell_name
 
 DEFAULT_SYSTEM_PROMPT = "你是 DevOps 助手，帮助处理持续交付、项目排期与 Bug 定位。"
+
+# 快照里记录「这份状态是按哪个档位装配的」的键。
+# 必须用档位 key 而不是 permission_context.mode 判断：workspace 与 execute
+# 的 mode 都是 accept_edits，只比 mode 时切档等于什么都没变（白名单永不装配），
+# 反向切回来又会把上一档点「本会话允许」攒下的规则带进新档。
+PROFILE_KEY = "permission_profile"
 
 # 装配用的工作目录：部署环境可用 DEVOPS_AGENT_WORKDIR 指定 Agent 能看的工作区，
 # 缺省取进程当前目录（本地开发即仓库根）。工具的相对路径与 shell 的 cwd 都基于它。
@@ -196,16 +202,32 @@ def build_chat_model(enable_search: bool | None = None) -> OpenAIChatModel:
     )
 
 
-def _state_for(profile: PermissionProfile, state: AgentState | None) -> AgentState:
+def _state_for(
+    profile: PermissionProfile,
+    state: AgentState | None,
+    workdir: Path | None = None,
+) -> AgentState:
     """准备跨轮状态：没有就新建；有但档位变了就重建权限上下文。
 
     档位切换必须丢弃旧的 allow_rules —— 那些规则是在另一个信任级别下点
     「本会话允许」攒的，跨档继续生效等于绕过用户这次的选择。
+
+    判据是 `profile.key` 而不是 `permission_context.mode`：workspace 与
+    execute 的 mode 都是 `accept_edits`，比 mode 会得出「没换档」的结论，
+    execute 档的白名单从不装配、旧档的 allow_rules 也一并留了下来。
+
+    老快照没有这个键：视为档位不同，重建一次。只换 `permission_context`，
+    `context`（对话历史）不动，用户无感。
     """
     if state is None:
-        return AgentState(permission_context=build_permission_context(profile=profile))
-    if state.permission_context.mode != PermissionMode(profile.mode):
-        state.permission_context = build_permission_context(profile=profile)
+        fresh = AgentState(
+            permission_context=build_permission_context(profile=profile, workdir=workdir)
+        )
+        fresh.middle_context[PROFILE_KEY] = profile.key
+        return fresh
+    if state.middle_context.get(PROFILE_KEY) != profile.key:
+        state.permission_context = build_permission_context(profile=profile, workdir=workdir)
+        state.middle_context[PROFILE_KEY] = profile.key
     return state
 
 
@@ -324,7 +346,7 @@ def build_agentscope_runtime(
         model=build_chat_model(enable_search=web_search),
         toolkit=build_toolkit_for(resolved.tools, base, middlewares=[build_secret_middleware()]),
         middlewares=[ProfileNoteMiddleware(resolved)],
-        state=_state_for(resolved, state),
+        state=_state_for(resolved, state, base),
     )
     return AgentScopeRuntime(agent, profile=resolved)
 

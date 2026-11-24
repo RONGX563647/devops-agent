@@ -22,6 +22,12 @@ jobs:
         run: python scripts/check_gates.py
       - name: eval suite validate
         run: python -m devops_agent.eval validate --suite eval/suites/devops-core.v1.jsonl
+      # 静态契约检查：工具名闭包 / 占位符机器无关 / 文案承诺=能力矩阵 / 题库自洽 /
+      # 断言有效性 / 判卷口径版本。不跑模型，纯静态，几毫秒。
+      # 本轮把 20 条恒真断言（forbid、单元素 ordered、只读档 file_state）清掉后，
+      # 这条命令是防止它们被重新写回来的唯一闸门。
+      - name: prompt contract lint
+        run: python -m devops_agent.eval prompt-lint --suite eval/suites/devops-core.v1.jsonl
 
   frontend:
     runs-on: ubuntu-latest

@@ -36,12 +36,19 @@ jobs:
             echo "未提供基线，跳过对比（只有绝对阈值生效）"
             BASE_ARGS=""
           fi
-          # 退出码语义：verdict == fail 时 CLI 返回 1，让 nightly 直接变红；
-          # insufficient（样本未达门禁量）不算失败，否则天天红就没人看了。
+          # 退出码语义：fail 与 warn 都让 nightly 变红。
+          # - fail：硬失败或门禁未达；
+          # - warn：与基线比退化超过精度上限（旧版只 warn 退 0，-20pp 回归会被忽略）；
+          # - insufficient：题库未达门禁量，属正常状态，不红。
+          #
+          # `--judge-scope all`：裁判覆盖所有配了裁判的用例。默认值就是 all，
+          # 这里显式写出来，防止将来改默认值时 nightly 悄悄变成有偏口径。
           python -m devops_agent.eval run \
             --suite eval/suites/devops-core.v2.jsonl \
             --out workspace/evals/nightly \
-            --judge $BASE_ARGS
+            --judge \
+            --judge-scope all \
+            $BASE_ARGS
       - name: upload report
         if: always()
         uses: actions/upload-artifact@v4

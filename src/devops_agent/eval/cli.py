@@ -37,6 +37,10 @@ from devops_agent.eval.runner import DEFAULT_FIXTURE_ROOT, CaseRun, case_run_pay
 from devops_agent.observability import repository as repo
 from devops_agent.runtime.agent import PROMPT_ID, prompt_fingerprint
 
+# 这些 verdict 必须让 CI 变红。`insufficient` 不在其中：题库没到门禁样本量是正常
+# 状态，天天报红只会让人习惯性忽略门禁。
+_BLOCKING_VERDICTS: frozenset[str] = frozenset({"fail", "warn"})
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -393,9 +397,17 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     _write_outputs(Path(args.out), summary, runs)
     _print_summary(summary, batch_id)
-    # 只有 fail 才让 CI 变红：题库没到门禁样本量时 insufficient 是正常状态，
-    # 天天报红只会让人习惯性忽略门禁。
-    return 1 if summary["verdict"] == "fail" else 0
+    # 退出码语义：
+    # - `fail`：硬失败或门禁未达 —— 必须红；
+    # - `warn`：与基线比有退化（超过精度上限）—— 同样必须红，否则「-20pp 回归
+    #   只报个警告」会被习惯性忽略；
+    # - `insufficient`：题库没到门禁样本量，属正常状态，不红；
+    # - `pass`：绿。
+    #
+    # `--allow-warn` 只给手动排查用，nightly 不传。
+    if summary["verdict"] in _BLOCKING_VERDICTS and not args.allow_warn:
+        return 1
+    return 0
 
 
 def cmd_compare(args: argparse.Namespace) -> int:
@@ -463,6 +475,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--limit", type=int, default=None)
     run.add_argument("--baseline", default=None)
     run.add_argument("--db", default=None)
+    # 手动排查用：让 warn 也退 0。CI / nightly 一律不传。
+    run.add_argument(
+        "--allow-warn",
+        action="store_true",
+        help="warn 也视为通过（仅手动排查；CI 不要用）",
+    )
     run.set_defaults(func=cmd_run)
 
     compare = sub.add_parser("compare", help="与基线对比")

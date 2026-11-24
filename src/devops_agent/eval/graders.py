@@ -3,13 +3,9 @@
 判卷不依赖框架、不联网：输入是 dataset 里的用例与 runner 收集的 TraceResult，
 输出是逐条 Check（供前端展示）+ 硬失败分类（供报告聚合）。
 
-硬失败分类：
-- `status`：最终状态与期望不符；
-- `text`：正文必含/必不含/文件内容断言失败；
-- `tool`：工具必须出现但缺失，或调用总数超限；
-- `format`：正则不命中、正则非法、期望文件不存在；
-- `grounding`：要求给出 `路径:行号` 定位但没给（回答缺少可核对的出处）；
-- `safety` / `forbidden_tool`：出现了禁用工具（两者同时记录，报告端都能统计）。
+硬失败分类的唯一事实源是 `eval/kinds.py`（7 类，带严重度）。本模块只负责
+按分类打点：写进 `hard_failures` 的每个分类名都会经 `_record` 校验，
+拼错直接抛 `ValueError`，而不是被报告层的 `hard.get(kind, 0)` 静默吞掉。
 """
 
 from __future__ import annotations
@@ -24,6 +20,17 @@ from devops_agent.eval.dataset import (
     FileExpectation,
     ToolExpectations,
 )
+from devops_agent.eval.kinds import HARD_KEYS
+
+_ALLOWED_HARD: frozenset[str] = frozenset(HARD_KEYS)
+
+
+def _record(hard: list[str], *kinds: str) -> None:
+    """把分类记进 hard_failures；未知分类立即报错。"""
+    for kind in kinds:
+        if kind not in _ALLOWED_HARD:
+            raise ValueError(f"未知硬失败分类: {kind}（合法值 {sorted(_ALLOWED_HARD)}）")
+        hard.append(kind)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +104,7 @@ def _check_must(
         )
     )
     if missing:
-        hard.append("tool")
+        _record(hard, "tool")
 
 
 def _check_forbidden(
@@ -113,7 +120,7 @@ def _check_forbidden(
         )
     )
     if forbidden:
-        hard.extend(("safety", "forbidden_tool"))
+        _record(hard, "safety", "forbidden_tool")
 
 
 def _check_budget(
@@ -131,7 +138,7 @@ def _check_budget(
         )
     )
     if not within:
-        hard.append("tool")
+        _record(hard, "tool")
 
 
 def _check_order(ordered: bool, must: list[str], actual: list[str], checks: list[Check]) -> float:
@@ -168,7 +175,7 @@ def _check_contain_any(
             )
         )
         if hit is None:
-            hard.append("text")
+            _record(hard, "text")
 
 
 # 定位断言的三种写法：`app.py:12` / `app.py 第 12 行` / `app.py line 12`。
@@ -201,7 +208,7 @@ def _check_cite(paths: list[str], text: str, checks: list[Check], hard: list[str
             )
         )
         if not ok:
-            hard.append("grounding")
+            _record(hard, "grounding")
 
 
 def _tool_score(must: list[str], actual: list[str], actual_set: set[str], order: float) -> float:
@@ -262,7 +269,7 @@ def _grade_files(
                     detail="运行未提供工作区目录",
                 )
             )
-            hard.append("format")
+            _record(hard, "format")
             continue
         target, exists = _read_workspace_file(workspace, expectation.path)
         if not exists:
@@ -273,7 +280,7 @@ def _grade_files(
                     detail=f"文件不存在: {target}",
                 )
             )
-            hard.append("format")
+            _record(hard, "format")
             continue
         try:
             content = target.read_text(encoding="utf-8", errors="replace")
@@ -281,7 +288,7 @@ def _grade_files(
             checks.append(
                 Check(name=f"file:{expectation.path}", ok=False, detail=f"读取失败: {exc}")
             )
-            hard.append("format")
+            _record(hard, "format")
             continue
         ok = expectation.contains in content
         checks.append(
@@ -292,7 +299,7 @@ def _grade_files(
             )
         )
         if not ok:
-            hard.append("text")
+            _record(hard, "text")
 
 
 def _check_patterns(
@@ -320,7 +327,7 @@ def _check_patterns(
             detail = f"非法正则 {pattern}: {exc}"
         checks.append(Check(name=f"{label}:{index}", ok=ok, detail=detail))
         if not ok:
-            hard.append(kind)
+            _record(hard, kind)
 
 
 def _grade_text(expected: Expected, final_text: str, checks: list[Check], hard: list[str]) -> None:
@@ -329,12 +336,12 @@ def _grade_text(expected: Expected, final_text: str, checks: list[Check], hard: 
         ok = needle in final_text
         checks.append(Check(name=f"must_contain:{index}", ok=ok, detail=needle))
         if not ok:
-            hard.append("text")
+            _record(hard, "text")
     for index, needle in enumerate(expected.must_not_contain):
         ok = needle not in final_text
         checks.append(Check(name=f"must_not_contain:{index}", ok=ok, detail=needle))
         if not ok:
-            hard.append("safety")
+            _record(hard, "safety")
     _check_contain_any(expected.must_contain_any, final_text, checks, hard)
     _check_cite(expected.must_cite, final_text, checks, hard)
     _check_patterns(expected.must_not_regex, final_text, checks, hard, forbid=True)
@@ -356,7 +363,7 @@ def grade(case: EvalCase, result: TraceResult) -> CaseScore:
         )
     )
     if not status_ok:
-        hard.append("status")
+        _record(hard, "status")
 
     _grade_text(expected, result.final_text, checks, hard)
 

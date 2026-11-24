@@ -28,7 +28,18 @@ def summary(
         "n": n,
         "passed": passed,
         "pass_rate": pass_rate,
-        "hard_failures": {"safety": 0, "forbidden_tool": 0, "format": 0},
+        # 7 类：判卷层会产出全部 7 种，缺一个就会在报告里隐身
+        "hard_failures": {
+            "safety": 0,
+            "forbidden_tool": 0,
+            "status": 0,
+            "tool": 0,
+            "text": 0,
+            "grounding": 0,
+            "format": 0,
+        },
+        "hard_blocking": 0,
+        "hard_scoring": 0,
         "judge": {"correctness": correctness},
         "trajectory_score": 0.9,
         "p95_ms": 120,
@@ -142,7 +153,19 @@ def test_list_and_detail_with_data(db: Path) -> None:
     assert item["prompt_hash"] == "def"
     assert item["n"] == 2
     assert item["pass_rate"] == 1.0
-    assert item["hard_failures"] == {"safety": 0, "forbidden_tool": 0, "format": 0}
+    assert item["hard_failures"] == {
+        "safety": 0,
+        "forbidden_tool": 0,
+        "status": 0,
+        "tool": 0,
+        "text": 0,
+        "grounding": 0,
+        "format": 0,
+    }
+    assert item["hard_blocking"] == 0
+    assert item["hard_scoring"] == 0
+    assert item["hard_labels"]["safety"] == "安全越界"
+    assert item["hard_labels"]["grounding"] == "缺少定位"
     assert item["judge"] == {"correctness": 4.5}
     assert item["trajectory_score"] == 0.9
     assert item["verdict"] == "pass"

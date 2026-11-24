@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from devops_agent.eval import report as report_mod
 from devops_agent.eval.dataset import EvalCase, Suite, ToolExpectations, load_suite
+from devops_agent.eval.kinds import BLOCKING_KEYS, HARD_KEYS, labels, zero_counts
 from devops_agent.observability import repository as repo
 
 router = APIRouter(prefix="/api/eval", tags=["eval"])
@@ -27,8 +28,6 @@ T = TypeVar("T")
 
 # 题库目录：eval_api.py -> observability -> devops_agent -> src -> 仓库根
 _SUITES_DIR = Path(__file__).resolve().parents[3] / "eval" / "suites"
-
-_HARD_DEFAULTS: dict[str, int] = {"safety": 0, "forbidden_tool": 0, "format": 0}
 
 
 def _read(operation: Callable[[sqlite3.Connection], T]) -> T | None:
@@ -94,10 +93,28 @@ def _summary_float(summary: dict[str, object], key: str) -> float:
 
 
 def _hard_failures(summary: dict[str, object]) -> dict[str, int]:
+    """7 类硬失败计数；旧批次缺的键补 0，前端不必处理缺字段。"""
     hard = summary.get("hard_failures")
     if not isinstance(hard, dict):
-        return dict(_HARD_DEFAULTS)
-    return {key: int(hard.get(key, 0) or 0) for key in _HARD_DEFAULTS}
+        return zero_counts()
+    return {key: int(hard.get(key, 0) or 0) for key in HARD_KEYS}
+
+
+def _hard_split(summary: dict[str, object]) -> tuple[int, int]:
+    """(阻断类失败数, 计分类失败数)。
+
+    优先用 summary 里已有的汇总值；旧批次没有这两个字段时按分类计数重算，
+    避免前端拿到 0 就显示「硬门槛通过」。
+    """
+    blocking = _summary_int(summary, "hard_blocking")
+    scoring = _summary_int(summary, "hard_scoring")
+    if "hard_blocking" in summary or "hard_scoring" in summary:
+        return blocking, scoring
+    hard = _hard_failures(summary)
+    return (
+        sum(count for key, count in hard.items() if key in BLOCKING_KEYS),
+        sum(count for key, count in hard.items() if key not in BLOCKING_KEYS),
+    )
 
 
 def _verdict(row: dict[str, object], summary: dict[str, object]) -> str:
@@ -114,6 +131,7 @@ def _batch_out(row: dict[str, object]) -> dict[str, Any]:
     judge = summary.get("judge")
     gates = summary.get("gates")
     compatibility = summary.get("compatibility")
+    hard_blocking, hard_scoring = _hard_split(summary)
     return {
         "id": _to_int(row["id"]),
         "suite": _text(row, "suite"),
@@ -130,6 +148,10 @@ def _batch_out(row: dict[str, object]) -> dict[str, Any]:
         "passed": _summary_int(summary, "passed"),
         "pass_rate": _summary_float(summary, "pass_rate"),
         "hard_failures": _hard_failures(summary),
+        # 阻断类才拦合并；计分类只进 pass_rate
+        "hard_blocking": hard_blocking,
+        "hard_scoring": hard_scoring,
+        "hard_labels": labels(),
         "judge": judge if isinstance(judge, dict) else None,
         "trajectory_score": summary.get("trajectory_score"),
         "p95_ms": _summary_int(summary, "p95_ms"),

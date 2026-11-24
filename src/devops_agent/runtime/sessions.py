@@ -129,6 +129,46 @@ class SessionRegistry:
         self._evict()
         return fresh
 
+    def peek(self, session_id: str) -> SessionEntry | None:
+        """取当前实例但不重建、不碰档位：切档端点专用。
+
+        `acquire()` 的语义是「按这次请求的档位拿到一个实例」，档位不同就重建；
+        运行中切档不能走它，否则正在跑的流会被换掉。
+        """
+        entry = self._entries.get(session_id)
+        if entry is not None:
+            entry.last_used = _now().timestamp()
+            self._entries.move_to_end(session_id)
+        return entry
+
+    def switch(
+        self,
+        session_id: str,
+        profile: Any,
+        web_search: bool | None = None,
+    ) -> tuple[SessionEntry, bool]:
+        """会话中切档：能热替换就原地改，返回 (entry, applied)。
+
+        applied=False 表示运行时没有热替换能力（Echo / 测试替身），
+        已按旧路径重建；没有实例时也从 DB 快照建一份给后续轮次用。
+        两种情况下调用方都要如实告知用户生效范围，不能一律说「立即生效」。
+        """
+        entry = self.peek(session_id)
+        if entry is None:
+            return self.acquire(session_id, profile, web_search), False
+        apply_profile = getattr(entry.runtime, "apply_profile", None)
+        if not callable(apply_profile):
+            self._entries.pop(session_id, None)
+            return self.acquire(session_id, profile, web_search), False
+        apply_profile(profile, web_search=web_search)
+        entry.profile = str(getattr(profile, "key", ""))
+        if web_search is not None:
+            entry.web_search = web_search
+        # 快照里的档位也一起更新：刷新后重建要按新档装配，而不是退回发起轮
+        self.save(session_id)
+        self._evict()
+        return entry, True
+
     def save(self, session_id: str) -> None:
         """把当前会话快照写回库里；运行时没有快照能力（如 Echo）则跳过。"""
         entry = self._entries.get(session_id)

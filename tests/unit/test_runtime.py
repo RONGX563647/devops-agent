@@ -235,6 +235,64 @@ def test_build_agentscope_runtime_wires_profile_toolkit(
     assert agent.state.permission_context.mode.value == default_profile().mode
 
 
+def test_apply_profile_hot_swaps_context_toolkit_and_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """会话中切档必须原地改：引擎持有 context 引用，换对象等于没切。"""
+    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
+    monkeypatch.delenv("DEVOPS_AGENT_ENABLE_SEARCH", raising=False)
+
+    runtime = build_agentscope_runtime(workdir=tmp_path, profile=PROFILES["readonly"])
+    agent = runtime._agent
+    context = agent.state.permission_context
+    assert agent._engine.context is context
+    before = asyncio.run(agent.toolkit.get_tool_schemas())
+    assert all(schema["function"]["name"] not in {"Write", "Edit"} for schema in before)
+
+    # 模拟旧档攒下的「本会话允许」，切档必须连同信任级别一起丢弃
+    context.allow_rules["Bash"] = []
+    runtime.apply_profile(PROFILES["workspace"])
+
+    assert agent.state.permission_context is context
+    assert agent._engine.context is context
+    assert context.mode.value == "accept_edits"
+    assert context.allow_rules == {}
+    assert runtime.profile.key == "workspace"
+    assert agent.state.middle_context[PROFILE_KEY] == "workspace"
+    names = {schema["function"]["name"] for schema in asyncio.run(agent.toolkit.get_tool_schemas())}
+    assert {"Write", "Edit"} <= names
+
+    # 档位说明同步换：否则模型仍按「只读」回答，界面却显示已切到可写
+    seen: dict[str, object] = {}
+
+    async def nxt(**kwargs: object) -> str:
+        seen.update(kwargs)
+        return "ok"
+
+    asyncio.run(runtime._note_middleware.on_model_call(agent, {"messages": []}, nxt))  # type: ignore[arg-type]
+    tail = seen["messages"][-1].get_text_content()  # type: ignore[index]
+    assert "工作区可写" in tail
+
+
+def test_apply_profile_can_hot_swap_web_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """联网开关在模型请求体里，切档端点也要能原地换模型实例。"""
+    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
+    monkeypatch.delenv("DEVOPS_AGENT_ENABLE_SEARCH", raising=False)
+
+    runtime = build_agentscope_runtime(workdir=tmp_path)
+    assert runtime._agent.model.extra_body is None
+    runtime.apply_profile(PROFILES["execute"], web_search=True)
+    assert runtime._agent.model.extra_body == {"enable_search": True}
+    runtime.apply_profile(PROFILES["execute"], web_search=False)
+    assert runtime._agent.model.extra_body is None
+
+
 def test_state_rebuilds_on_profile_switch_even_with_same_mode() -> None:
     """workspace 与 execute 的 mode 都是 accept_edits，切档必须按 key 判定。
 

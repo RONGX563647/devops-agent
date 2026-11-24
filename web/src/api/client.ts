@@ -231,6 +231,31 @@ export async function postFeedback(
   return (await resp.json()) as { id: number; run_id: number; score: number };
 }
 
+export interface PermissionSwitchResult {
+  session_id: string;
+  permission: string;
+  /** 已热替换当前实例；false 表示没有活跃实例，下一轮才装配。 */
+  applied: boolean;
+  effective_from: string;
+}
+
+/** 会话中切档：服务端原地改权限上下文与工具集，当前流继续跑。 */
+export async function switchSessionPermission(
+  sessionId: string,
+  permission: string,
+  webSearch?: boolean,
+): Promise<PermissionSwitchResult> {
+  const resp = await fetch(`/api/session/${encodeURIComponent(sessionId)}/permission`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, permission, web_search: webSearch }),
+  });
+  if (!resp.ok) {
+    throw new Error(`切档失败 ${resp.status}`);
+  }
+  return (await resp.json()) as PermissionSwitchResult;
+}
+
 /** 运行时模式：Echo 兜底时前端要把它显式说出来，否则回显会被当成「答非所问」 */
 export function fetchHealth(): Promise<Health> {
   return getJson<Health>('/health');

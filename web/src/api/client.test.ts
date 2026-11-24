@@ -19,6 +19,7 @@ import {
   fetchSummary,
   fetchTimeseries,
   postFeedback,
+  switchSessionPermission,
   uploadAttachment,
 } from './client';
 
@@ -38,6 +39,28 @@ describe('client', () => {
     const data = await fetchHealth();
     expect(spy).toHaveBeenCalledWith('/health');
     expect(data.runtime?.kind).toBe('echo');
+  });
+
+  it('switchSessionPermission 打切档端点并回传生效范围', async () => {
+    const spy = mockJson({
+      session_id: 's-1',
+      permission: 'readonly',
+      applied: true,
+      effective_from: '下一次工具判定与下一次模型调用',
+    });
+    const data = await switchSessionPermission('s-1', 'readonly', false);
+    expect(spy).toHaveBeenCalledWith('/api/session/s-1/permission', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: 's-1', permission: 'readonly', web_search: false }),
+    });
+    expect(data.applied).toBe(true);
+    expect(data.effective_from).toContain('下一次工具判定');
+  });
+
+  it('switchSessionPermission 非 2xx 抛错', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 403 }));
+    await expect(switchSessionPermission('s-1', 'unrestricted')).rejects.toThrow('切档失败 403');
   });
 
   it('fetchRuns 拼接全部查询参数', async () => {

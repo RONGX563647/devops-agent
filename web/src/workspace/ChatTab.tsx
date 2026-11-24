@@ -1,7 +1,12 @@
 /** 对话 tab：订阅会话 store 渲染消息与过程时间线，SSE 生命周期由 store 托管。 */
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { deleteAttachment, fetchHealth, uploadAttachment } from '../api/client';
+import {
+  deleteAttachment,
+  fetchHealth,
+  switchSessionPermission,
+  uploadAttachment,
+} from '../api/client';
 import type {
   Attachment,
   ChatMessage,
@@ -19,15 +24,6 @@ import { StepList } from './StepRow';
 import { formatClock } from './time';
 import { TraceRail } from './TraceRail';
 import { turnsFromMessages } from './trace';
-
-/** 档位在用户气泡上的短标签：事后回看才知道当时放到了哪。 */
-const PERMISSION_TAG: Record<PermissionKey, string> = {
-  readonly: '只读',
-  workspace: '工作区',
-  execute: '可执行',
-  unrestricted: '放开',
-  auto: '无人值守',
-};
 
 interface Props {
   session: string;
@@ -150,40 +146,44 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
-/** 助手消息：过程行在上，Markdown 正文在下，操作条在末尾。 */
+/** 助手消息：过程行在上，Markdown 正文在下，操作条在末尾。确认卡片不在这里。 */
 function AssistantMessage({
   message,
   live,
   onRetry,
-  onDecide,
 }: {
   message: ChatMessage;
   live: boolean;
   onRetry: (message: ChatMessage) => void;
-  onDecide: (scope: ConfirmScope | 'reject') => void;
 }) {
   const hasAnswer = Boolean(message.text) || Boolean(message.error);
+  // 正在生成的最新一轮：正文先出、过程收在下方；跑完就回到正文上方。
+  const steps = message.steps.length > 0 ? <StepList steps={message.steps} live={live} /> : null;
+  const body = message.text && (
+    <div className="chat-bubble assistant-body">
+      <Markdown content={message.text} />
+    </div>
+  );
+  const error = message.error && (
+    <div className="chat-error-line">
+      <span className="chat-error-tag">中断</span>
+      <span>{message.error}</span>
+    </div>
+  );
   return (
     <div className={`chat-msg assistant${message.error ? ' has-error' : ''}`}>
-      {message.steps.length > 0 && <StepList steps={message.steps} />}
-      {message.awaiting && message.awaiting.calls.length > 0 && (
-        <PermissionCard
-          calls={message.awaiting.calls}
-          expiresAt={message.awaiting.expiresAt}
-          busy={live}
-          onDecide={onDecide}
-        />
-      )}
-      {message.text && (
-        <div className="chat-bubble assistant-body">
-          <Markdown content={message.text} />
-        </div>
-      )}
-      {message.error && (
-        <div className="chat-error-line">
-          <span className="chat-error-tag">中断</span>
-          <span>{message.error}</span>
-        </div>
+      {live ? (
+        <>
+          {body}
+          {error}
+          {steps}
+        </>
+      ) : (
+        <>
+          {steps}
+          {body}
+          {error}
+        </>
       )}
       {message.pending && !message.text && message.steps.length === 0 && (
         <div className="chat-pending mono" aria-live="polite">
@@ -223,6 +223,8 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
   const [input, setInput] = useState('');
   // 联网搜索：跟 DeepSeek 一样做成输入框下方的显式开关，默认关，逐轮生效
   const [webSearch, setWebSearch] = useState(false);
+  // 切档结果必须可见：服务端可能没有活跃实例（只改下一轮），也可能拒绝越权档。
+  const [permNotice, setPermNotice] = useState('');
   const [files, setFiles] = useState<PendingAttachment[]>([]);
   const [activeId, setActiveId] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -311,8 +313,23 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
     );
   }
 
-  function changePermission(key: PermissionKey) {
+  /** 运行中也能切：服务端原地热替换当前实例的权限上下文与工具集。 */
+  async function changePermission(key: PermissionKey) {
+    const previous = view.permission;
     setPermission(session, key);
+    setPermNotice('切档中…');
+    try {
+      const result = await switchSessionPermission(session, key, webSearch);
+      setPermNotice(
+        result.applied
+          ? '已生效：本轮后续工具调用与模型请求按新档位'
+          : '下一轮发送按新档位（当前没有活跃会话）',
+      );
+    } catch (error) {
+      // 未开放档 / 会话不匹配：撤回本地选择，别让界面说一套、后端做另一套
+      setPermission(session, previous);
+      setPermNotice(error instanceof Error ? error.message : '切档失败');
+    }
   }
 
   function submit() {
@@ -415,11 +432,6 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
                         ))}
                       </span>
                     )}
-                    {m.permission && m.permission !== 'workspace' && (
-                      <span className={`perm-tag mono risk-${m.permission}`}>
-                        {PERMISSION_TAG[m.permission]}
-                      </span>
-                    )}
                   </div>
                 </div>
               );
@@ -430,7 +442,6 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
                 message={m}
                 live={view.running && m.id === last?.id}
                 onRetry={retry}
-                onDecide={decide}
               />
             );
           })}
@@ -458,6 +469,17 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
           )}
         </div>
       </div>
+      {/* 确认卡片脱离消息流，常驻在输入框上方：消息再长也不会被滚到中间去。 */}
+      {view.awaiting && view.awaiting.calls.length > 0 && (
+        <div className="confirm-dock">
+          <PermissionCard
+            calls={view.awaiting.calls}
+            expiresAt={view.awaiting.expiresAt}
+            busy={view.running}
+            onDecide={decide}
+          />
+        </div>
+      )}
       <TraceRail
         turns={turns}
         activeId={activeId}
@@ -527,11 +549,7 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
             rows={1}
           />
           <div className="composer-bar">
-            <PermissionPicker
-              current={view.permission}
-              onChange={changePermission}
-              disabled={view.running}
-            />
+            <PermissionPicker current={view.permission} onChange={changePermission} />
             <button
               type="button"
               className={`search-toggle${webSearch ? ' is-on' : ''}`}
@@ -564,12 +582,13 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
             >
               <PaperclipIcon />
             </button>
-            <span className="composer-hint">
-              {view.awaiting
-                ? '等待你确认上面的操作'
-                : view.running
-                  ? '生成中，仍可继续输入，停止后可发送'
-                  : 'Enter 发送 · Shift+Enter 换行'}
+            <span className="composer-hint" aria-live="polite">
+              {permNotice ||
+                (view.awaiting
+                  ? '等待你确认下方卡片'
+                  : view.running
+                    ? '生成中，仍可切档；停止后可发送新消息'
+                    : 'Enter 发送 · Shift+Enter 换行')}
             </span>
             {view.running && (
               <button className="send-btn stop" onClick={() => stop(session)}>

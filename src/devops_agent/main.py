@@ -155,6 +155,8 @@ class ConfirmItem(BaseModel):
 class ConfirmRequest(BaseModel):
     session_id: str
     results: list[ConfirmItem] = Field(default_factory=list)
+    # 用户在确认卡片上切过档时带当前档位；确认续跑按它执行，不再锁死发起轮。
+    permission: str | None = None
 
 
 @app.get("/health")
@@ -377,6 +379,37 @@ def list_permissions() -> dict[str, Any]:
     }
 
 
+class SessionPermissionRequest(BaseModel):
+    """会话中切档的请求体；session_id 在路径与 body 各留一份，服务端校验一致。"""
+
+    session_id: str
+    permission: str
+    web_search: bool | None = None
+
+
+@app.post("/api/session/{session_id}/permission")
+def switch_session_permission(
+    session_id: str, req: SessionPermissionRequest, request: Request
+) -> dict[str, Any]:
+    """运行中切档：原地热替换当前会话的运行时，不打断正在跑的 SSE 流。
+
+    白名单校验与发起轮一致（未开放档仍然 403），不能靠这个端点提权。
+    `applied` 如实区分「已热替换」与「没有活跃实例、下一轮才装配」，
+    免得界面把后者也说成立即生效。
+    """
+    if req.session_id != session_id:
+        raise HTTPException(status_code=400, detail="session_mismatch")
+    profile = _profile_or_403(req.permission)
+    registry = _registry(request)
+    _entry, applied = registry.switch(session_id, profile, req.web_search)
+    return {
+        "session_id": session_id,
+        "permission": profile.key,
+        "applied": applied,
+        "effective_from": "下一次工具判定与下一次模型调用" if applied else "下一轮",
+    }
+
+
 @app.post("/run/stream")
 async def run_stream(
     req: RunRequest,
@@ -508,12 +541,16 @@ async def confirm_run(run_id: int, req: ConfirmRequest, request: Request) -> Str
     """
     row = _pending_row(run_id)
     _check_pending(row, req.session_id)
-    profile = _profile_for_run(row)
+    profile = _profile_or_403(req.permission) if req.permission else _profile_for_run(row)
     decisions = parse_decisions([item.model_dump() for item in req.results])
     if not decisions:
         raise HTTPException(status_code=400, detail="empty_results")
     registry = _registry(request)
-    entry = registry.acquire(req.session_id, profile)
+    if req.permission:
+        # 挂起中切档：原地替换，保住 ASKING 状态；重建会把挂起的 tool_call 换成新实例
+        entry, _applied = registry.switch(req.session_id, profile)
+    else:
+        entry = registry.acquire(req.session_id, profile)
     if not callable(getattr(entry.runtime, "resume", None)):
         raise HTTPException(status_code=400, detail="runtime_not_resumable")
     if entry.lock.locked():

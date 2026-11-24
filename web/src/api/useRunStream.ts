@@ -639,12 +639,18 @@ export async function streamConfirm(
   decisions: ConfirmDecision[],
   onEvent: (event: StreamEvent) => void,
   signal: AbortSignal,
+  /** 挂起中用户切过档时带上：续跑按当前档位，不再锁死发起轮。 */
+  permission?: string,
 ): Promise<void> {
   const resp = await fetch(`/run/${runId}/confirm`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     // 只给 id 与决策：命令原文以服务端挂起态为准，客户端改不了要执行的东西
-    body: JSON.stringify({ session_id: sessionId, results: decisions }),
+    body: JSON.stringify({
+      session_id: sessionId,
+      results: decisions,
+      ...(permission ? { permission } : {}),
+    }),
     signal,
   });
   if (!resp.ok || !resp.body) {

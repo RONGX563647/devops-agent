@@ -174,8 +174,8 @@ describe('权限档位', () => {
     expect(loadPermission('s-p')).toBe('readonly');
 
     act(() => send('s-p', 'hi'));
-    // 用户气泡记下这一轮用的档位，事后回看才知道当时放到了哪
-    expect(result.current.messages[0].permission).toBe('readonly');
+    // 档位只作为请求参数与会话状态存在，不再写进用户气泡
+    expect('permission' in result.current.messages[0]).toBe(false);
     // 第 7 个实参才是 permission（前面依次是会话、正文、回调、signal、请求 id、附件）
     expect(streamRunMock.mock.calls[0][6]).toBe('readonly');
   });
@@ -186,6 +186,26 @@ describe('权限档位', () => {
     expect(result.current.permission).toBe('execute');
     expect(loadPermission('s-q')).toBe('execute');
     expect(streamRunMock.mock.calls[0][6]).toBe('execute');
+  });
+
+  it('老会话里的权限标记读历史时丢掉，消息本身保留', () => {
+    localStorage.setItem(
+      'da.chat.s-legacy',
+      JSON.stringify([
+        {
+          id: 'u1',
+          role: 'user',
+          text: '旧问题',
+          at: '2026-11-23T10:00:00',
+          steps: [],
+          permission: 'readonly',
+        },
+      ]),
+    );
+    const { result } = renderHook(() => useSession('s-legacy'));
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0].text).toBe('旧问题');
+    expect('permission' in result.current.messages[0]).toBe(false);
   });
 
   it('重复切同一档不产生多余提交', () => {
@@ -245,6 +265,8 @@ describe('挂起与确认', () => {
     expect(streamConfirmMock.mock.calls[0][0]).toBe(42);
     expect(streamConfirmMock.mock.calls[0][1]).toBe('s-c');
     expect(streamConfirmMock.mock.calls[0][2]).toEqual(decisions);
+    // 续跑带上当前档位：挂起中切档后点允许，按新档执行
+    expect(streamConfirmMock.mock.calls[0][5]).toBe('workspace');
     expect(result.current.running).toBe(true);
     expect(result.current.awaiting).toBeNull();
     expect(result.current.messages).toHaveLength(2);

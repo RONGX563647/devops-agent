@@ -28,7 +28,7 @@ from agentscope.middleware import MiddlewareBase
 from agentscope.model import ChatModelBase, OpenAIChatModel
 from agentscope.permission import PermissionBehavior, PermissionRule
 from agentscope.state import AgentState
-from agentscope.tool import Toolkit
+from agentscope.tool import Toolkit, ToolMiddlewareBase
 from pydantic import SecretStr
 
 from devops_agent.config import RuntimePolicy, load_policy
@@ -234,13 +234,65 @@ def _state_for(
 class AgentScopeRuntime:
     """真实 Agent 运行时：把 Agent.reply_stream 适配到 AgentRuntime 协议。"""
 
-    def __init__(self, agent: Agent, *, profile: PermissionProfile | None = None) -> None:
+    def __init__(
+        self,
+        agent: Agent,
+        *,
+        profile: PermissionProfile | None = None,
+        workdir: Path | None = None,
+        note_middleware: ProfileNoteMiddleware | None = None,
+        toolkit_middlewares: Sequence[ToolMiddlewareBase] | None = None,
+        web_search: bool = False,
+    ) -> None:
         self._agent = agent
         self._profile = profile if profile is not None else default_profile()
+        self._workdir = workdir if workdir is not None else resolve_workdir()
+        # 热替换要保住这两件装配期的依赖：换 toolkit 时密钥注入不能丢，
+        # 换档位时末尾的档位说明必须同步改，否则「切了但模型还按旧档写」。
+        self._note_middleware = note_middleware
+        self._toolkit_middlewares = list(toolkit_middlewares or [])
+        self._web_search = web_search
 
     @property
     def profile(self) -> PermissionProfile:
         return self._profile
+
+    def apply_profile(
+        self,
+        profile: PermissionProfile,
+        *,
+        web_search: bool | None = None,
+    ) -> None:
+        """会话中切档：原地热替换，当前流不中断，下一次判定用新档位。
+
+        **不能整体替换 state.permission_context**：Agent 构造时
+        `self._engine = PermissionEngine(self.state.permission_context)` 持有的是
+        对象引用；换对象后引擎仍按旧档判定，界面却显示新档。只能逐字段写回。
+        旧档攒下的 allow_rules 随这次赋值丢弃，与「切档即换信任级别」一致。
+
+        toolkit 整体换（Agent 每次调用现取 schema），但必须重挂密钥中间件；
+        模型只在联网开关真的变化时重建，避免无谓丢掉前缀缓存。
+        """
+        fresh = build_permission_context(profile=profile, workdir=self._workdir)
+        context = self._agent.state.permission_context
+        context.mode = fresh.mode
+        context.working_directories = fresh.working_directories
+        context.allow_rules = fresh.allow_rules
+        context.deny_rules = fresh.deny_rules
+        context.ask_rules = fresh.ask_rules
+
+        self._agent.toolkit = build_toolkit_for(
+            profile.tools,
+            self._workdir,
+            middlewares=self._toolkit_middlewares or None,
+        )
+        if self._note_middleware is not None:
+            self._note_middleware.set_profile(profile)
+        if web_search is not None and web_search != self._web_search:
+            self._agent.model = build_chat_model(enable_search=web_search)
+            self._web_search = web_search
+        self._agent.state.middle_context[PROFILE_KEY] = profile.key
+        self._profile = profile
 
     @staticmethod
     def _make_msg(session_id: str, user_input: str) -> Msg:
@@ -340,15 +392,30 @@ def build_agentscope_runtime(
     """
     resolved = profile if profile is not None else default_profile()
     base = resolve_workdir(workdir)
+    secret_mw = build_secret_middleware()
+    note_mw = ProfileNoteMiddleware(resolved)
+    toolkit_mws: list[ToolMiddlewareBase] = [secret_mw]
+    effective_search = (
+        web_search
+        if web_search is not None
+        else os.environ.get("DEVOPS_AGENT_ENABLE_SEARCH") == "1"
+    )
     agent = build_agent(
         name="devops",
         system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),
         model=build_chat_model(enable_search=web_search),
-        toolkit=build_toolkit_for(resolved.tools, base, middlewares=[build_secret_middleware()]),
-        middlewares=[ProfileNoteMiddleware(resolved)],
+        toolkit=build_toolkit_for(resolved.tools, base, middlewares=toolkit_mws),
+        middlewares=[note_mw],
         state=_state_for(resolved, state, base),
     )
-    return AgentScopeRuntime(agent, profile=resolved)
+    return AgentScopeRuntime(
+        agent,
+        profile=resolved,
+        workdir=base,
+        note_middleware=note_mw,
+        toolkit_middlewares=toolkit_mws,
+        web_search=effective_search,
+    )
 
 
 def session_runtime_factory(base: object) -> Callable[..., Any]:

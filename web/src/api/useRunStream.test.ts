@@ -514,6 +514,25 @@ describe('streamConfirm', () => {
     expect(events.map((event) => event.type)).toEqual(['RUN_DONE']);
   });
 
+  it('挂起中切过档时，确认请求带上当前档位', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(okStream(), { status: 200 }));
+
+    await streamConfirm(
+      12,
+      's-1',
+      [{ tool_call_id: 't1', confirmed: true, scope: 'once' }],
+      () => {},
+      new AbortController().signal,
+      'readonly',
+    );
+
+    expect(JSON.parse(String(spy.mock.calls[0][1]?.body))).toMatchObject({
+      permission: 'readonly',
+    });
+  });
+
   it('非 2xx 抛错，交给 store 记成中断', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 409 }));
     await expect(

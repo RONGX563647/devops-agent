@@ -280,7 +280,6 @@ export function send(
     at: now,
     steps: [],
     attachments: files.length > 0 ? files : undefined,
-    permission: entry.permission,
   };
   const assistant: ChatMessage = {
     id: newId('msg'),
@@ -365,7 +364,7 @@ export function stop(sessionId: string): void {
   finalize(entry, 'stopped');
 }
 
-/** 切换本会话的档位：只影响后续的轮次，不改已经发生过的事。 */
+/** 切换本会话的档位（本地态）：运行中的热替换由调用方另发端点请求。 */
 export function setPermission(sessionId: string, key: PermissionKey): void {
   const entry = ensureEntry(sessionId);
   if (entry.permission === key) return;
@@ -404,6 +403,7 @@ export function confirm(sessionId: string, decisions: ConfirmDecision[]): void {
       emit(entry);
     },
     controller.signal,
+    entry.permission,
   )
     .then(() => {
       if (generation !== entry.generation) return;

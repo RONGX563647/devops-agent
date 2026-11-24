@@ -67,6 +67,13 @@ class ProfileNoteMiddleware(MiddlewareBase):
     def __init__(self, profile: PermissionProfile) -> None:
         self._profile = profile
 
+    def set_profile(self, profile: PermissionProfile) -> None:
+        """运行中切档：下一条模型请求带的档位说明就用新档位。
+
+        只改这一个字段，不重建中间件列表 —— 系统提示保持逐字节稳定。
+        """
+        self._profile = profile
+
     async def on_model_call(
         self,
         agent: Agent,

@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +36,19 @@ RATIO_TARGETS: dict[str, tuple[float, float]] = {
     "adversarial": (0.05, 0.10),
 }
 RATIO_TOLERANCE = 0.05
+
+# 风险分层：门禁按层判定，不再用一根全局通过率。
+# core / boundary / high_risk / regression = 40% / 30% / 20% / 10%。
+RISK_LAYERS: tuple[str, ...] = ("core", "boundary", "high_risk", "regression")
+RISK_TARGETS: dict[str, tuple[float, float]] = {
+    "core": (0.35, 0.45),
+    "boundary": (0.25, 0.35),
+    "high_risk": (0.15, 0.25),
+    "regression": (0.05, 0.15),
+}
+
+# 评测范围：端到端结果、轨迹、单组件。
+SCOPES: tuple[str, ...] = ("e2e", "trajectory", "component")
 
 # judge 维度白名单：与 judge.py 的 JUDGE_DIMENSIONS 同源，但这里刻意不 import，
 # 避免数据集校验反向依赖网络模块。
@@ -104,6 +115,18 @@ class JudgeSpec(_StrictModel):
     dimensions: list[str] = Field(default_factory=list)
 
 
+class OracleSpec(_StrictModel):
+    """确定性 oracle：不依赖裁判即可判定的关键事实。
+
+    `critical_facts` 必须出现在最终回答里；`forbidden_facts` 一个都不许出现
+    （密钥、canary、注入串）。这两类断言进入 answer / safety 维度，
+    与 LLM 裁判完全解耦，也是门禁在裁判未校准时唯一可信的部分。
+    """
+
+    critical_facts: list[str] = Field(default_factory=list)
+    forbidden_facts: list[str] = Field(default_factory=list)
+
+
 class EvalCase(_StrictModel):
     """一条评测用例。"""
 
@@ -118,6 +141,12 @@ class EvalCase(_StrictModel):
     subject: str = "capability"
     expected: Expected
     judge: JudgeSpec | None = None
+    # 风险分层：决定门禁用哪条阈值，也决定高危用例是否 n=1 也阻断。
+    risk: str | None = None
+    # 这条用例覆盖哪些评测范围；缺省按 e2e 处理。
+    scopes: list[str] = Field(default_factory=list)
+    # 确定性 oracle：关键事实与禁止出现的内容。
+    oracle: OracleSpec | None = None
     # `tool_calls.must` 里的工具是否必须**真正执行**（被权限拒绝不算命中）。
     #
     # 默认 True：`must: ["Bash"]` 的意图几乎总是「跑起来」，而 readonly 档下
@@ -154,6 +183,10 @@ class Manifest(_StrictModel):
     # 旧版写的是裸数字（`{"pass_rate": 0.8}`），加载时归一成 ThresholdSpec。
     thresholds: dict[str, ThresholdSpec] = Field(default_factory=dict)
     grader_version: str = ""
+    # v3 风险分层：计数、各层通过率下限、各层最小样本。
+    risk_counts: dict[str, int] = Field(default_factory=dict)
+    risk_thresholds: dict[str, float] = Field(default_factory=dict)
+    min_cases_per_risk: dict[str, int] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -209,9 +242,21 @@ def load_suite(path: str | Path) -> Suite:
 
 
 def _canonical(case: EvalCase) -> str:
-    """单条用例的规范化 JSON：字段排序、紧凑分隔符、保留中文。"""
+    """单条用例的规范化 JSON：字段排序、紧凑分隔符、保留中文。
+
+    v3 新增的 `risk / scopes / oracle` 在取默认值时不参与指纹：
+    否则给模型加几个可选字段就会改写全部 v2 用例的 sha，
+    历史批次会集体变成「不可比」。
+    """
+    data = case.model_dump(mode="json")
+    if not case.risk:
+        data.pop("risk", None)
+    if not case.scopes:
+        data.pop("scopes", None)
+    if case.oracle is None:
+        data.pop("oracle", None)
     return json.dumps(
-        case.model_dump(mode="json"),
+        data,
         sort_keys=True,
         ensure_ascii=False,
         separators=(",", ":"),
@@ -231,169 +276,3 @@ def scenario_of(case: EvalCase) -> str | None:
         if tag.startswith(SCENARIO_PREFIX):
             return tag[len(SCENARIO_PREFIX) :]
     return None
-
-
-def _has_assertion(expected: Expected) -> bool:
-    """是否至少有一条可判定的断言（非默认状态也算一条）。"""
-    return bool(
-        expected.status != "success"
-        or expected.must_contain
-        or expected.must_not_contain
-        or expected.must_contain_any
-        or expected.must_not_regex
-        or expected.must_cite
-        or expected.regex
-        or expected.tool_calls is not None
-        or expected.file_state
-    )
-
-
-def _case_tag_errors(case: EvalCase) -> list[str]:
-    """标签必须有值、非空且带 scenario:*。"""
-    if not case.tags:
-        return [f"{case.id}: tags 不能为空"]
-    if any(not tag.strip() for tag in case.tags):
-        return [f"{case.id}: tags 不能包含空字符串"]
-    if scenario_of(case) is None:
-        return [f"{case.id}: 缺少 scenario:* 标签"]
-    return []
-
-
-def _case_errors(case: EvalCase) -> list[str]:
-    """单个用例的标签、断言与 judge 维度校验。"""
-    errors = _case_tag_errors(case)
-    if not _has_assertion(case.expected):
-        errors.append(f"{case.id}: expected 至少需要一条断言")
-    if case.subject not in SUBJECTS:
-        errors.append(f"{case.id}: 未知 subject: {case.subject}（可选 {', '.join(SUBJECTS)}）")
-    if case.judge is not None:
-        unknown = sorted(set(case.judge.dimensions) - ALLOWED_JUDGE_DIMENSIONS)
-        if unknown:
-            errors.append(f"{case.id}: 未知 judge 维度: {', '.join(unknown)}")
-    errors.extend(_assertion_errors(case))
-    return errors
-
-
-def _cite_errors(case_id: str, paths: list[str]) -> list[str]:
-    """`must_cite` 只接受工作区内的相对路径（绝对路径与 `..` 会指向评测机本身）。"""
-    errors: list[str] = []
-    for path in paths:
-        if not path.strip():
-            errors.append(f"{case_id}: must_cite 含空路径")
-        elif path.startswith(("/", "\\")) or ".." in Path(path).parts:
-            errors.append(f"{case_id}: must_cite 只接受工作区内的相对路径: {path}")
-    return errors
-
-
-def _assertion_errors(case: EvalCase) -> list[str]:
-    """断言自身的合法性：路径不许越界、正则必须可编译、语义组不许为空。"""
-    expected = case.expected
-    errors = _cite_errors(case.id, expected.must_cite)
-    for index, group in enumerate(expected.must_contain_any):
-        if not [word for word in group if word.strip()]:
-            errors.append(f"{case.id}: must_contain_any[{index}] 为空组")
-    for pattern in [*expected.regex, *expected.must_not_regex]:
-        try:
-            re.compile(pattern)
-        except re.error as exc:
-            errors.append(f"{case.id}: 非法正则 {pattern}: {exc}")
-    return errors
-
-
-def _counts_errors(suite: Suite, actual_counts: Counter[str]) -> list[str]:
-    """manifest 声明的场景计数必须与实际一致。"""
-    if dict(actual_counts) == dict(suite.manifest.counts):
-        return []
-    return [
-        f"manifest.counts 与实际不一致: 期望 {suite.manifest.counts}, 实际 {dict(actual_counts)}"
-    ]
-
-
-def _ratio_errors(n: int, actual_counts: Counter[str]) -> list[str]:
-    """场景配比必须落在目标区间（含容差）内。"""
-    errors: list[str] = []
-    for scenario, (low, high) in RATIO_TARGETS.items():
-        share = actual_counts.get(scenario, 0) / n
-        if not (low - RATIO_TOLERANCE <= share <= high + RATIO_TOLERANCE):
-            errors.append(
-                f"scenario:{scenario} 占比 {share:.1%} 超出 "
-                f"[{low:.0%}, {high:.0%}] ±{RATIO_TOLERANCE:.0%}"
-            )
-    return errors
-
-
-GATE_KEYS: tuple[str, ...] = ("pass_rate", "judge_correctness", "trajectory")
-# 每个门禁的合法取值区间；用来拦住「pass_rate: 80」这种把百分比当小数的写法。
-_GATE_RANGES: dict[str, tuple[float, float]] = {
-    "pass_rate": (0.0, 1.0),
-    "judge_correctness": (1.0, 5.0),
-    "trajectory": (0.0, 1.0),
-}
-
-
-def _threshold_errors(thresholds: dict[str, ThresholdSpec]) -> list[str]:
-    """阈值必须是已知门禁、取值在量纲内、min_samples 非负。"""
-    errors: list[str] = []
-    for key, spec in thresholds.items():
-        if key not in GATE_KEYS:
-            errors.append(f"warning: 未知门禁 {key}，报告不会消费它")
-            continue
-        low, high = _GATE_RANGES[key]
-        if not (low <= spec.min <= high):
-            errors.append(f"thresholds.{key}.min {spec.min} 超出量纲 [{low}, {high}]")
-        if spec.min_samples < 0:
-            errors.append(f"thresholds.{key}.min_samples 不能为负")
-    return errors
-
-
-def validate_suite(suite: Suite) -> list[str]:
-    """返回语义校验错误；`warning:` 开头的条目只提示、不阻断。
-
-    少于 `min_cases_for_gate` 时只给 warning，且跳过配比硬校验 ——
-    小样本下百分比抖动没有意义，强行要求配比只会逼人凑数。
-    """
-    errors: list[str] = []
-    seen: set[str] = set()
-    for case in suite.cases:
-        if case.id in seen:
-            errors.append(f"duplicate case id: {case.id}")
-        seen.add(case.id)
-        errors.extend(_case_errors(case))
-
-    actual_sha = suite_sha256(suite.cases)
-    if suite.manifest.sha256 != actual_sha:
-        errors.append(f"manifest.sha256 不匹配: 期望 {suite.manifest.sha256}, 实际 {actual_sha}")
-
-    actual_counts = Counter(
-        scenario for case in suite.cases if (scenario := scenario_of(case)) is not None
-    )
-    errors.extend(_counts_errors(suite, actual_counts))
-
-    n = len(suite.cases)
-    if n < suite.manifest.min_cases_for_gate:
-        errors.append(
-            f"warning: 用例数 {n} < min_cases_for_gate "
-            f"{suite.manifest.min_cases_for_gate}，不参与发布门禁"
-        )
-    else:
-        errors.extend(_ratio_errors(n, actual_counts))
-
-    # 放在最后：既有 warning 的先后顺序（样本量、配比）保持不变，
-    # 依赖 `warnings[0]` 的调用方不会被「清单元数据」类提示挤掉。
-    declared = suite.manifest.grader_version
-    if not declared:
-        errors.append("warning: manifest 未记录 grader_version，判卷口径变更无法追溯")
-    elif declared != GRADER_VERSION:
-        errors.append(
-            f"manifest.grader_version {declared} != 当前判卷口径 {GRADER_VERSION}，"
-            "新旧批次分数不可直接比较"
-        )
-    errors.extend(_threshold_errors(suite.manifest.thresholds))
-    return errors
-
-
-def split_warnings(messages: list[str]) -> tuple[list[str], list[str]]:
-    """把校验输出拆成 (errors, warnings)，CLI 据此决定退出码。"""
-    errors = [item for item in messages if not item.startswith("warning:")]
-    warnings = [item for item in messages if item.startswith("warning:")]
-    return errors, warnings

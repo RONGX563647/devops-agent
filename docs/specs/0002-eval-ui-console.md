@@ -90,13 +90,14 @@ const CLI_HINT =
 ```python
 @dataclass(frozen=True, slots=True)
 class RuleSpec:
-    id: str            # "S7"
-    level: str         # "error" / "warning"（该规则的默认级别）
-    title: str         # "断言不得与题面撞车"
-    description: str   # 查什么
-    hint: str          # 怎么修
+    id: str  # "S7"
+    level: str  # "error" / "warning"（该规则的默认级别）
+    title: str  # "断言不得与题面撞车"
+    description: str  # 查什么
+    hint: str  # 怎么修
 
-RULES: tuple[RuleSpec, ...] = (...)   # S1..S8，顺序固定
+
+RULES: tuple[RuleSpec, ...] = ...  # S1..S8，顺序固定
 ```
 
 `_finding()` 不改；`run_lint` 行为不改。`RULES` 只被 API 与前端读取，因此加它**不改变任何判决**。
@@ -106,13 +107,14 @@ RULES: tuple[RuleSpec, ...] = (...)   # S1..S8，顺序固定
 ```python
 @dataclass(frozen=True, slots=True)
 class DimensionVerdict:
-    score: float          # 1..5
-    evidence: str         # 模型给的理由；缺失时为空串，不编造
+    score: float  # 1..5
+    evidence: str  # 模型给的理由；缺失时为空串，不编造
+
 
 @dataclass(frozen=True, slots=True)
 class JudgeOutcome:
-    scores: dict[str, float]        # 维度 → 分数（与原契约一致）
-    evidence: dict[str, str]        # 维度 → 理由
+    scores: dict[str, float]  # 维度 → 分数（与原契约一致）
+    evidence: dict[str, str]  # 维度 → 理由
 ```
 
 - `Judge` Protocol 改为 `score(...) -> JudgeOutcome`。
@@ -127,7 +129,7 @@ class JudgeOutcome:
 class CaseRun:
     ...
     judge_scores: dict[str, float] | None
-    judge_evidence: dict[str, str]      # 新增，无裁判时为空 dict
+    judge_evidence: dict[str, str]  # 新增，无裁判时为空 dict
 ```
 
 `case_run_payload()` 增加一个字段 `"judge_evidence": run.judge_evidence`。因为 `_persist()` 已经把整个 payload 写进 `detail_json`，**evidence 自动落库，不需要新表/新列**。`scores_json` 保持「维度 → 浮点」，`report._judge_means`、`_case_out` 的既有读取路径全部不动。
@@ -141,9 +143,7 @@ ALTER TABLE eval_cases ADD COLUMN trace_json TEXT NOT NULL DEFAULT '';
 沿用仓库既有做法（`_RUN_COLUMNS` / `_SPAN_COLUMNS` 的 `ALTER TABLE ... ADD COLUMN` 迁移），新增：
 
 ```python
-_EVAL_CASE_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("trace_json", "TEXT NOT NULL DEFAULT ''"),
-)
+_EVAL_CASE_COLUMNS: tuple[tuple[str, str], ...] = (("trace_json", "TEXT NOT NULL DEFAULT ''"),)
 ```
 
 `_migrate()` 里补一行 `_ensure_columns(conn, "eval_cases", _EVAL_CASE_COLUMNS)`。老批次读出来是空串，前端显示「该批次未采集轨迹」。
@@ -178,12 +178,13 @@ _EVAL_CASE_COLUMNS: tuple[tuple[str, str], ...] = (
 class RunOptions:
     suite_path: Path
     db_path: Path
-    out_dir: Path | None          # None = 不写文件（API 场景只需要 DB）
+    out_dir: Path | None  # None = 不写文件（API 场景只需要 DB）
     profile: str | None
     limit: int | None
     judge: bool
     judge_scope: str = "all"
     baseline_path: Path | None = None
+
 
 @dataclass(frozen=True, slots=True)
 class RunResult:
@@ -191,13 +192,15 @@ class RunResult:
     summary: dict[str, Any]
     runs: list[CaseRun]
 
+
 class EvalNotRunnable(RuntimeError):
-    """前置条件不满足（缺凭据 / 裁判不可用 / 未知题库）。""" 
+    """前置条件不满足（缺凭据 / 裁判不可用 / 未知题库）。"""
 ```
 
 ```python
 def check_runnable(suite_path: Path, *, judge: bool) -> str | None:
     """返回不可运行原因，None 表示可以跑。用于 GET 能力探测与 POST 前置校验。"""
+
 
 async def run_eval(
     options: RunOptions,
@@ -261,7 +264,7 @@ async def run_suite(
 @dataclass(frozen=True, slots=True)
 class CaseRun:
     ...
-    trace_payload: dict[str, Any]   # 写 trace_json 用；CLI 不关心
+    trace_payload: dict[str, Any]  # 写 trace_json 用；CLI 不关心
 ```
 
 ## 6. API 契约

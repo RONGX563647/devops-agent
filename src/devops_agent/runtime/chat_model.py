@@ -104,7 +104,10 @@ def _build_model_kwargs(active: ModelParams, enable_search: bool | None) -> dict
     return {
         "credential": OpenAICredential(api_key=SecretStr(api_key), base_url=base_url),
         "model": model_name,
-        "parameters": OpenAIChatModel.Parameters(**active.sampling()),
+        # None 必须过滤：thinking_enable 等字段是非空 bool，传 None 会被 pydantic 判类型错误
+        "parameters": OpenAIChatModel.Parameters(
+            **{key: value for key, value in active.sampling().items() if value is not None}
+        ),
         "stream": True,
         "max_retries": active.model_max_retries,
         "context_size": active.context_size,

@@ -101,8 +101,7 @@ git fetch origin && git checkout main && git pull
 1. **框架隔离**：`import agentscope` 只允许出现在装配/工厂模块——当前边界为 `runtime/assembly.py`、
    `runtime/chat_model.py`、`runtime/scope_runtime.py`、`runtime/supervisor.py`、`runtime/compression.py`、
    `runtime/profile_note.py`、`tools/catalog.py`、`executor/boundary.py`、`governance/policy.py`、
-   `memory/ledger.py`、`secrets/middleware.py`（以 `grep -rn 'agentscope' src/` 的实际结果为准；
-   `runtime/agent.py` 已拆为装配子模块并退化为只做 re-export 的兼容门面，不再直接 import 框架）；
+   `memory/ledger.py`、`secrets/middleware.py`（以 `grep -rn 'agentscope' src/` 的实际结果为准）；
    这些模块构成对框架的隔离层，网关（`gateway/`，含兼容门面 `main.py`）、编排协议（`runtime/runtime.py`）、
    `runtime/prompt.py`、可观测性（`observability/`）等一律通过协议或工厂间接使用，不得散落 import。`runtime/events.py`
    刻意靠 duck typing 不 import 框架，以保持事件转译可用假事件测试。`secrets/middleware.py` 是

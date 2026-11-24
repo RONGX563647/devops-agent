@@ -260,7 +260,7 @@ def _case_decision(case: EvalCase) -> dict[str, Any]:
 
 def _suite_out(suite: Suite) -> dict[str, Any]:
     """评测集目录：构成、阈值、断言清单，供前端画配比与断言构成。"""
-    # 延迟 import：lint 会拖入 runtime.agent（进而 import agentscope），
+    # 延迟 import：lint 会拖入 runtime.prompt（进而 import agentscope），
     # 而 observability 层不该在启动时就绑定框架。
     from devops_agent.eval.lint import assertion_summary
 

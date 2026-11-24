@@ -1,7 +1,7 @@
 """编排层对外唯一入口（协议）。
 
 业务代码只依赖这个协议，不直接 import agentscope。
-框架实现放在 agent.py / supervisor.py 内，本模块保持框架无关。
+框架实现放在 assembly.py / scope_runtime.py / supervisor.py 内，本模块保持框架无关。
 
 运行时为异步：真实 AgentScope Agent.reply() 是 coroutine，网关必须 await。
 """

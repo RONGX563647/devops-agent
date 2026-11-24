@@ -34,7 +34,6 @@ import { turnsFromMessages } from './trace';
 
 export { attachMeta, formatSize } from './chat/attachments';
 export { formatClock };
-
 interface Props {
   session: string;
   /** 首次发送时通知外层把「新会话」落到 URL 上。 */

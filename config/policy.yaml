@@ -36,8 +36,8 @@ permission:
   working_directories: []
   allow_rules: []
   deny_rules:
-    # source: profile 表示「只在 hard_deny 档（unrestricted）生效」。
-    # 这是点防御：Bash 走子串/前缀匹配，挡不住 python -c "shutil.rmtree(...)"。
+    # builtin deny 对所有档位无条件生效（含 auto/readonly），框架层 deny 优先于
+    # allow/ask。这是点防御：Bash 走子串/前缀匹配，挡不住 python -c "shutil.rmtree(...)"。
     - tool_name: Bash
       rule_content: ".git/"
       behavior: deny

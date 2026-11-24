@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from agentscope.permission import PermissionContext, PermissionEngine, PermissionMode
 
-from devops_agent.governance.policy import build_permission_context
+from devops_agent.governance.policy import bash_decision, build_permission_context
 from devops_agent.governance.profiles import (
     AVAILABLE_ENV,
     DEFAULT_ENV,
@@ -115,11 +115,22 @@ def test_resolve_rejects_unknown_and_unavailable(monkeypatch: pytest.MonkeyPatch
         resolve("nope")
 
 
-def test_context_for_workspace_has_no_hard_deny() -> None:
-    """profile 专属 deny 规则只服务 hard_deny 档，不该影响正常档位。"""
-    context = build_permission_context(profile=PROFILES["workspace"])
-    assert context.mode == PermissionMode.ACCEPT_EDITS
-    assert context.deny_rules == {}
+def test_builtin_deny_injected_in_every_mode() -> None:
+    """builtin deny（.git/、.env）对所有档位无条件生效。
+
+    旧实现只给 hard_deny 档装配，导致 auto(dont_ask) 对工作区内的 .env 直接
+    allow —— 无人值守档反而能读密钥文件。框架 deny 优先于 allow/ask，
+    所以五档都必须带上这层硬约束。
+    """
+    for key in ("readonly", "workspace", "execute", "unrestricted", "auto"):
+        context = build_permission_context(profile=PROFILES[key])
+        assert context.deny_rules, f"{key} 档缺少 builtin deny"
+        bash_deny = [rule.rule_content for rule in context.deny_rules.get("Bash", [])]
+        assert ".env" in bash_deny, f"{key} 档的 Bash 未禁 .env"
+        assert ".git/" in bash_deny, f"{key} 档的 Bash 未禁 .git/"
+        # 引擎实判：auto(dont_ask) 在旧实现下对工作区内的 .env 直接 allow，
+        # 这是最需要锁死的一档。
+        assert bash_decision(PROFILES[key], "cat .env", Path.cwd()) == "deny"
 
 
 def test_context_for_unrestricted_carries_profile_deny_rules() -> None:

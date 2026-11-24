@@ -195,6 +195,10 @@ def _is_compound(command: str) -> bool:
             index += 2
             continue
         if quote is not None:
+            # 双引号内 `$()` 与反引号仍会执行命令替换（`"$HOME"` 这类纯变量不会），
+            # 单引号内才是字面量。别让 `echo "$(rm -rf /)"` 绕过拆段判定。
+            if quote == '"' and (command.startswith("$(", index) or char == "`"):
+                return True
             if char == quote:
                 quote = None
             index += 1
@@ -203,6 +207,10 @@ def _is_compound(command: str) -> bool:
             quote = char
             index += 1
             continue
+        # 命令替换：`$(...)` 与反引号 `...` 里能藏任意命令，且首词判定看不见内部，
+        # 不拆段就会把 `echo $(rm -rf /)` 沉淀成 `echo:*` —— 等于放行所有 echo。
+        if command.startswith("$(", index) or char == "`":
+            return True
         if any(command.startswith(sep, index) for sep in _SEPARATORS):
             return True
         index += 1

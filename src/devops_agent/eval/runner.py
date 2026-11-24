@@ -85,6 +85,38 @@ def _note_block_text(event: dict[str, Any], state: dict[str, Any]) -> None:
         state["block_text"] = text
 
 
+# 工具结果的状态取值：只有这两个说明工具真的跑起来了。
+_EXECUTED_STATES = frozenset({"success", "error"})
+
+
+def _note_tool_result_start(event: dict[str, Any], state: dict[str, Any]) -> None:
+    """记住 tool_call_id → 工具名。
+
+    `TOOL_RESULT_END` 带 `state` 但不带 `tool_call_name`（框架事件字段如此），
+    要判断「被拒的是哪个工具」必须经 `tool_call_id` 回溯。
+    """
+    call_id = str(event.get("tool_call_id") or "")
+    name = str(event.get("tool_call_name") or "").strip().lower()
+    if call_id and name:
+        state["id_to_name"][call_id] = name
+
+
+def _note_tool_result_end(event: dict[str, Any], state: dict[str, Any]) -> None:
+    """按结果状态把工具分进 executed / denied 两档。"""
+    call_id = str(event.get("tool_call_id") or "")
+    name = state["id_to_name"].get(call_id, "unknown")
+    state_value = str(event.get("state") or "")
+    if state_value == "denied":
+        bucket = "denied"
+    elif state_value in _EXECUTED_STATES:
+        bucket = "executed"
+    else:
+        return
+    if name not in state[f"{bucket}_seen"]:
+        state[f"{bucket}_seen"].add(name)
+        state[f"{bucket}_tools"].append(name)
+
+
 async def _consume(
     runtime: Any,
     case: EvalCase,
@@ -102,9 +134,14 @@ async def _consume(
             _note_block_text(event, state)
         elif event_type == "TOOL_CALL_START":
             _note_tool_call(event, state)
+        elif event_type == "TOOL_RESULT_START":
+            _note_tool_result_start(event, state)
+        elif event_type == "TOOL_RESULT_END":
+            _note_tool_result_end(event, state)
         elif event_type in _TOKEN_EVENTS:
             state["tokens"] += _add_tokens(event)
         elif event_type == "REQUIRE_USER_CONFIRM":
+            # 走确认流说明工具没执行：事件流里连 TOOL_RESULT_END 都没有。
             state["status"] = "pending"
             state["error"] = "等待用户确认，评测视为未完成"
             return
@@ -117,6 +154,11 @@ def _empty_state() -> dict[str, Any]:
         "tool_names": [],
         "tool_call_count": 0,
         "tool_seen": set(),
+        "id_to_name": {},
+        "executed_tools": [],
+        "executed_seen": set(),
+        "denied_tools": [],
+        "denied_seen": set(),
         "tokens": 0,
         "status": "success",
         "error": None,
@@ -204,6 +246,8 @@ async def execute_case(
             final_text=final_text,
             tool_names=list(state["tool_names"]),
             tool_call_count=int(state["tool_call_count"]),
+            executed_tools=list(state["executed_tools"]),
+            denied_tools=list(state["denied_tools"]),
             tokens=int(state["tokens"]),
             latency_ms=latency_ms,
             workspace_dir=workdir,
@@ -253,6 +297,10 @@ def case_run_payload(run: CaseRun) -> dict[str, Any]:
         "passed": run.score.passed,
         "hard_failures": list(run.score.hard_failures),
         "trajectory_score": run.score.trajectory_score,
+        # 三档快照：叫过 / 跑过 / 被拒，写进 cases.jsonl 便于复盘「为什么没跑起来」
+        "tool_names": list(run.trace.tool_names),
+        "executed_tools": list(run.trace.executed_tools),
+        "denied_tools": list(run.trace.denied_tools),
         "judge": run.judge_scores,
         "latency_ms": run.latency_ms,
         "tokens": run.tokens,

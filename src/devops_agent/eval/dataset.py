@@ -118,6 +118,12 @@ class EvalCase(_StrictModel):
     subject: str = "capability"
     expected: Expected
     judge: JudgeSpec | None = None
+    # `tool_calls.must` 里的工具是否必须**真正执行**（被权限拒绝不算命中）。
+    #
+    # 默认 True：`must: ["Bash"]` 的意图几乎总是「跑起来」，而 readonly 档下
+    # `pytest` 会被拒——只看调用名会让「被拒」和「跑成功」同分。
+    # 置 False 仅用于「无论是否执行都必须拒绝」的用例（越权、无人值守档）。
+    require_executed: bool = True
 
 
 class ThresholdSpec(_StrictModel):

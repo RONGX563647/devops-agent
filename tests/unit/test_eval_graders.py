@@ -21,6 +21,11 @@ def make_case(expected: dict[str, Any]) -> EvalCase:
 
 
 def make_trace(**overrides: Any) -> TraceResult:
+    """默认把 tool_names 也当作「真的执行了」。
+
+    真实的 ALLOW 轨迹会同时有 TOOL_CALL_START 与 TOOL_RESULT_END，
+    只想测「被拒 / 未执行」的用例显式传 executed_tools=[] 覆盖。
+    """
     data: dict[str, Any] = {
         "status": "success",
         "final_text": "全部完成",
@@ -31,6 +36,8 @@ def make_trace(**overrides: Any) -> TraceResult:
         "error": None,
     }
     data.update(overrides)
+    if "executed_tools" not in overrides:
+        data["executed_tools"] = list(data["tool_names"])
     return TraceResult(**data)
 
 

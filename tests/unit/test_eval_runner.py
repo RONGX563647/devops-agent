@@ -58,7 +58,11 @@ def test_events_are_accumulated_and_tempdir_is_cleaned() -> None:
     events = [
         {"type": "TEXT_BLOCK_DELTA", "delta": "hello "},
         {"type": "TOOL_CALL_START", "tool_call_name": "Read, Grep"},
+        {"type": "TOOL_RESULT_START", "tool_call_id": "t1", "tool_call_name": "Read"},
+        {"type": "TOOL_RESULT_END", "tool_call_id": "t1", "state": "success"},
         {"type": "TOOL_CALL_START", "tool_call_name": "read"},
+        {"type": "TOOL_RESULT_START", "tool_call_id": "t2", "tool_call_name": "Grep"},
+        {"type": "TOOL_RESULT_END", "tool_call_id": "t2", "state": "success"},
         {"type": "MODEL_CALL_END", "input_tokens": 10, "output_tokens": 5},
         {"type": "REPLY_END", "input_tokens": 2, "output_tokens": 1},
     ]
@@ -79,6 +83,8 @@ def test_events_are_accumulated_and_tempdir_is_cleaned() -> None:
     assert judge_scores is None
     assert trace.final_text == "hello "
     assert trace.tool_names == ["Read", "Grep"]
+    assert trace.executed_tools == ["read", "grep"]
+    assert trace.denied_tools == []
     assert trace.tokens == 18
     assert trace.status == "success"
     assert seen and not seen[0].exists()

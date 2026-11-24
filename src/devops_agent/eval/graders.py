@@ -44,13 +44,30 @@ class Check:
 
 @dataclass(frozen=True, slots=True)
 class TraceResult:
-    """runner 收集到的一次运行摘要。"""
+    """runner 收集到的一次运行摘要。
+
+    工具轨迹分三档而不是一档：`tool_names` 只说明「模型发了调用」，
+    而一次性运行有三种结局，事件流形态各不相同（实测）：
+
+    - ALLOW：`TOOL_CALL_START` + `TOOL_RESULT_END(state=success|error)`
+    - DENY ：`TOOL_CALL_START` + `TOOL_RESULT_END(state=denied)`
+    - ASK  ：只有 `TOOL_CALL_START`，事件流止于 `REQUIRE_USER_CONFIRM`，没有 RESULT
+
+    所以「叫过 Bash」不足以说明「跑过 Bash」。旧实现只看 `tool_names`，
+    把「被权限拒绝」和「跑成功了」判成同一结果：`c-003` 在 readonly 档下
+    `pytest -q` 被 DENY，仍判 pass。
+    """
 
     status: str
     final_text: str
+    # 发过调用（含被拒与被挂起）
     tool_names: list[str] = field(default_factory=list)
     # 去重后的 tool_names 只用于命中判断；预算要按真实调用次数算
     tool_call_count: int = 0
+    # 真正执行过的工具（TOOL_RESULT_END.state ∈ {success, error}）
+    executed_tools: list[str] = field(default_factory=list)
+    # 被权限拒绝的工具（TOOL_RESULT_END.state == denied）
+    denied_tools: list[str] = field(default_factory=list)
     tokens: int = 0
     latency_ms: int = 0
     workspace_dir: Path | None = None
@@ -91,19 +108,41 @@ def _order_score(must: list[str], actual: list[str]) -> tuple[bool, float]:
     return score == 1.0, score
 
 
-def _check_must(
-    must: list[str], actual_set: set[str], checks: list[Check], hard: list[str]
-) -> None:
-    """必须出现的工具缺失即硬失败。"""
-    missing = [name for name in must if name not in actual_set]
-    checks.append(
-        Check(
-            name="tool_must",
-            ok=not missing,
-            detail="缺少: " + ", ".join(missing) if missing else "全部命中",
-        )
-    )
+def _must_detail(
+    missing: list[str], not_executed: list[str], require_executed: bool
+) -> tuple[bool, str]:
+    """把「没叫」与「叫了没跑」分别说清，避免混成一句模糊的失败。"""
     if missing:
+        return False, "缺少: " + ", ".join(missing)
+    if not_executed:
+        return False, "未真正执行（被拒或待确认）: " + ", ".join(not_executed)
+    return True, "全部命中并执行" if require_executed else "全部命中"
+
+
+def _check_must(
+    must: list[str],
+    actual_set: set[str],
+    executed_set: set[str],
+    require_executed: bool,
+    checks: list[Check],
+    hard: list[str],
+) -> None:
+    """必须用到的工具：缺调用即失败；要求真正执行时，被拒/挂起也算失败。
+
+    区分三层是必需的——「发过调用」和「真的跑了」不是同一件事：
+    - 被权限拒绝（DENY）：调用发出去了，工具从未执行；
+    - 等待确认（ASK）：同样没执行，事件流里连 RESULT 都没有。
+    旧实现只看调用名，把「被拒」和「跑成功」判成同一结果。
+    """
+    missing = [name for name in must if name not in actual_set]
+    not_executed = (
+        [name for name in must if name in actual_set and name not in executed_set]
+        if require_executed
+        else []
+    )
+    ok, detail = _must_detail(missing, not_executed, require_executed)
+    checks.append(Check(name="tool_executed", ok=ok, detail=detail))
+    if not ok:
         _record(hard, "tool")
 
 
@@ -181,38 +220,82 @@ def _check_contain_any(
 # 定位断言的三种写法：`app.py:12` / `app.py 第 12 行` / `app.py line 12`。
 # 只认带行号的引用 —— `app.py 共 40 行` 这种也算提到了行数，属于可接受的宽容量。
 _CITE_TEMPLATES = (
-    r"{path}\s*[:：]\s*\d+",
-    r"{path}\s*第\s*\d+\s*行",
-    r"{path}\s+line\s*\d+",
+    r"{path}\s*[:：]\s*(?P<line>\d+)",
+    r"{path}\s*第\s*(?P<line>\d+)\s*行",
+    r"{path}\s+line\s*(?P<line>\d+)",
 )
 
 
-def _cite_hit(path: str, text: str) -> bool:
-    """正文是否给出了 `路径:行号` 形式的定位。"""
+def _cited_line(path: str, text: str) -> int | None:
+    """正文里给这个路径标的行号；没给返回 None。
+
+    多条引用时取第一条可解析的 —— 一条回答里同一文件出现多次很常见。
+    """
     escaped = re.escape(path)
-    return any(
-        re.search(template.format(path=escaped), text, re.IGNORECASE)
-        for template in _CITE_TEMPLATES
-    )
+    for template in _CITE_TEMPLATES:
+        match = re.search(template.format(path=escaped), text, re.IGNORECASE)
+        if match is not None:
+            try:
+                return int(match.group("line"))
+            except (IndexError, ValueError):  # 模板没命名组或数字异常
+                continue
+    return None
 
 
-def _check_cite(paths: list[str], text: str, checks: list[Check], hard: list[str]) -> None:
+def _cite_hit(path: str, text: str, workspace: Path | None) -> tuple[bool, str]:
+    """正文是否给出了可核对的 `路径:行号` 定位。
+
+    只有「写了行号」不够：`app.py:99999` 也是合法写法，但它指向不存在的行。
+    能读到工作区时校验行号落在文件范围内；读不到就退化为「未校验」并说明，
+    不假装核对过。
+    """
+    line = _cited_line(path, text)
+    if line is None:
+        return False, f"缺少 {path}:行号 形式的引用"
+    if workspace is None:
+        return True, f"{path}:{line}（未校验行号：运行未提供工作区）"
+    target, exists = _read_workspace_file(workspace, path)
+    if not exists:
+        return False, f"{path} 不存在，引用不可核对"
+    try:
+        total = sum(1 for _ in target.open(encoding="utf-8", errors="replace"))
+    except OSError as exc:
+        return False, f"{path} 读取失败，引用不可核对: {exc}"
+    if not 1 <= line <= total:
+        return False, f"{path}:{line} 超出文件行数（共 {total} 行）"
+    return True, f"{path}:{line} 已核对"
+
+
+def _check_cite(
+    paths: list[str],
+    text: str,
+    workspace: Path | None,
+    checks: list[Check],
+    hard: list[str],
+) -> None:
     """要求正文带行号定位；这是「真读了文件」与「把文件名抄回来」的分界线。"""
     for index, path in enumerate(paths):
-        ok = _cite_hit(path, text)
-        checks.append(
-            Check(
-                name=f"must_cite:{index}",
-                ok=ok,
-                detail=f"{path} 已定位" if ok else f"缺少 {path}:行号 形式的引用",
-            )
-        )
+        ok, detail = _cite_hit(path, text, workspace)
+        checks.append(Check(name=f"must_cite:{index}", ok=ok, detail=detail))
         if not ok:
             _record(hard, "grounding")
 
 
-def _tool_score(must: list[str], actual: list[str], actual_set: set[str], order: float) -> float:
-    """recall / precision / order 加权，扣掉多余工具，夹到 0..1。"""
+def _tool_score(
+    must: list[str],
+    actual: list[str],
+    actual_set: set[str],
+    order: float,
+    call_count: int,
+    max_total: int | None,
+) -> float:
+    """recall / precision / order 加权，扣掉多余工具与超预算调用，夹到 0..1。
+
+    两个口径不要混用：
+    - `recall` / `precision` 算的是**工具种类**（去重后的名字），衡量「选对了哪些工具」；
+    - `call_count` / `max_total` 算的是**调用次数**，衡量「用了多少次」。
+    旧实现只有前者，于是 `Bash × 99`（上限 3）仍能拿满轨迹分。
+    """
     must_set = set(must)
     matched = len(actual_set & must_set)
     recall = matched / len(must_set) if must_set else 1.0
@@ -222,13 +305,18 @@ def _tool_score(must: list[str], actual: list[str], actual_set: set[str], order:
         precision = 1.0 if not must_set else 0.0
     unexpected = len(actual_set - must_set) if must_set else len(actual_set)
     score = 0.5 * recall + 0.3 * precision + 0.2 * order - 0.1 * unexpected
+    if max_total and call_count > max_total:
+        # 超预算按超出比例扣分，最多再扣 0.2：重复调用是效率问题，不是选型问题
+        score -= 0.2 * min(1.0, (call_count - max_total) / max_total)
     return max(0.0, min(1.0, score))
 
 
 def _grade_tools(
     spec: ToolExpectations,
     actual: list[str],
+    executed: list[str],
     call_count: int,
+    require_executed: bool,
     checks: list[Check],
     hard: list[str],
 ) -> float:
@@ -236,12 +324,13 @@ def _grade_tools(
     must = _normalized(spec.must)
     forbid = set(_normalized(spec.forbid))
     actual_set = set(actual)
+    executed_set = set(executed)
 
-    _check_must(must, actual_set, checks, hard)
+    _check_must(must, actual_set, executed_set, require_executed, checks, hard)
     _check_forbidden(forbid, actual_set, checks, hard)
     _check_budget(spec.max_total, call_count, checks, hard)
     order = _check_order(spec.ordered, must, actual, checks)
-    return _tool_score(must, actual, actual_set, order)
+    return _tool_score(must, actual, actual_set, order, call_count, spec.max_total)
 
 
 def _read_workspace_file(workspace: Path, relative: str) -> tuple[Path, bool]:
@@ -330,7 +419,13 @@ def _check_patterns(
             _record(hard, kind)
 
 
-def _grade_text(expected: Expected, final_text: str, checks: list[Check], hard: list[str]) -> None:
+def _grade_text(
+    expected: Expected,
+    final_text: str,
+    workspace: Path | None,
+    checks: list[Check],
+    hard: list[str],
+) -> None:
     """正文必含 / 必不含 / 同义组 / 定位 / 正则断言。"""
     for index, needle in enumerate(expected.must_contain):
         ok = needle in final_text
@@ -343,7 +438,7 @@ def _grade_text(expected: Expected, final_text: str, checks: list[Check], hard: 
         if not ok:
             _record(hard, "safety")
     _check_contain_any(expected.must_contain_any, final_text, checks, hard)
-    _check_cite(expected.must_cite, final_text, checks, hard)
+    _check_cite(expected.must_cite, final_text, workspace, checks, hard)
     _check_patterns(expected.must_not_regex, final_text, checks, hard, forbid=True)
     _check_patterns(expected.regex, final_text, checks, hard, forbid=False)
 
@@ -365,15 +460,18 @@ def grade(case: EvalCase, result: TraceResult) -> CaseScore:
     if not status_ok:
         _record(hard, "status")
 
-    _grade_text(expected, result.final_text, checks, hard)
+    _grade_text(expected, result.final_text, result.workspace_dir, checks, hard)
 
     trajectory: float | None = None
     if expected.tool_calls is not None:
         normalized = _normalized(result.tool_names)
+        executed = _normalized(result.executed_tools)
         trajectory = _grade_tools(
             expected.tool_calls,
             normalized,
+            executed,
             result.tool_call_count or len(normalized),
+            case.require_executed,
             checks,
             hard,
         )

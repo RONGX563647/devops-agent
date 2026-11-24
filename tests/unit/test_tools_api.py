@@ -2,7 +2,7 @@
 
 from fastapi.testclient import TestClient
 
-from devops_agent.main import app
+from devops_agent.gateway.app import app
 
 client = TestClient(app)
 

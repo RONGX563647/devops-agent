@@ -1,7 +1,7 @@
 """工具能力 API —— 暴露已装配工具的 schema，以及外部依赖的就绪状态。
 
 放在 tools 包而不是 observability：schema 来自框架装配区，观测层刻意不 import
-agentscope（它只认普通 dict）。由 main.py 统一 include 两个 router。
+agentscope（它只认普通 dict）。由 gateway/app.py 统一 include 两个 router。
 """
 
 from __future__ import annotations

@@ -15,9 +15,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from devops_agent.gateway.app import app
 from devops_agent.input import attachments as att
 from devops_agent.input.attachments import Attachment, AttachmentStore, extract_text, sanitize_name
-from devops_agent.main import app
 
 client = TestClient(app)
 

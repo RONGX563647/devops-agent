@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from devops_agent.config import clear_cache
-from devops_agent.main import app
+from devops_agent.gateway.app import app
 from devops_agent.observability import repository as repo
 from devops_agent.observability.models import RunRecord, SpanRecord
 

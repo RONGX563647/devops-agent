@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from devops_agent.gateway.app import app
 from devops_agent.input import events as ev
 from devops_agent.input.pipeline import STAGE_LABELS, prepare
-from devops_agent.main import app
 from devops_agent.observability import repository as repo
 from devops_agent.observability.models import RunRecord
 from devops_agent.observability.recorder import RunRecorder

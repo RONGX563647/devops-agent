@@ -6,17 +6,41 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from math import ceil
 from typing import Any
 
 from devops_agent.eval.judge import JUDGE_DIMENSIONS
 from devops_agent.eval.kinds import (
     BLOCKING_KEYS,
-    HARD_KINDS,
     zero_counts,
 )
+from devops_agent.eval.report_render import render_markdown
+from devops_agent.eval.report_risk import (
+    ATTRIBUTED,
+    FORMAT_GATE_MIN,
+    _attribution_counts,
+    _capability_metrics,
+    _count_by,
+    _format_gate,
+    _funnel,
+    _rate,
+    _risk_counts,
+    _risk_gate_rows,
+)
 from devops_agent.eval.runner import CaseRun
+
+# 这些名字历史上从 `report` 单一模块导出；拆文件后保持路径不变，
+# 调用方（CLI / API / 测试）无需改 import。
+__all__ = [
+    "ATTRIBUTED",
+    "FORMAT_GATE_MIN",
+    "aggregate",
+    "compare",
+    "compatibility",
+    "minimal_detectable_effect",
+    "render_markdown",
+]
 
 # 指标口径：True 表示越大越好
 _METRIC_KEYS: tuple[tuple[str, bool], ...] = (
@@ -219,6 +243,24 @@ def _verdict_from_gates(gates: Sequence[dict[str, Any]], blocking_hard: bool) ->
     return "pass"
 
 
+def _verdict_from_risk(
+    gates: Sequence[dict[str, Any]], risk_gates: Sequence[dict[str, Any]], blocking_hard: bool
+) -> str:
+    """红线 > 任一分层未达 > 任一分层不可判 > 通过。
+
+    分层模式下不看 `blocking_hard`：`status`（等待确认/超时）属于 harness，
+    已在归因里排除；真正的红线由各层 `safety_failures` 逐层拦截。
+    """
+    if not risk_gates:
+        return _verdict_from_gates(gates, blocking_hard)
+    states = [str(gate.get("state")) for gate in risk_gates]
+    if "fail" in states:
+        return "fail"
+    if any(state == "insufficient" for state in states):
+        return "insufficient"
+    return "pass"
+
+
 def _judge_counts(runs: Iterable[CaseRun]) -> dict[str, int]:
     """每个 judge 维度各有几条样本（决定该门禁能不能判）。"""
     counts: dict[str, int] = {dimension: 0 for dimension in JUDGE_DIMENSIONS}
@@ -250,16 +292,21 @@ def _mean_trajectory(items: Sequence[CaseRun]) -> tuple[float | None, int]:
 
 
 def _case_rows_of(items: Sequence[CaseRun]) -> list[dict[str, Any]]:
-    """逐用例的通过快照（compare 用它算「哪几条翻转了」）。"""
+    """逐用例快照：compare 用它算翻转，前端用它做漏斗下钻。"""
     return [
-        {"case_id": run.case.id, "passed": run.score.passed, "status": run.trace.status}
+        {
+            "case_id": run.case.id,
+            "risk": run.case.risk,
+            "passed": run.score.passed,
+            "status": run.trace.status,
+            "safety_ok": run.score.safety_ok,
+            "answer_ok": run.score.answer_ok,
+            "trajectory_ok": run.score.trajectory_ok,
+            "format_ok": run.score.format_ok,
+            "attribution": run.score.attribution,
+        }
         for run in items
     ]
-
-
-def _count_by(items: Sequence[CaseRun], predicate: Callable[[CaseRun], bool]) -> int:
-    """按谓词计数（把带条件的生成器从 summary 拼装里挪出来）。"""
-    return sum(1 for run in items if predicate(run))
 
 
 def _cache_stats(items: Sequence[CaseRun]) -> dict[str, float | int | None]:
@@ -287,6 +334,7 @@ def _summary_payload(
     items: Sequence[CaseRun],
     *,
     gates: list[dict[str, Any]],
+    risk_gates: list[dict[str, Any]],
     judge_means: dict[str, float] | None,
     trajectory: float | None,
     min_cases_for_gate: int,
@@ -302,7 +350,9 @@ def _summary_payload(
     return {
         "n": n,
         "passed": passed,
-        "pass_rate": round(passed / n, 4) if n else 0.0,
+        "pass_rate": _rate(passed, n),
+        # v3 门禁主指标：排除 harness/assertion/format/budget 后的真实能力通过率。
+        **_capability_metrics(items),
         "hard_failures": _count_hard(items),
         "hard_blocking": _count_by(items, _is_blocking),
         "hard_scoring": _count_by(items, _is_scoring_only),
@@ -310,12 +360,16 @@ def _summary_payload(
         "trajectory_score": trajectory,
         "p95_ms": _p95([run.latency_ms for run in items]),
         "tokens_total": sum(run.tokens for run in items),
+        # 每条「能力通过」摊到的 token；true 成本比平均分更能防退步。
         **_cache_stats(items),
         "tags": _tag_counts(items),
         "subjects": _subject_counts(items),
+        "risk": _risk_counts(items),
+        "funnel": _funnel(items),
+        "attribution": _attribution_counts(items),
         "min_cases_for_gate": min_cases_for_gate,
-        "gates": gates,
-        "verdict": _verdict_from_gates(gates, has_blocking),
+        "gates": [*gates, *risk_gates],
+        "verdict": _verdict_from_risk(gates, risk_gates, has_blocking),
         "cases": _case_rows_of(items),
     }
 
@@ -324,29 +378,46 @@ def aggregate(
     runs: Iterable[CaseRun],
     min_cases_for_gate: int = 40,
     thresholds: dict[str, Any] | None = None,
+    risk_thresholds: dict[str, float] | None = None,
+    min_cases_per_risk: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """把一组用例运行聚合成 summary_json。
 
     `thresholds` 来自 manifest；缺省用 DEFAULT_THRESHOLDS。
-    verdict 由 gates 归约而来，不再是一句 `n < 40 → insufficient` 的硬编码。
+    声明了 `risk_thresholds` 时改为分层门禁，旧的全局 `pass_rate` 只展示不判。
     """
     items = list(runs)
     passed = sum(1 for run in items if run.score.passed)
     trajectory, trajectory_n = _mean_trajectory(items)
     judge_means = _judge_means(items)
-    gates = _gate_rows(
-        passed=passed,
-        n=len(items),
-        judge_means=judge_means,
-        judge_counts=_judge_counts(items),
-        trajectory=trajectory,
-        trajectory_n=trajectory_n,
-        thresholds=_normalized_thresholds(thresholds),
-        min_cases_for_gate=min_cases_for_gate,
-    )
+    risk_gates: list[dict[str, Any]] = []
+    gates: list[dict[str, Any]] = []
+    if risk_thresholds:
+        risk_gates = _risk_gate_rows(
+            _risk_counts(items),
+            risk_thresholds,
+            min_cases_per_risk or {},
+            min_cases_for_gate,
+            len(items),
+        )
+        # 引用/格式单列门禁：能力口径排除了 format，必须另设一根线，
+        # 否则「答案对了但从不给 路径:行号」会被能力通过率完全掩盖。
+        risk_gates.append(_format_gate(items))
+    else:
+        gates = _gate_rows(
+            passed=passed,
+            n=len(items),
+            judge_means=judge_means,
+            judge_counts=_judge_counts(items),
+            trajectory=trajectory,
+            trajectory_n=trajectory_n,
+            thresholds=_normalized_thresholds(thresholds),
+            min_cases_for_gate=min_cases_for_gate,
+        )
     return _summary_payload(
         items,
         gates=gates,
+        risk_gates=risk_gates,
         judge_means=judge_means,
         trajectory=trajectory,
         min_cases_for_gate=min_cases_for_gate,
@@ -590,191 +661,3 @@ def compare(report: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
         "baseline_pass_rate": baseline.get("pass_rate"),
         "hard_failures": hard if isinstance(hard, dict) else {},
     }
-
-
-def _fmt(value: object) -> str:
-    if value is None:
-        return "-"
-    if isinstance(value, float):
-        return f"{value:.4g}"
-    return str(value)
-
-
-def _render_compare(metrics: list[Any]) -> list[str]:
-    """基线对比表。"""
-    lines = [
-        "## 基线对比",
-        "",
-        "| 指标 | 基线 | 当前 | Δ | 更好 |",
-        "| --- | --- | --- | --- | --- |",
-    ]
-    for item in metrics:
-        if not isinstance(item, dict):
-            continue
-        lines.append(
-            f"| {item.get('key')} | {_fmt(item.get('base'))} | {_fmt(item.get('head'))} "
-            f"| {_fmt(item.get('delta'))} | {_fmt(item.get('better'))} |"
-        )
-    lines.append("")
-    return lines
-
-
-def _render_hard(hard: dict[str, Any]) -> list[str]:
-    """硬失败分类表：阻断类与计分类分开，全部 7 类都出现。
-
-    只渲染 3 类会让「14/15 通过、结论 fail」的报告看起来像「零硬失败」。
-    """
-    lines = [
-        "## 硬失败",
-        "",
-        "| 分类 | 严重度 | 次数 | 说明 |",
-        "| --- | --- | --- | --- |",
-    ]
-    for kind in HARD_KINDS:
-        severity = "阻断" if kind.severity == "blocking" else "计分"
-        lines.append(
-            f"| {kind.label}（{kind.key}） | {severity} | {hard.get(kind.key, 0)} | {kind.hint} |"
-        )
-    lines.append("")
-    return lines
-
-
-def _render_judge(judge: dict[str, Any]) -> list[str]:
-    """Judge 各维度均值表。"""
-    lines = ["## Judge 均值", "", "| 维度 | 分数 |", "| --- | --- |"]
-    for dimension in JUDGE_DIMENSIONS:
-        if dimension in judge:
-            lines.append(f"| {dimension} | {_fmt(judge[dimension])} |")
-    lines.append("")
-    return lines
-
-
-def _render_tags(tags: dict[str, Any]) -> list[str]:
-    """标签分布表。"""
-    lines = ["## 标签分布", "", "| 标签 | 用例 | 通过 |", "| --- | --- | --- |"]
-    for tag, bucket in sorted(tags.items()):
-        if isinstance(bucket, dict):
-            lines.append(f"| {tag} | {bucket.get('n', 0)} | {bucket.get('passed', 0)} |")
-    lines.append("")
-    return lines
-
-
-def _render_subjects(subjects: dict[str, Any]) -> list[str]:
-    """按 subject 归因：这次分数变化能归到哪个被测因子。
-
-    这套分组此前算出来却从不渲染，「capability 类用例不算提示词因果」
-    这个设计意图在报告里完全看不见。
-    """
-    lines = [
-        "## 归因分布",
-        "",
-        "| 被测因子 | 用例 | 通过 | 通过率 |",
-        "| --- | --- | --- | --- |",
-    ]
-    for subject, bucket in sorted(subjects.items()):
-        if not isinstance(bucket, dict):
-            continue
-        n = bucket.get("n", 0)
-        passed = bucket.get("passed", 0)
-        rate = f"{passed / n:.1%}" if n else "-"
-        lines.append(f"| {subject} | {n} | {passed} | {rate} |")
-    lines.append("")
-    return lines
-
-
-_GATE_REASON_TEXT: dict[str, str] = {
-    "n_below_gate": "题库样本不足",
-    "no_samples": "裁判未运行",
-    "samples_below_min": "裁判样本不足",
-}
-
-
-def _render_gates(gates: list[Any]) -> list[str]:
-    """门禁三态表：通过的、未达的、样本不足的分开看。"""
-    state_text = {"pass": "通过", "fail": "未达", "insufficient": "样本不足"}
-    lines = [
-        "## 门禁",
-        "",
-        "| 指标 | 值 | 阈值 | 样本 | 结论 | 原因 |",
-        "| --- | --- | --- | --- | --- | --- |",
-    ]
-    for gate in gates:
-        if not isinstance(gate, dict):
-            continue
-        reason = _GATE_REASON_TEXT.get(str(gate.get("reason") or ""), "-")
-        lines.append(
-            f"| {gate.get('key')} | {_fmt(gate.get('value'))} | {_fmt(gate.get('min'))} "
-            f"| {_fmt(gate.get('samples'))} | {state_text.get(str(gate.get('state')), '-')} "
-            f"| {reason} |"
-        )
-    lines.append("")
-    return lines
-
-
-def _render_compatibility(compat: dict[str, Any]) -> list[str]:
-    """可比性结论：不可比时必须显式写出来，否则 delta 会被当成结论。"""
-    level = str(compat.get("level") or "")
-    if level in ("", "clean"):
-        return []
-    label = {"blocking": "不可比", "confounded": "混杂", "unknown": "未知"}.get(level, level)
-    reasons = compat.get("reasons")
-    detail = "；".join(str(item) for item in reasons) if isinstance(reasons, list) else ""
-    return [f"- 可比性：**{label}** —— {detail}", ""]
-
-
-# 报告的节次顺序：容器类型不对就跳过（残缺 summary 也要能渲染），
-# `keep_empty` 表示空容器仍渲染表头（对比表没有数据也要说明「没有变化」）。
-_SECTIONS: tuple[tuple[str, type, bool, Callable[[Any], list[str]]], ...] = (
-    ("compatibility", dict, True, _render_compatibility),
-    ("gates", list, False, _render_gates),
-    ("metrics", list, True, _render_compare),
-    ("hard_failures", dict, True, _render_hard),
-    ("judge", dict, False, _render_judge),
-    ("subjects", dict, False, _render_subjects),
-    ("tags", dict, False, _render_tags),
-)
-
-
-def _render_header(summary: dict[str, Any]) -> list[str]:
-    lines = ["# 评测报告", "", f"- 结论：**{summary.get('verdict', '-')}**"]
-    if "n" in summary:
-        lines.append(
-            f"- 用例：{summary.get('passed', 0)}/{summary.get('n', 0)} 通过"
-            f"（pass_rate {_fmt(summary.get('pass_rate'))}）"
-        )
-    mde = summary.get("mde")
-    if isinstance(mde, (int, float)):
-        lines.append(
-            f"- 精度上限：n={summary.get('n', '-')}，小于 {float(mde) * 100:.1f}pp 的变化不显著"
-        )
-    return [*lines, ""]
-
-
-def _render_sections(summary: dict[str, Any]) -> list[str]:
-    lines: list[str] = []
-    for key, kind, keep_empty, render in _SECTIONS:
-        value = summary.get(key)
-        if isinstance(value, kind) and (value or keep_empty):
-            lines.extend(render(value))
-    return lines
-
-
-def render_markdown(summary: dict[str, Any]) -> str:
-    """把聚合报告（或对比报告）渲染成可提交到 PR 的 Markdown。"""
-    lines = _render_header(summary)
-    lines.extend(_render_sections(summary))
-    rate = summary.get("cache_hit_rate")
-    cache_text = (
-        f"；前缀缓存命中 {rate * 100:.1f}%"
-        f"（命中 {_fmt(summary.get('cache_input'))}"
-        f" / 写入 {_fmt(summary.get('cache_creation'))}）"
-        if isinstance(rate, (int, float))
-        else "；前缀缓存：无数据"
-    )
-    lines.append(
-        f"- 轨迹分：{_fmt(summary.get('trajectory_score'))}；"
-        f"p95：{_fmt(summary.get('p95_ms'))} ms；"
-        f"tokens：{_fmt(summary.get('tokens_total'))}"
-        f"{cache_text}"
-    )
-    return "\n".join(lines).rstrip() + "\n"

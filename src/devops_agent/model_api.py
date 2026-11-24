@@ -140,9 +140,7 @@ def _save_stored(merged: dict[str, Any], *, expected: int) -> int:
 
 
 @router.get("/api/model-config")
-def read_model_config(
-    session: str | None = None, domain: str = DEFAULT_DOMAIN
-) -> dict[str, Any]:
+def read_model_config(session: str | None = None, domain: str = DEFAULT_DOMAIN) -> dict[str, Any]:
     """当前生效参数 + 逐项来源 + 边界 + 派生值。
 
     `session` 给了就把该会话的覆盖一起算进来（前端面板打开时用）。

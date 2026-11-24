@@ -27,13 +27,22 @@ from devops_agent.eval.dataset import (
     load_suite,
     manifest_path_for,
     scenario_of,
-    split_warnings,
     suite_sha256,
-    validate_suite,
 )
 from devops_agent.eval.judge import JudgeError, OpenAIJudge, resolve_judge_model
-from devops_agent.eval.lint import Finding, run_lint, split_findings
+from devops_agent.eval.known_issues import (
+    apply_known_issues,
+    load_known_issues,
+    print_findings,
+)
+from devops_agent.eval.lint import run_lint, split_findings
+from devops_agent.eval.preflight import (
+    has_credentials,
+    preflight_blocked,
+    run_preflight,
+)
 from devops_agent.eval.runner import DEFAULT_FIXTURE_ROOT, CaseRun, case_run_payload, run_suite
+from devops_agent.eval.validation import split_warnings, validate_suite
 from devops_agent.observability import repository as repo
 from devops_agent.runtime.prompt import PROMPT_ID, prompt_factors, prompt_fingerprint
 
@@ -63,6 +72,14 @@ def cmd_validate(args: argparse.Namespace) -> int:
     messages = validate_suite(suite)
     _print_errors(messages)
     errors, warnings = split_warnings(messages)
+    if args.solvable:
+        problems = run_preflight(suite.cases, _fixture_root_for(args.suite))
+        for problem in problems:
+            print(f"[preflight] {problem}", file=sys.stderr)
+        if problems:
+            print(f"错误: {len(problems)} 条用例不可解，先修题再跑模型", file=sys.stderr)
+            return 1
+        print(f"preflight ok: {len(suite.cases)} cases 可解")
     if errors:
         return 1
     if args.strict and warnings:
@@ -75,72 +92,14 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_known_issues(path: str | None) -> set[tuple[str, str]]:
-    """读取「已接受的静态检查违规」清单：`{rule, where}` 二元组集合。
-
-    存在的理由：新规则一定会先在**存量**题库上报警（这正是它的价值），
-    但 CI 不能因此长期变红。把已知违规显式列出来，既能立刻启用规则挡住新增，
-    又不必为了绿灯而关掉规则。
-
-    清单项必须真实存在——对不上的条目会让命令失败，避免债务清单变成永久豁免。
-    """
-    if not path:
-        return set()
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    rows = raw.get("accepted", []) if isinstance(raw, dict) else raw
-    known: set[tuple[str, str]] = set()
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        rule = str(row.get("rule") or "").strip()
-        where = str(row.get("where") or "").strip()
-        if rule and where:
-            known.add((rule, where))
-    return known
-
-
-def _apply_known_issues(
-    errors: Sequence[Finding], known: set[tuple[str, str]]
-) -> tuple[list[Finding], list[Finding], list[tuple[str, str]]]:
-    """把已知违规从 error 里摘出来。
-
-    返回 `(仍阻断的 error, 已接受的 error, 失效清单项)`。
-    失效清单项指：清单里有、但这次没再出现的条目——说明它被修好了，
-    应该从清单里删掉，否则豁免会一直留着。
-    """
-    if not known:
-        return list(errors), [], []
-    blocking: list[Finding] = []
-    accepted: list[Finding] = []
-    seen: set[tuple[str, str]] = set()
-    for item in errors:
-        key = (item.rule, item.where)
-        if key in known:
-            accepted.append(item)
-            seen.add(key)
-        else:
-            blocking.append(item)
-    stale = sorted(known - seen)
-    return blocking, accepted, stale
-
-
-def _print_findings(findings: Sequence[Finding]) -> None:
-    """error 走 stderr、warning 走 stdout，方便 CI 日志里一眼分开。"""
-    for item in findings:
-        stream = sys.stderr if item.level == "error" else sys.stdout
-        print(f"[{item.level}] {item.rule} {item.where}: {item.message}", file=stream)
-        if item.hint:
-            print(f"         hint: {item.hint}", file=stream)
-
-
 def cmd_prompt_lint(args: argparse.Namespace) -> int:
     """静态契约检查：不跑模型，查提示词 / 档位 / 题库是否自洽。"""
     suite = load_suite(args.suite) if args.suite else None
     fixture_root = _fixture_root_for(args.suite) if args.suite else None
     findings = run_lint(suite, fixture_root)
     errors, warnings = split_findings(findings)
-    known = _load_known_issues(args.known_issues)
-    blocking, accepted, stale = _apply_known_issues(errors, known)
+    known = load_known_issues(args.known_issues)
+    blocking, accepted, stale = apply_known_issues(errors, known)
     if args.json:
         payload = [
             {
@@ -156,8 +115,8 @@ def cmd_prompt_lint(args: argparse.Namespace) -> int:
     else:
         # 未拦下的 error 与已接受的 error 都要走 stderr：前者才是阻断项，
         # 但后者的级别仍是 error，混进 stdout 会让「有 error 却 err 为空」。
-        _print_findings([*blocking, *accepted])
-        _print_findings(warnings)
+        print_findings([*blocking, *accepted])
+        print_findings(warnings)
         if accepted:
             print(f"已接受（见 {args.known_issues}）：{len(accepted)} 条，清理后请从清单删除对应项")
         if stale:
@@ -183,6 +142,9 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         update={
             "sha256": suite_sha256(suite.cases),
             "counts": dict(sorted(counts.items())),
+            "risk_counts": dict(
+                sorted(Counter(case.risk for case in suite.cases if case.risk is not None).items())
+            ),
             "grader_version": GRADER_VERSION,
         }
     )
@@ -279,6 +241,22 @@ def _print_summary(summary: dict[str, Any], batch_id: int) -> None:
         f"batch={batch_id} n={summary['n']} passed={summary['passed']} "
         f"pass_rate={summary['pass_rate']:.2%} verdict={summary['verdict']}"
     )
+    print(
+        f"capability={summary.get('capability_passed')} "
+        f"({summary.get('capability_pass_rate')}) "
+        f"attributed={summary.get('attributed_pass_rate')} "
+        f"tokens/solved={summary.get('tokens_per_solved_case')}"
+    )
+    funnel = summary.get("funnel")
+    if isinstance(funnel, list):
+        print("funnel=" + " → ".join(f"{row['stage']}:{row['n']}" for row in funnel))
+    risk = summary.get("risk")
+    if isinstance(risk, dict):
+        for layer, bucket in risk.items():
+            print(
+                f"risk={layer} n={bucket['n']} capability={bucket['capability']} "
+                f"rate={bucket['capability_rate']} red_line={bucket['safety_failures']}"
+            )
     hard = summary.get("hard_failures", {})
     print(f"hard_failures={hard}")
     gates = summary.get("gates")
@@ -390,7 +368,7 @@ def _exit_code(summary: dict[str, Any], allow_warn: bool) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     """真实运行一套用例并落库、写报告。"""
     load_env()
-    if not os.environ.get("DEVOPS_AGENT_API_KEY"):
+    if not has_credentials():
         print(
             "错误: 缺少 DEVOPS_AGENT_API_KEY，无法运行真实模型评测。"
             "请先在 .env 或环境变量中配置模型凭据。",
@@ -399,6 +377,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
 
     suite = load_suite(args.suite)
+    # 先做可解性预检：用例引用了不存在的文件、用了档位里没有的工具，
+    # 跑再多次也只会得到 0 分，而且会把「题坏了」记成「模型差」。
+    if preflight_blocked(suite, _fixture_root_for(args.suite)):
+        return 2
     judge, judge_error = _init_judge(args.judge)
     if judge_error:
         print(judge_error, file=sys.stderr)
@@ -424,6 +406,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         runs,
         suite.manifest.min_cases_for_gate,
         thresholds=_thresholds(suite),
+        risk_thresholds=suite.manifest.risk_thresholds or None,
+        min_cases_per_risk=suite.manifest.min_cases_per_risk,
     )
     summary.update(_factors(suite, profile, args.judge, args.judge_scope))
     if args.baseline:
@@ -487,6 +471,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--strict",
         action="store_true",
         help="warning 也视为阻断（题库达门禁量后 CI 应开启）",
+    )
+    validate.add_argument(
+        "--solvable",
+        action="store_true",
+        help="同时做可解性预检（fixture/引用文件/工具档位）",
     )
     validate.set_defaults(func=cmd_validate)
 

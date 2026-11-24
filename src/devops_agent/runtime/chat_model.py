@@ -122,7 +122,11 @@ def build_chat_model(
     return OpenAIChatModel(
         credential=credential,
         model=model_name,
-        parameters=OpenAIChatModel.Parameters(**active.sampling()),
+        # None 必须过滤掉：`Parameters` 里 `thinking_enable` 是非空 bool，
+        # 传 None 会被 pydantic 判成类型错误（框架 2.0.10 实测）。
+        parameters=OpenAIChatModel.Parameters(
+            **{key: value for key, value in active.sampling().items() if value is not None}
+        ),
         stream=True,
         max_retries=active.model_max_retries,
         context_size=active.context_size,

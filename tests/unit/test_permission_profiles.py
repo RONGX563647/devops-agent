@@ -66,7 +66,9 @@ def test_only_readonly_profile_denies_writes(tmp_path: Path) -> None:
         engine = PermissionEngine(
             build_permission_context(profile=PROFILES[profile_key], workdir=tmp_path)
         )
-        tool = Write(backend=LocalBackend(workdir=str(tmp_path)))
+        # agentscope 2.x 的 LocalBackend 不接受 workdir；判定只看 permission
+        # context 里登记的 working_directories，与 backend 的 cwd 无关。
+        tool = Write(backend=LocalBackend())
         decision = asyncio.run(engine.check_permission(tool, {"file_path": target, "content": "x"}))
         return decision.behavior.value
 

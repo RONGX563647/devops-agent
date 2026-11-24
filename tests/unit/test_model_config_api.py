@@ -142,9 +142,7 @@ def test_session_override_wins_and_is_hot_swapped(hot: HotRuntime) -> None:
     assert hot.applied[-1].temperature == 0.2
     assert hot.applied[-1].max_iters == 30
     # 合并语义：另一次 PATCH 只改一项，不把之前的覆盖冲掉
-    body = client.patch(
-        "/api/session/s1/model-config", json={"overrides": {"top_p": 0.5}}
-    ).json()
+    body = client.patch("/api/session/s1/model-config", json={"overrides": {"top_p": 0.5}}).json()
     assert body["overrides"] == {"temperature": 0.2, "max_iters": 30, "top_p": 0.5}
 
 

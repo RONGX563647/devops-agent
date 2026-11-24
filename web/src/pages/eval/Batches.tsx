@@ -29,6 +29,7 @@ import {
 } from '../quality/charts';
 import { CaseRow } from './CaseRow';
 import { ComparePanel } from './Compare';
+import { QualityDiagnostics, RateMetrics } from './Diagnostics';
 import { GatesTable } from './GatesTable';
 import { VerdictBadge } from './VerdictBadge';
 import {
@@ -275,6 +276,7 @@ export function EvalBatches() {
                 tone={rateTone}
                 badge={sampleBadge}
               />
+              <RateMetrics batch={batch} badge={sampleBadge} />
               <MetricCard
                 label="正确性"
                 value={correctness === null ? null : `${correctness.toFixed(2)} / 5`}
@@ -306,6 +308,9 @@ export function EvalBatches() {
 
             <h3>门禁</h3>
             <GatesTable batch={batch} />
+
+            <h3>质量诊断</h3>
+            <QualityDiagnostics batch={batch} />
           </section>
 
           <section className="panel">

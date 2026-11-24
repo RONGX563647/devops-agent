@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   deleteAttachment,
   fetchHealth,
+  fetchModelConfig,
   switchSessionPermission,
   uploadAttachment,
 } from '../api/client';
@@ -17,9 +18,11 @@ import type {
 import { newId } from './id';
 import { extractLinks } from './links';
 import { Markdown } from './Markdown';
+import { ModelConfigPopover } from './ModelConfigPopover';
 import { PermissionCard } from './PermissionCard';
 import { PermissionPicker } from './PermissionPicker';
 import { confirm, refreshPending, send, setPermission, stop, useSession } from './store';
+import { CompressionTimeline, ContextRing } from './ContextRing';
 import { StepList } from './StepRow';
 import { formatClock } from './time';
 import { TraceRail } from './TraceRail';
@@ -217,6 +220,15 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
     retry: 1,
   });
   const degraded = health.data?.runtime?.kind === 'echo';
+  // 模型参数：面板与 chat-meta 的「参数已改」标记共用同一份数据，
+  // 拉两次会出现「面板说改了、标记说没改」。
+  const modelConfig = useQuery({
+    queryKey: ['model-config', session],
+    queryFn: () => fetchModelConfig(session),
+    staleTime: 30_000,
+    retry: 1,
+  });
+  const overrideCount = Object.keys(modelConfig.data?.overrides ?? {}).length;
   const [input, setInput] = useState('');
   // 联网搜索：跟 DeepSeek 一样做成输入框下方的显式开关，默认关，逐轮生效
   const [webSearch, setWebSearch] = useState(false);
@@ -484,6 +496,8 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
         onLocate={(turn) => locate(turn.id)}
         onOpenTrace={onOpenTrace}
       />
+      {/* 压缩过程贴着输入框：它解释的是「为什么接下来的回答变短了」。 */}
+      <CompressionTimeline records={view.compressions} />
       <div className="chat-composer">
         <div className="chat-compose">
           {files.length > 0 && (
@@ -547,6 +561,12 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
           />
           <div className="composer-bar">
             <PermissionPicker current={view.permission} onChange={changePermission} />
+            <ModelConfigPopover
+              session={session}
+              config={modelConfig.data}
+              contextTokens={view.contextTokens}
+              onChanged={() => void modelConfig.refetch()}
+            />
             <button
               type="button"
               className={`search-toggle${webSearch ? ' is-on' : ''}`}
@@ -587,6 +607,12 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
                     ? '生成中，仍可切档；停止后可发送新消息'
                     : 'Enter 发送 · Shift+Enter 换行')}
             </span>
+            <ContextRing
+              tokens={view.contextTokens}
+              threshold={view.contextThreshold}
+              contextSize={view.contextSize}
+              busy={view.compressions.some((item) => item.state === 'running')}
+            />
             {view.running && (
               <button className="send-btn stop" onClick={() => stop(session)}>
                 停止
@@ -608,6 +634,11 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
             {view.inputTokens} in / {view.outputTokens} out
           </span>
           {view.modelName && <span className="mono">{view.modelName}</span>}
+          {overrideCount > 0 && (
+            <span className="chat-meta-override" title="本会话有模型参数覆盖，点齿轮可查看">
+              参数已改 {overrideCount}
+            </span>
+          )}
           {view.runId !== null && <span>run #{view.runId}</span>}
         </div>
       </div>

@@ -156,6 +156,10 @@ def _batch_out(row: dict[str, object]) -> dict[str, Any]:
         "trajectory_score": summary.get("trajectory_score"),
         "p95_ms": _summary_int(summary, "p95_ms"),
         "tokens_total": _summary_int(summary, "tokens_total"),
+        # 前缀缓存：命中率是「提示词布局改动是否毁了缓存」的唯一可观察口径
+        "cache_input": _summary_int(summary, "cache_input"),
+        "cache_creation": _summary_int(summary, "cache_creation"),
+        "cache_hit_rate": summary.get("cache_hit_rate"),
         "cost_total": _summary_float(summary, "cost_total"),
         "baseline_id": summary.get("baseline_id"),
         "verdict": _verdict(row, summary),
@@ -332,6 +336,8 @@ def _series_point(row: dict[str, object]) -> dict[str, Any]:
         "hard_scoring": scoring,
         "verdict": _verdict(row, summary),
         "prompt_hash": _text(row, "prompt_sha"),
+        # 趋势图要看「缓存命中率有没有掉」：提示词布局改坏时它先掉
+        "cache_hit_rate": summary.get("cache_hit_rate"),
     }
 
 

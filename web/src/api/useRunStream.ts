@@ -5,6 +5,7 @@
 
 import type {
   AwaitingState,
+  CompressionRecord,
   ConfirmDecision,
   ParseStage,
   ProcessEntry,
@@ -19,6 +20,17 @@ export interface StreamState {
   outputTokens: number;
   /** 命中前缀缓存的输入 token，用于底部遥测栏的缓存命中率。 */
   cacheInputTokens: number;
+  /**
+   * 当前上下文占用（token）：取最近一次模型调用回传的 prompt 大小。
+   * 这是「窗口里现在有多少」的实测值，不是本轮累计消耗 —— 两者差一个数量级。
+   */
+  contextTokens: number | null;
+  /** 触发压缩的阈值（默认 0.8 × 窗口 = 102400），由 CONTEXT_BUDGET 下发。 */
+  contextThreshold: number | null;
+  /** 模型窗口大小，用于显示「103k / 128k 窗口」。 */
+  contextSize: number | null;
+  /** 已发生的上下文压缩记录，按时间正序；只保留真正压过的。 */
+  compressions: CompressionRecord[];
   runId: number | null;
   error: string | null;
   modelName: string;
@@ -37,6 +49,10 @@ export const INITIAL_STATE: StreamState = {
   inputTokens: 0,
   outputTokens: 0,
   cacheInputTokens: 0,
+  contextTokens: null,
+  contextThreshold: null,
+  contextSize: null,
+  compressions: [],
   runId: null,
   error: null,
   modelName: '',
@@ -66,9 +82,97 @@ function eventAt(event: StreamEvent): string {
   return event.created_at ?? new Date().toISOString();
 }
 
+/**
+ * agentscope 在接近阈值时会注入一句上下文长度提示（包在 <system-reminder> 里）：
+ * 「Your current context contains 103053 tokens. When reaching 102400 tokens,
+ * your context will be compressed.」
+ *
+ * 这是首次模型调用返回之前唯一能点亮圆环的精确数字，所以先抓数、再决定要不要展示。
+ */
+const CONTEXT_HINT = /contains (\d+) tokens[\s\S]*?reaching (\d+) tokens/i;
+
+export function parseContextHint(hint: string): { tokens: number; threshold: number } | null {
+  const matched = CONTEXT_HINT.exec(hint);
+  if (!matched) return null;
+  return { tokens: Number(matched[1]), threshold: Number(matched[2]) };
+}
+
+/** 压缩记录 id：优先用事件时间戳，同一毫秒内的重复压缩退回复位置。 */
+function compressionId(event: StreamEvent): string {
+  return `comp:${event.created_at ?? event.reply_id ?? 'x'}`;
+}
+
+/** 找最后一条还没结束的压缩记录（START 之后、END 之前）。 */
+function openCompression(records: CompressionRecord[]): CompressionRecord | undefined {
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    if (records[index].state === 'running') return records[index];
+  }
+  return undefined;
+}
+
+/** 一条压缩记录的初始形态：START 用它建行，缺 START 的 END 也用它兜底。 */
+function beginCompression(state: StreamState, event: StreamEvent): CompressionRecord {
+  return {
+    id: compressionId(event),
+    before: event.before_tokens ?? 0,
+    after: null,
+    threshold: event.threshold ?? state.contextThreshold ?? 0,
+    state: 'running',
+    summaryChars: 0,
+    at: eventAt(event),
+    endedAt: null,
+  };
+}
+
+/** END 帧折成记录上的补丁：有没有真压决定 state 与 after。 */
+function endPatch(
+  event: StreamEvent,
+  running: CompressionRecord | undefined,
+): Pick<CompressionRecord, 'after' | 'state' | 'summaryChars' | 'endedAt'> {
+  const compressed = event.compressed === true;
+  return {
+    after: compressed ? (event.after_tokens ?? null) : null,
+    state: compressed ? 'done' : 'skipped',
+    summaryChars: event.summary_chars ?? running?.summaryChars ?? 0,
+    endedAt: event.created_at ?? null,
+  };
+}
+
+/** 把 END 事件折进记录列表：有 START 就收尾，没有就补一条完整的。 */
+function closeCompression(state: StreamState, event: StreamEvent): StreamState {
+  const running = openCompression(state.compressions);
+  const patch = endPatch(event, running);
+  const compressions = running
+    ? state.compressions.map((item) => (item.id === running.id ? { ...item, ...patch } : item))
+    : [...state.compressions, { ...beginCompression(state, event), ...patch }];
+  return {
+    ...state,
+    compressions,
+    // 压完之后当下占用就是压缩后的量；没压则保持原值
+    contextTokens: patch.after ?? state.contextTokens,
+    contextThreshold: event.threshold ?? state.contextThreshold,
+  };
+}
+
 /** 工具步骤以 tool_call_id 为稳定键；缺省才回落到 block_id / reply_id。 */
 function toolStepId(event: StreamEvent): string {
   return `tool:${event.tool_call_id ?? event.block_id ?? event.reply_id ?? 'x'}`;
+}
+
+/** 一次模型调用落在步骤上的展示字段（统计口径在 handler 里单独累加）。 */
+function modelCallPatch(event: StreamEvent) {
+  return {
+    state: 'success' as const,
+    endedAt: event.created_at ?? null,
+    tokensIn: event.input_tokens,
+    tokensOut: event.output_tokens,
+    cacheTokens: event.cache_input_tokens,
+  };
+}
+
+/** 模型步骤标题：带序号，多轮工具调用时能分清是哪一次。 */
+function modelCallLabel(event: StreamEvent, callIndex: number): string {
+  return `模型调用 · ${event.model_name ?? '模型'} · #${callIndex}`;
 }
 
 /** 输入解析按 block_id 归并成一条父步骤，各阶段挂在 parseStages 上。 */
@@ -282,6 +386,22 @@ const HANDLERS: Record<string, EventHandler> = {
     };
   },
 
+  // 上下文预算与压缩：圆环与压缩时间线全靠这三类帧。
+  // 预算在流最开始到达一次；压缩帧由后端钩子在每次推理前的检查中发出。
+  CONTEXT_BUDGET: (s, e) => ({
+    ...s,
+    contextThreshold: e.threshold ?? s.contextThreshold,
+    contextSize: e.context_size ?? s.contextSize,
+  }),
+  CONTEXT_COMPRESSION_START: (s, e) => ({
+    ...s,
+    contextThreshold: e.threshold ?? s.contextThreshold,
+    // 压缩前这一刻的占用就是圆环该显示的当前值
+    contextTokens: e.before_tokens ?? s.contextTokens,
+    compressions: [...s.compressions, beginCompression(s, e)],
+  }),
+  CONTEXT_COMPRESSION_END: (s, e) => closeCompression(s, e),
+
   REPLY_START: (s, e) => ({
     ...s,
     startedAt: e.created_at ?? s.startedAt,
@@ -326,19 +446,15 @@ const HANDLERS: Record<string, EventHandler> = {
       inputTokens: s.inputTokens + (e.input_tokens ?? 0),
       outputTokens: s.outputTokens + (e.output_tokens ?? 0),
       cacheInputTokens: s.cacheInputTokens + (e.cache_input_tokens ?? 0),
+      // 本次调用的 prompt 大小 = 此刻上下文占用；首次调用前圆环只能靠 hint 估
+      contextTokens: e.input_tokens ?? s.contextTokens,
       steps: patchStep(
         s.steps,
         open?.id ?? modelStepId(replyId, callIndex),
-        {
-          state: 'success',
-          endedAt: e.created_at ?? null,
-          tokensIn: e.input_tokens,
-          tokensOut: e.output_tokens,
-          cacheTokens: e.cache_input_tokens,
-        },
+        modelCallPatch(e),
         {
           kind: 'model',
-          label: `模型调用 · ${e.model_name ?? '模型'} · #${callIndex}`,
+          label: modelCallLabel(e, callIndex),
           detail: '',
           state: 'success',
           at: eventAt(e),
@@ -349,11 +465,17 @@ const HANDLERS: Record<string, EventHandler> = {
     };
   },
   HINT_BLOCK: (s, e) => {
+    // 上下文长度提示同样裹在 <system-reminder> 里，但它带精确 token 数：
+    // 先抓数（圆环据此提前点亮），再决定要不要作为步骤展示。
+    const context = parseContextHint(e.hint ?? '');
+    const base: StreamState = context
+      ? { ...s, contextTokens: context.tokens, contextThreshold: context.threshold }
+      : s;
     // AgentScope 会把系统提醒（如当前时间）也作为 HINT_BLOCK 发出，与执行过程无关。
-    if (!e.hint || e.hint.includes('<system-reminder>')) return s;
+    if (!e.hint || e.hint.includes('<system-reminder>')) return base;
     return {
-      ...s,
-      steps: upsertStep(s.steps, {
+      ...base,
+      steps: upsertStep(base.steps, {
         id: blockStepId(e, 'hint'),
         kind: 'lifecycle',
         label: e.source ? `分析提示 · ${e.source}` : '分析提示',

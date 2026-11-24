@@ -67,6 +67,21 @@ def _add_tokens(event: dict[str, Any]) -> int:
     return total
 
 
+def _add_cache_tokens(event: dict[str, Any]) -> tuple[int, int]:
+    """累加 (cache_input, cache_creation)；字段缺失按 0 处理。
+
+    这两个字段在 `ModelCallEndEvent` 上已有（投影层也放行），但 eval 此前从不读，
+    于是「把档位说明挪到消息末尾」那个改动（前缀命中 21% → 96%）在报告里
+    没有任何位置可以观察——分数不动，tokens 总量只挪一点点。
+    """
+
+    def _int(key: str) -> int:
+        value = event.get(key, 0)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    return _int("cache_input_tokens"), _int("cache_creation_input_tokens")
+
+
 def _note_tool_call(event: dict[str, Any], state: dict[str, Any]) -> None:
     """记一次工具调用：计数 + 去重后的名字序列（顺序影响轨迹分）。"""
     names = _split_tool_names(event.get("tool_call_name"))
@@ -140,6 +155,9 @@ async def _consume(
             _note_tool_result_end(event, state)
         elif event_type in _TOKEN_EVENTS:
             state["tokens"] += _add_tokens(event)
+            cache_input, cache_creation = _add_cache_tokens(event)
+            state["cache_input_tokens"] += cache_input
+            state["cache_creation_tokens"] += cache_creation
         elif event_type == "REQUIRE_USER_CONFIRM":
             # 走确认流说明工具没执行：事件流里连 TOOL_RESULT_END 都没有。
             state["status"] = "pending"
@@ -160,6 +178,9 @@ def _empty_state() -> dict[str, Any]:
         "denied_tools": [],
         "denied_seen": set(),
         "tokens": 0,
+        # 前缀缓存：命中量 / 写入量。两者都进 cases.jsonl，聚合出 cache_hit_rate。
+        "cache_input_tokens": 0,
+        "cache_creation_tokens": 0,
         "status": "success",
         "error": None,
     }
@@ -249,6 +270,8 @@ async def execute_case(
             executed_tools=list(state["executed_tools"]),
             denied_tools=list(state["denied_tools"]),
             tokens=int(state["tokens"]),
+            cache_input_tokens=int(state["cache_input_tokens"]),
+            cache_creation_tokens=int(state["cache_creation_tokens"]),
             latency_ms=latency_ms,
             workspace_dir=workdir,
             error=state["error"] if isinstance(state["error"], str) else None,
@@ -304,6 +327,9 @@ def case_run_payload(run: CaseRun) -> dict[str, Any]:
         "judge": run.judge_scores,
         "latency_ms": run.latency_ms,
         "tokens": run.tokens,
+        # 缓存分拆：命中量与写入量分开记，才能算出命中率并看出「是否全冷」
+        "cache_input_tokens": run.trace.cache_input_tokens,
+        "cache_creation_tokens": run.trace.cache_creation_tokens,
         "error": run.trace.error,
         "checks": [
             {"name": check.name, "ok": check.ok, "detail": check.detail}

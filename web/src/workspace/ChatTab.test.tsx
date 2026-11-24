@@ -7,6 +7,7 @@ import type {
   Attachment,
   AwaitingState,
   ChatMessage,
+  CompressionRecord,
   PendingCall,
   PermissionKey,
 } from '../types';
@@ -22,6 +23,7 @@ const uploadAttachment = vi.fn();
 const deleteAttachment = vi.fn();
 const fetchPermissions = vi.fn();
 const fetchHealth = vi.fn();
+const fetchModelConfig = vi.fn();
 const switchPermission = vi.fn();
 
 vi.mock('../api/client', () => ({
@@ -30,6 +32,7 @@ vi.mock('../api/client', () => ({
   fetchPermissions: () => fetchPermissions(),
   // 运行时模式：默认按真实模型返回，专门测 Echo 的用例再覆盖
   fetchHealth: () => fetchHealth(),
+  fetchModelConfig: (session?: string) => fetchModelConfig(session),
   switchSessionPermission: (...args: unknown[]) => switchPermission(...args),
 }));
 
@@ -60,6 +63,11 @@ const snapshot = {
   modelName: '',
   permission: 'workspace' as PermissionKey,
   awaiting: null as AwaitingState | null,
+  // 上下文链路：默认没有用量（圆环不画）、也没压过
+  contextTokens: null as number | null,
+  contextThreshold: null as number | null,
+  contextSize: null as number | null,
+  compressions: [] as CompressionRecord[],
 };
 
 vi.mock('./store', () => ({
@@ -144,6 +152,9 @@ function reset() {
   });
   fetchPermissions.mockReset();
   fetchPermissions.mockResolvedValue({ default: 'workspace', available: AVAILABLE });
+  fetchModelConfig.mockReset();
+  // 默认没有会话覆盖：面板与 chat-meta 都靠这份数据判断
+  fetchModelConfig.mockResolvedValue({ overrides: {} });
   queryClient.clear();
   snapshot.messages = [];
   snapshot.running = false;
@@ -667,6 +678,26 @@ describe('运行时降级提示', () => {
     render(tab());
     await waitFor(() => expect(fetchHealth).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByText(/回显/)).toBeNull());
+  });
+});
+
+describe('模型参数入口', () => {
+  it('输入栏有齿轮按钮，点开是模型设置面板', async () => {
+    render(tab());
+    fireEvent.click(screen.getByRole('button', { name: '模型设置' }));
+    expect(await screen.findByRole('dialog', { name: '模型设置' })).toBeTruthy();
+  });
+
+  it('有会话覆盖时 chat-meta 标出「参数已改」', async () => {
+    fetchModelConfig.mockResolvedValue({ overrides: { temperature: 0.2 } });
+    render(tab());
+    expect(await screen.findByText(/参数已改 1/)).toBeTruthy();
+  });
+
+  it('没有覆盖时不显示标记', async () => {
+    render(tab());
+    await waitFor(() => expect(fetchModelConfig).toHaveBeenCalled());
+    expect(screen.queryByText(/参数已改/)).toBeNull();
   });
 });
 

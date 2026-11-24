@@ -26,7 +26,8 @@ devops-agent/
 ├── pyproject.toml           # 唯一配置文件（打包 + 依赖 + 各工具配置）
 ├── .gitignore
 ├── config/
-│   ├── policy.yaml          # 运行时策略：权限矩阵 / max_iters / 模型重试
+│   ├── policy.yaml          # 运行时策略：权限矩阵 / 工具规则
+│   ├── model.yaml           # 模型参数部署默认：窗口 / 两级重试 / 采样 / 压缩比例
 │   ├── gates.yaml           # 质量门禁阈值（check_gates.py 读取）
 │   └── health.yaml          # 健康分权重与延迟基准
 ├── scripts/
@@ -118,6 +119,44 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 - 供应商或模型不支持该参数时可能直接返回 400；关掉开关即可回退。
 - 检索通常按次计费，开启前请确认额度与共享环境的影响。
 
+### 模型参数（三层可配）
+
+模型参数不再硬编码在代码里，也没有第二份常量副本。取值按下面的顺序逐项解析，每项都记得自己是从哪一层来的：
+
+```
+会话覆盖（DB: session_states.model_config）
+  > 部署默认（DB: settings['model_config']，前端可改、持久化）
+  > config/model.yaml
+  > 环境变量（仅 model / judge_model / enable_search）
+  > 框架默认（context_size / 两级重试 / ContextConfig）
+```
+
+`config/model.yaml` 是部署默认的唯一出处，逐项注释了取值理由。改它需要重启；改前两层不需要。
+
+```yaml
+model:
+  name: ""                  # 空 = 用 DEVOPS_AGENT_MODEL
+  context_size: 128000      # 决定压缩阈值、圆环分母、压缩后保留量
+  context_calibrated: false # 未确认过真实窗口时前端显示「⚠ 未校准」
+  model_max_retries: 3      # 供应商 HTTP 层重试
+  agent_max_retries: 3      # 一轮 ReAct 内模型调用重试
+  max_iters: {default: 12, delivery: 16}
+  trigger_ratio: 0.8        # 占窗口多少开始压缩
+```
+
+**两级重试必须分开看**：`(1 + model_max_retries) × (1 + agent_max_retries)` 才是最坏情况下的模型请求次数，默认值是 `4 × 4 = 16`。前端面板直接显示这个乘积，不让用户自己乘。
+
+前端输入框旁的齿轮按钮打开模型设置面板：每行右侧标出这一项当前来自哪一层（`本会话` / `部署默认` / `配置文件` / `环境变量` / `未配置`），底部有两个保存按钮 —— 「保存到本会话」只影响当前会话，「设为部署默认」影响所有会话并需要二次确认。
+
+- 推算值（`compression_threshold`、`worst_case_attempts`）由后端算好放进 `derived` 字段，前端不重复实现口径。
+- `patch` 里的 `null` 表示**删除这一层的覆盖、回落下层**，不是「把值设成 null」。
+- `api_key` / `base_url` / `stream` 只展示不可改：凭据不该经 HTTP 往返，关掉流式会让前端退化为一次性渲染。
+- 生效延迟：`temperature` 等采样参数与模型名在下一次模型调用生效；压缩比例在下一轮生效。响应里的 `applied` / `deferred` 说明「立刻改了几个会话、几个等当前轮结束」。
+
+改动会写进 `runs.model_params`（只存非默认值），并计入 `prompt_factors()` 的 `params_sha`，评测对比时参数变过会被标为不可直接比较。
+
+端点：`GET|PATCH /api/model-config`、`POST /api/model-config/reset`、`GET|PATCH|DELETE /api/session/{session_id}/model-config`。设计取舍见 `docs/specs/0001-model-parameter-config.md` 与 `docs/adr/0003-model-parameter-config.md`。
+
 ### Agent 的工具与权限
 
 真实运行时装配一组**内置只读工具**：`Bash`（shell）、`Read`、`Glob`、`Grep`。`Edit` / `Write` 不在其中——只读会话不暴露写工具。
@@ -152,7 +191,7 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 | 项目排期 | schedule | 需求拆解、依赖排期、资源/人力、风险预警、进度同步 |
 | Bug 测试定位 | debug | 测试生成、失败定位（证据 `file:line`）、修复建议 |
 
-三个域共用装配入口 `build_agent(name, system_prompt, model, toolkit, max_iters, max_retries, policy)`；`max_iters` / `max_retries` 省略时读 `config/policy.yaml`（按域取 `react.max_iters.<name>`，未命中回退 `default`），并由 `TeamPipeline` 编排。**各域的 system_prompt 与真实工具函数尚未实现。**
+三个域共用装配入口 `build_agent(name, system_prompt, model, toolkit, max_iters, max_retries, context_config)`；`max_iters` / `max_retries` / `context_config` 省略时读 `config/model.yaml`（按域取 `model.max_iters.<name>`，未命中回退 `default`），并由 `TeamPipeline` 编排。**各域的 system_prompt 与真实工具函数尚未实现。**
 
 ---
 

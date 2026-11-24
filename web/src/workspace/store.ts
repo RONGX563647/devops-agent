@@ -15,6 +15,7 @@ import type {
   Attachment,
   AwaitingState,
   ChatMessage,
+  CompressionRecord,
   ConfirmDecision,
   PermissionKey,
   Run,
@@ -68,6 +69,14 @@ export interface SessionSnapshot {
   permission: PermissionKey;
   /** 等待确认的挂起态；非空时发送按钮应禁用。 */
   awaiting: AwaitingState | null;
+  /** 当前上下文占用（token）；没拿到任何用量时为 null，圆环不画。 */
+  contextTokens: number | null;
+  /** 触发压缩的阈值，来自 CONTEXT_BUDGET 或上下文提示。 */
+  contextThreshold: number | null;
+  /** 模型窗口大小，用于把阈值换算成占用比例。 */
+  contextSize: number | null;
+  /** 本会话发生过的压缩检查（含未真正压缩的 skipped 记录）。 */
+  compressions: CompressionRecord[];
 }
 
 interface Entry {
@@ -103,6 +112,10 @@ function toSnapshot(entry: Entry): SessionSnapshot {
     modelName: entry.stream.modelName,
     permission: entry.permission,
     awaiting: entry.stream.awaiting ?? entry.messages[entry.messages.length - 1]?.awaiting ?? null,
+    contextTokens: entry.stream.contextTokens,
+    contextThreshold: entry.stream.contextThreshold,
+    contextSize: entry.stream.contextSize,
+    compressions: entry.stream.compressions,
   };
 }
 
@@ -135,6 +148,10 @@ function ensureEntry(sessionId: string): Entry {
       modelName: '',
       permission,
       awaiting: null,
+      contextTokens: null,
+      contextThreshold: null,
+      contextSize: null,
+      compressions: [],
     },
   };
   entries.set(sessionId, entry);

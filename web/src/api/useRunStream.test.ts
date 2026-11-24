@@ -3,6 +3,7 @@ import type { ParseStage, PendingCall, StreamEvent } from '../types';
 import {
   applyEvent,
   consumeStream,
+  parseContextHint,
   parseFrame,
   parseSummary,
   streamConfirm,
@@ -648,5 +649,118 @@ describe('consumeStream', () => {
     );
     // 字节层保活：每个非空 chunk 都算一次活动，与帧能否解析无关
     expect(activity).toBe(4);
+  });
+});
+
+describe('上下文预算与压缩', () => {
+  it('CONTEXT_BUDGET 只给阈值与窗口，不假装有占用', () => {
+    const state = applyEvent(INITIAL, {
+      type: 'CONTEXT_BUDGET',
+      threshold: 102400,
+      context_size: 128000,
+      trigger_ratio: 0.8,
+    });
+    expect(state.contextThreshold).toBe(102400);
+    expect(state.contextSize).toBe(128000);
+    // 没有实测用量前保持 null：圆环据此不画，避免显示成 0%
+    expect(state.contextTokens).toBeNull();
+  });
+
+  it('压缩 START/END 合成一条 done 记录，并更新占用', () => {
+    let state = applyEvent(INITIAL, { type: 'CONTEXT_BUDGET', threshold: 102400 });
+    state = applyEvent(state, {
+      type: 'CONTEXT_COMPRESSION_START',
+      before_tokens: 103053,
+      threshold: 102400,
+      created_at: '2026-11-24T12:58:27Z',
+    });
+    expect(state.compressions).toHaveLength(1);
+    expect(state.compressions[0]).toMatchObject({ state: 'running', before: 103053 });
+    expect(state.contextTokens).toBe(103053);
+
+    state = applyEvent(state, {
+      type: 'CONTEXT_COMPRESSION_END',
+      before_tokens: 103053,
+      after_tokens: 41208,
+      threshold: 102400,
+      compressed: true,
+      summary_chars: 2140,
+      created_at: '2026-11-24T12:58:31Z',
+    });
+    expect(state.compressions).toHaveLength(1);
+    expect(state.compressions[0]).toMatchObject({
+      state: 'done',
+      before: 103053,
+      after: 41208,
+      summaryChars: 2140,
+    });
+    // 压完之后圆环显示的是压缩后的量
+    expect(state.contextTokens).toBe(41208);
+  });
+
+  it('没触发阈值时记 skipped，占用保持不变', () => {
+    let state = applyEvent(INITIAL, {
+      type: 'CONTEXT_COMPRESSION_START',
+      before_tokens: 20000,
+      threshold: 102400,
+    });
+    state = applyEvent(state, {
+      type: 'CONTEXT_COMPRESSION_END',
+      before_tokens: 20000,
+      after_tokens: 20000,
+      threshold: 102400,
+      compressed: false,
+    });
+    expect(state.compressions[0].state).toBe('skipped');
+    expect(state.contextTokens).toBe(20000);
+  });
+
+  it('缺少 START 的 END 也能落一条完整记录', () => {
+    const state = applyEvent(INITIAL, {
+      type: 'CONTEXT_COMPRESSION_END',
+      before_tokens: 110000,
+      after_tokens: 30000,
+      threshold: 102400,
+      compressed: true,
+      summary_chars: 800,
+      created_at: '2026-11-24T13:00:00Z',
+    });
+    expect(state.compressions).toHaveLength(1);
+    expect(state.compressions[0]).toMatchObject({ state: 'done', before: 110000, after: 30000 });
+  });
+
+  it('MODEL_CALL_END 用 prompt 大小更新占用，同时累加总用量', () => {
+    const state = applyEvent(INITIAL, {
+      type: 'MODEL_CALL_END',
+      reply_id: 'r1',
+      input_tokens: 5000,
+      output_tokens: 300,
+      cache_input_tokens: 4000,
+    });
+    // 占用是「窗口里现在有多少」，和累计消耗不是一回事
+    expect(state.contextTokens).toBe(5000);
+    expect(state.inputTokens).toBe(5000);
+    expect(state.outputTokens).toBe(300);
+    expect(state.cacheInputTokens).toBe(4000);
+  });
+
+  it('从系统提醒里解析出精确 token 数，且不新增步骤', () => {
+    expect(
+      parseContextHint(
+        'Your current context contains 103053 tokens. When reaching 102400 tokens, your context will be compressed.',
+      ),
+    ).toEqual({ tokens: 103053, threshold: 102400 });
+    expect(parseContextHint('当前时间 2026-11-24')).toBeNull();
+
+    const state = applyEvent(INITIAL, {
+      type: 'HINT_BLOCK',
+      hint:
+        '<system-reminder>Your current context contains 103053 tokens. '
+        + 'When reaching 102400 tokens, your context will be compressed.</system-reminder>',
+    });
+    expect(state.contextTokens).toBe(103053);
+    expect(state.contextThreshold).toBe(102400);
+    // 系统提醒不是执行过程，不应出现在步骤时间线上
+    expect(state.steps).toHaveLength(0);
   });
 });

@@ -3,7 +3,7 @@
 这里最该被钉住的不是「能存能取」，而是三条安全性质：
 1. 库里存的不是明文（sqlite 文件被看到也不等于密钥泄漏）；
 2. 换密钥后解不开时按未命中处理，不把整轮对话带崩；
-3. 对外接口只给元信息，没有任何读回明文的通道。
+3. 列表接口只给元信息；明文读回走单独端点且每次记一次 uses 留痕。
 """
 
 from __future__ import annotations
@@ -198,3 +198,45 @@ def test_placeholder_syntax_matches_the_parser() -> None:
     from devops_agent.input import pipeline as pipe
 
     assert pipe._PLACEHOLDER_RE.pattern == vault_mod.PLACEHOLDER_PATTERN
+
+
+def test_name_for_value_reuses_existing_entry(store: SecretVault) -> None:
+    """按值反查名字：输出捕获同值时复用已入库记录，不重复登记。"""
+    store.put("openai_key", SECRET, source="input")
+    assert store.name_for_value(SECRET) == "openai_key"
+    assert store.name_for_value("some-other-value") is None
+
+
+def test_api_read_value_records_use(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """受控读回返回明文，但每次都经 get() 记一次 uses。"""
+    monkeypatch.setenv("DEVOPS_AGENT_DB_PATH", str(tmp_path / "api-value.db"))
+    monkeypatch.setenv(vault_mod.KEY_ENV, Fernet.generate_key().decode())
+    reset_vault()
+    try:
+        get_vault().put("captured", SECRET, source="output")
+        before = next(m for m in get_vault().list() if m.name == "captured").uses
+
+        resp = client.get("/api/secrets/captured/value")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"name": "captured", "value": SECRET, "found": True}
+
+        after = next(m for m in get_vault().list() if m.name == "captured").uses
+        assert after == before + 1  # 读回留痕
+    finally:
+        reset_vault()
+
+
+def test_api_read_value_missing_is_not_distinguishable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """不存在的名字返回 found=false，不暴露「库里有哪些 key」。"""
+    monkeypatch.setenv("DEVOPS_AGENT_DB_PATH", str(tmp_path / "api-miss.db"))
+    monkeypatch.setenv(vault_mod.KEY_ENV, Fernet.generate_key().decode())
+    reset_vault()
+    try:
+        resp = client.get("/api/secrets/nope/value")
+        assert resp.status_code == 200
+        assert resp.json() == {"name": "nope", "value": "", "found": False}
+    finally:
+        reset_vault()

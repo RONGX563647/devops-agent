@@ -20,7 +20,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from agentscope.agent import Agent, ModelConfig, ReActConfig
+from agentscope.agent import Agent, ContextConfig, ModelConfig, ReActConfig
 from agentscope.credential import OpenAICredential
 from agentscope.event import ConfirmResult, UserConfirmResultEvent
 from agentscope.message import Msg, TextBlock, ToolCallBlock
@@ -31,9 +31,15 @@ from agentscope.state import AgentState
 from agentscope.tool import Toolkit, ToolMiddlewareBase
 from pydantic import SecretStr
 
-from devops_agent.config import RuntimePolicy, load_policy
+from devops_agent.config import load_model
 from devops_agent.governance.policy import build_permission_context
 from devops_agent.governance.profiles import PermissionProfile, default_profile
+from devops_agent.model_settings import ModelParams, effective_params
+from devops_agent.runtime.compression import (
+    CompressionMiddleware,
+    CompressionSink,
+    context_budget,
+)
 from devops_agent.runtime.confirm import (
     ConfirmDecision,
     effective_scope,
@@ -56,6 +62,20 @@ PROFILE_KEY = "permission_profile"
 # 装配用的工作目录：部署环境可用 DEVOPS_AGENT_WORKDIR 指定 Agent 能看的工作区，
 # 缺省取进程当前目录（本地开发即仓库根）。工具的相对路径与 shell 的 cwd 都基于它。
 WORKDIR_ENV = "DEVOPS_AGENT_WORKDIR"
+
+# 决定「怎么发一次模型请求」的参数：只有这些变了才重建模型对象。
+# 压缩比例、迭代上限只影响调度，热改字段即可。
+MODEL_WIRE_KEYS: tuple[str, ...] = (
+    "name",
+    "context_size",
+    "model_max_retries",
+    "temperature",
+    "max_tokens",
+    "top_p",
+    "reasoning_effort",
+    "thinking_enable",
+    "parallel_tool_calls",
+)
 
 # 工具约定必须写进系统提示：修复前 Agent 收到的只有一句角色描述，
 # 模型不知道自己有工具，于是把「工具调用 functions.exec」写进正文后直接结束。
@@ -86,15 +106,16 @@ def resolve_workdir(workdir: str | os.PathLike[str] | None = None) -> Path:
 # 便于把「分数变化」和「哪一版提示词」对上。hash 由 prompt_fingerprint() 现算。
 # v2：重试条款改成「同一工具连续失败两次就换手段」，不再指定具体工具名 ——
 #     依赖缺失时（如缺 rg）原来的「改用 Grep 重试」会把模型推回同一堵墙。
+# v3：指纹拆成「语义 / 字节 / 档位说明」三个（见 prompt_fingerprint 的说明）。
 PROMPT_ID = "agent-system"
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 
 
-def _render_system_prompt(workdir_label: str) -> str:
-    """按给定的工作目录标签渲染系统提示（评测 fingerprint 用占位符）。"""
+def _render_system_prompt(workdir_label: str, shell_label: str) -> str:
+    """按给定的工作目录与 shell 标签渲染系统提示（指纹用占位符）。"""
     tool_prompt = _TOOL_PROMPT.format(
         shell_tool="Bash",
-        shell=shell_name(),
+        shell=shell_label,
         workdir=workdir_label,
         read_tool="Read",
         glob_tool="Glob",
@@ -111,17 +132,64 @@ def build_system_prompt(workdir: str | os.PathLike[str] | None = None) -> str:
     那里改一个字，后面的工具 schema 与整段历史全部作废（实测跨档命中 21%）。
     档位约束改由 `runtime/profile_note.py` 追加在消息末尾（实测 96%）。
     """
-    return _render_system_prompt(str(resolve_workdir(workdir)))
+    return _render_system_prompt(str(resolve_workdir(workdir)), shell_name())
 
 
 def prompt_fingerprint() -> str:
-    """提示词指纹：与具体机器路径无关，用于评测批次对比。
+    """提示词语义指纹：跨平台稳定，用于评测批次对比与 delta 归因。
 
-    只覆盖系统提示与显式的 PROMPT_VERSION；档位说明是动态追加的，
-    改动 `runtime/profile_note.py` 时需要同步递增 PROMPT_VERSION。
+    workdir 与 shell 都用占位符渲染，所以同一份代码在 Windows 与 Linux 上得到
+    同一个值。这是 `compare` 唯一认作「提示词变了」的因子。
+
+    历史上它同时承担「真实下发字节」的角色，导致两个方向都错：
+    - 用 `<workdir>` 渲染 → 同一 prompt_sha 下真实字节因机器而异，前缀缓存
+      不能跨机复用，但指纹看不出来；
+    - 反过来，档位说明（每次请求都下发）不在指纹里，改了它 prompt_sha 不变，
+      「同 sha 分数变了」会被误判成噪声。
+    现在拆成三个函数，各管一件事。
     """
-    payload = f"{PROMPT_ID}:{PROMPT_VERSION}\n{_render_system_prompt('<workdir>')}"
+    payload = f"{PROMPT_ID}:{PROMPT_VERSION}\n{_render_system_prompt('<workdir>', '<shell>')}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def prompt_bytes_sha(workdir: str | os.PathLike[str] | None = None) -> str:
+    """真实下发字节的指纹：含真 workdir 与真 shell 名。
+
+    同一个 `prompt_fingerprint` 在不同机器/平台上这个值不同——那正是重点：
+    它回答「前缀缓存能不能复用」，而不是「提示词有没有改」。
+    """
+    return hashlib.sha256(build_system_prompt(workdir).encode("utf-8")).hexdigest()
+
+
+def profile_note_sha(profile_key: str) -> str:
+    """档位说明的指纹：它每次请求都下发，改了必须能归因。"""
+    from devops_agent.governance.profiles import PROFILES  # noqa: PLC0415 - 避免循环 import
+    from devops_agent.runtime.profile_note import policy_note  # noqa: PLC0415
+
+    profile = PROFILES.get(profile_key)
+    note = policy_note(profile) if profile is not None else ""
+    return hashlib.sha256(note.encode("utf-8")).hexdigest()
+
+
+def prompt_factors(
+    workdir: str | os.PathLike[str] | None = None,
+    params: ModelParams | None = None,
+) -> dict[str, str]:
+    """评测报告要记录的提示词相关因子。
+
+    - `prompt_sha`：语义指纹，**阻断性因子**（变了就不可归因）；
+    - `prompt_bytes_sha`：真实字节，用于判断前缀缓存能否跨批复用；
+    - `shell_platform`：shell 名，解释字节差异的来源；
+    - `params_sha`：模型参数指纹。参数可以随时改，没有它「同一 prompt_sha
+      分数变了」会被误判成噪声。
+    """
+    active = params if params is not None else effective_params(stored={})
+    return {
+        "prompt_sha": prompt_fingerprint(),
+        "prompt_bytes_sha": prompt_bytes_sha(workdir),
+        "shell_platform": shell_name(),
+        "params_sha": active.fingerprint(),
+    }
 
 
 def build_agent(
@@ -132,16 +200,16 @@ def build_agent(
     middlewares: Sequence[MiddlewareBase] | None = None,
     max_iters: int | None = None,
     max_retries: int | None = None,
-    policy: RuntimePolicy | None = None,
+    context_config: ContextConfig | None = None,
     state: AgentState | None = None,
 ) -> Agent:
     """按域装配一个 Agent（交付 / 排期 / 定位共用此工厂）。
 
-    max_iters / max_retries 省略时读 config/policy.yaml；
-    max_iters 按域取 react.max_iters.<name>，未命中回退 default。
+    max_iters / max_retries 省略时读 `config/model.yaml`；
+    max_iters 按域取 `max_iters.<name>`，未命中回退 `default`。
     state 用于注入权限上下文等跨轮状态（省略则 Agent 自建默认状态）。
     """
-    resolved = policy if policy is not None else load_policy()
+    settings = load_model()
     return Agent(
         name=name,
         system_prompt=system_prompt,
@@ -149,11 +217,14 @@ def build_agent(
         toolkit=toolkit,
         middlewares=list(middlewares) if middlewares else None,
         state=state,
+        context_config=context_config,
         react_config=ReActConfig(
-            max_iters=max_iters if max_iters is not None else resolved.react.max_iters_for(name)
+            max_iters=max_iters if max_iters is not None else settings.max_iters_for(name)
         ),
         model_config=ModelConfig(
-            max_retries=max_retries if max_retries is not None else resolved.model.max_retries,
+            max_retries=(
+                max_retries if max_retries is not None else settings.agent_max_retries
+            ),
         ),
     )
 
@@ -192,13 +263,29 @@ def _search_extra_body(enable_search: bool | None) -> dict[str, Any] | None:
     return body
 
 
-def build_chat_model(enable_search: bool | None = None) -> OpenAIChatModel:
+def build_context_config(params: ModelParams) -> ContextConfig:
+    """把三个比例装配给框架的 ContextConfig。
+
+    只改这三项，其余（压缩提示词、摘要模板、tool_result_limit）保持框架默认 ——
+    这里不是配置的收口点，只是把 yaml/界面上的三个数搬过去。
+    """
+    return ContextConfig(
+        trigger_ratio=params.trigger_ratio,
+        reserve_ratio=params.reserve_ratio,
+        context_buffer_ratio=params.context_buffer_ratio,
+    )
+
+
+def build_chat_model(
+    enable_search: bool | None = None,
+    params: ModelParams | None = None,
+) -> OpenAIChatModel:
     """从环境变量构造 OpenAI 兼容模型。
 
     必填 env（缺失抛 RuntimeError，不打印 key）：
     - DEVOPS_AGENT_API_KEY
     - DEVOPS_AGENT_BASE_URL
-    - DEVOPS_AGENT_MODEL
+    模型名默认取 env DEVOPS_AGENT_MODEL，`config/model.yaml` 或界面覆盖时以参数为准。
 
     可选 env：
     - DEVOPS_AGENT_ENABLE_SEARCH：设为 1 时给模型请求体加 `enable_search=true`
@@ -207,11 +294,17 @@ def build_chat_model(enable_search: bool | None = None) -> OpenAIChatModel:
       供应商无条件检索并把结果注入上下文；`auto` 只发 `enable_search`，
       由模型自己决定搜不搜（实测多数情况下不搜）。
 
+    `params` 是解析后的参数集（见 model_settings.ModelParams）：采样参数、
+    两级重试、上下文窗口都在里面。**context_size 必须显式传**：换模型不同步窗口，
+    会表现为「窗口明明变大，却还是 10 万 token 就压缩」。
+
     enable_search 显式传入时优先于环境变量：前端逐请求的「联网」开关走这条路。
     """
+    # 省略 params 时按「部署默认」解一遍，保证只有一处默认值
+    active = params if params is not None else effective_params(stored={})
     api_key = os.environ.get("DEVOPS_AGENT_API_KEY")
     base_url = os.environ.get("DEVOPS_AGENT_BASE_URL")
-    model_name = os.environ.get("DEVOPS_AGENT_MODEL")
+    model_name = active.name or None
     missing = [
         n
         for n, v in (
@@ -232,7 +325,10 @@ def build_chat_model(enable_search: bool | None = None) -> OpenAIChatModel:
     return OpenAIChatModel(
         credential=credential,
         model=model_name,
+        parameters=OpenAIChatModel.Parameters(**active.sampling()),
         stream=True,
+        max_retries=active.model_max_retries,
+        context_size=active.context_size,
         extra_body=_search_extra_body(enable_search),
     )
 
@@ -277,7 +373,9 @@ class AgentScopeRuntime:
         workdir: Path | None = None,
         note_middleware: ProfileNoteMiddleware | None = None,
         toolkit_middlewares: Sequence[ToolMiddlewareBase] | None = None,
+        compression_sink: CompressionSink | None = None,
         web_search: bool = False,
+        params: ModelParams | None = None,
     ) -> None:
         self._agent = agent
         self._profile = profile if profile is not None else default_profile()
@@ -286,7 +384,13 @@ class AgentScopeRuntime:
         # 换档位时末尾的档位说明必须同步改，否则「切了但模型还按旧档写」。
         self._note_middleware = note_middleware
         self._toolkit_middlewares = list(toolkit_middlewares or [])
+        # 压缩钩子没有事件通道，只能由运行时把中间件攒下的帧 drain 进流里。
+        # Echo/测试替身没有 sink 时为 None，事件序列保持原样。
+        self._compression_sink = compression_sink
         self._web_search = web_search
+        # 当前生效的模型参数：热替换与 run 记录都以它为准，不从 agent 上反推
+        # （反推要先猜「哪个字段对应哪个参数」，猜错就是静默错报）。
+        self._params = params
 
     @property
     def profile(self) -> PermissionProfile:
@@ -342,6 +446,40 @@ class AgentScopeRuntime:
         self._agent.state.middle_context[PROFILE_KEY] = profile.key
         self._profile = profile
 
+    # --- 模型参数热替换 -------------------------------------------------
+    def _model_changed(self, params: ModelParams) -> bool:
+        """模型对象是否需要重建：只有决定「怎么发请求」的那几个键算数。"""
+        current = self._params
+        if current is None:
+            return True
+        return any(getattr(current, key) != getattr(params, key) for key in MODEL_WIRE_KEYS)
+
+    def apply_model_params(self, params: ModelParams) -> None:
+        """会话中改模型参数：原地热替换，不丢对话历史、不打断当前流。
+
+        只有模型侧参数（名字 / 采样 / 窗口 / HTTP 重试）变了才重建模型对象 ——
+        重建会丢掉已建立的连接与重试计数，为此白付一次代价不值得。
+        压缩比例与迭代上限直接写回配置对象，下一轮推理前就会用上。
+        """
+        if self._model_changed(params):
+            self._agent.model = build_chat_model(
+                enable_search=self._web_search, params=params
+            )
+        self._agent.context_config = self._agent.context_config.model_copy(
+            update={
+                "trigger_ratio": params.trigger_ratio,
+                "reserve_ratio": params.reserve_ratio,
+                "context_buffer_ratio": params.context_buffer_ratio,
+            }
+        )
+        self._agent.react_config.max_iters = params.max_iters
+        self._agent.model_config.max_retries = params.agent_max_retries
+        self._params = params
+
+    def model_params_record(self) -> dict[str, Any]:
+        """本轮实际下发的参数快照（只含非默认值），写进 runs.model_params。"""
+        return self._params.record() if self._params is not None else {}
+
     @staticmethod
     def _make_msg(session_id: str, user_input: str) -> Msg:
         return Msg(
@@ -350,14 +488,32 @@ class AgentScopeRuntime:
             role="user",
         )
 
+    def _drain_compression(self) -> list[dict[str, Any]]:
+        """取走压缩钩子攒下的帧；没有 sink 的运行时返回空列表。"""
+        return self._compression_sink.drain() if self._compression_sink is not None else []
+
+    def _budget_frame(self) -> dict[str, Any] | None:
+        """上下文预算帧：只在挂了压缩钩子的真实运行时发。
+
+        阈值由框架配置算出（trigger_ratio × context_size），前端拿它画占用率；
+        Echo/测试替身没有模型窗口概念，发出去只会是假的 128000。
+        """
+        return context_budget(self._agent) if self._compression_sink is not None else None
+
     async def stream(self, session_id: str, user_input: str) -> AsyncIterator[dict[str, Any]]:
         """消费 AgentScope reply_stream，逐个转成框架无关的 dict 往外吐。
 
         事件对象只在本方法内存在，越过边界的只有普通 dict：
         这是"agent.py 单一装配点"约束在流式路径上的延续。
+        压缩帧没有框架事件可依附，在每个框架事件之后按顺序补发。
         """
+        budget = self._budget_frame()
+        if budget is not None:
+            yield budget
         async for event in self._agent.reply_stream(self._make_msg(session_id, user_input)):
             yield event_to_dict(event)
+            for frame in self._drain_compression():
+                yield frame
 
     # --- 挂起与恢复 ---------------------------------------------------
     def snapshot(self) -> str:
@@ -419,9 +575,15 @@ class AgentScopeRuntime:
         )
 
     async def resume(self, decisions: Sequence[ConfirmDecision]) -> AsyncIterator[dict[str, Any]]:
-        """带着用户决策从挂起点继续，照常往外吐事件 dict。"""
+        """带着用户决策从挂起点继续，照常往外吐事件 dict。
+
+        不重发 CONTEXT_BUDGET：同一会话的窗口与阈值不变，前端已持有。
+        但压缩仍可能在续跑时触发，所以照常 drain。
+        """
         async for event in self._agent.reply_stream(self.confirm_event(decisions)):
             yield event_to_dict(event)
+            for frame in self._drain_compression():
+                yield frame
 
 
 def build_agentscope_runtime(
@@ -430,6 +592,7 @@ def build_agentscope_runtime(
     profile: PermissionProfile | None = None,
     state: AgentState | None = None,
     web_search: bool | None = None,
+    params: ModelParams | None = None,
 ) -> AgentScopeRuntime:
     """装配真实运行时（env 提供模型凭据）。
 
@@ -437,9 +600,15 @@ def build_agentscope_runtime(
     - 密钥：挂 SecretInjectionMiddleware —— 占位符在工具边界换成真值，
       返回里的真值再抹回占位符，模型全程看不到明文；
     - 权限：注入档位对应的权限上下文（mode + 白名单 + deny_rules）。
+    - 上下文压缩：挂 CompressionMiddleware，把「检查 / 触发 / 前后 token」
+      变成 SSE 帧 —— 框架的 on_compress_context 钩子没有事件通道。
+    - 模型参数：`params` 省略时按「会话覆盖 > 部署默认 > yaml > env」解析。
+      `context_config` 与 `context_size` 必须与之一致，否则会出现
+      「窗口是新的、压缩阈值还是旧的」。
     """
     resolved = profile if profile is not None else default_profile()
     base = resolve_workdir(workdir)
+    active = params if params is not None else effective_params()
     # 先定下这一轮到底联不联网：模型请求体与末尾说明必须同源，
     # 否则会出现「请求里带了检索结果、提示词却说没联网」的错位。
     effective_search = (
@@ -450,12 +619,18 @@ def build_agentscope_runtime(
     secret_mw = build_secret_middleware()
     note_mw = ProfileNoteMiddleware(resolved, web_search=effective_search)
     toolkit_mws: list[ToolMiddlewareBase] = [secret_mw]
+    # sink 由运行时持有、中间件写入：一次装配一份，会随会话快照重建。
+    compression_sink = CompressionSink()
+    compression_mw = CompressionMiddleware(compression_sink)
     agent = build_agent(
         name="devops",
         system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),
-        model=build_chat_model(enable_search=web_search),
+        model=build_chat_model(enable_search=web_search, params=active),
         toolkit=build_toolkit_for(resolved.tools, base, middlewares=toolkit_mws),
-        middlewares=[note_mw],
+        middlewares=[note_mw, compression_mw],
+        context_config=build_context_config(active),
+        max_iters=active.max_iters,
+        max_retries=active.agent_max_retries,
         state=_state_for(resolved, state, base),
     )
     return AgentScopeRuntime(
@@ -464,7 +639,9 @@ def build_agentscope_runtime(
         workdir=base,
         note_middleware=note_mw,
         toolkit_middlewares=toolkit_mws,
+        compression_sink=compression_sink,
         web_search=effective_search,
+        params=active,
     )
 
 
@@ -473,6 +650,9 @@ def session_runtime_factory(base: object) -> Callable[..., Any]:
 
     Echo 是无状态的，复用没有副作用；真实运行时则必须每会话一份，
     否则消息历史与权限规则会在会话之间互相污染。
+
+    `model_config` 是该会话的参数覆盖（来自 DB，`None` 表示没有）：
+    装配时按「覆盖 > 部署默认 > yaml > env」解析，重建后仍是同一份参数。
     """
 
     def make(
@@ -480,10 +660,16 @@ def session_runtime_factory(base: object) -> Callable[..., Any]:
         profile: Any,
         state_json: str | None,
         web_search: bool | None = None,
+        model_config: dict[str, Any] | None = None,
     ) -> Any:
         if not isinstance(base, AgentScopeRuntime):
             return base
         state = AgentState.model_validate_json(state_json) if state_json else None
-        return build_agentscope_runtime(profile=profile, state=state, web_search=web_search)
+        return build_agentscope_runtime(
+            profile=profile,
+            state=state,
+            web_search=web_search,
+            params=effective_params(session=model_config or {}),
+        )
 
     return make

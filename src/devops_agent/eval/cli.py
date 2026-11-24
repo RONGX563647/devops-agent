@@ -35,7 +35,7 @@ from devops_agent.eval.judge import JudgeError, OpenAIJudge, resolve_judge_model
 from devops_agent.eval.lint import Finding, run_lint, split_findings
 from devops_agent.eval.runner import DEFAULT_FIXTURE_ROOT, CaseRun, case_run_payload, run_suite
 from devops_agent.observability import repository as repo
-from devops_agent.runtime.agent import PROMPT_ID, prompt_fingerprint
+from devops_agent.runtime.agent import PROMPT_ID, prompt_factors, prompt_fingerprint
 
 # 这些 verdict 必须让 CI 变红。`insufficient` 不在其中：题库没到门禁样本量是正常
 # 状态，天天报红只会让人习惯性忽略门禁。
@@ -53,12 +53,23 @@ def _print_errors(messages: Sequence[str]) -> None:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    """校验数据集；有错误退出 1，warning 不阻断。"""
+    """校验数据集；有错误退出 1，warning 默认不阻断。
+
+    `--strict` 把 warning 也当阻断：题库扩到门禁量之后，`n < min_cases_for_gate`
+    这类「只是提示」的问题不该再被放行 —— 否则一个 39 条的题库会安静地永远拿
+    `insufficient`，评测看起来一直在跑，但从不给结论。
+    """
     suite = load_suite(args.suite)
     messages = validate_suite(suite)
     _print_errors(messages)
-    errors, _warnings = split_warnings(messages)
+    errors, warnings = split_warnings(messages)
     if errors:
+        return 1
+    if args.strict and warnings:
+        print(
+            f"错误: --strict 下 {len(warnings)} 条 warning 视为阻断",
+            file=sys.stderr,
+        )
         return 1
     print(f"ok {len(suite.cases)} cases")
     return 0
@@ -311,12 +322,18 @@ def _factors(
 
     `judge_model` 必须与裁判实际使用的模型一致：它是可比性检查的阻断因子，
     记录错了会让「换了裁判模型」被判成同一实验（delta 被误当成结论）。
+
+    提示词相关因子分三层（见 `runtime/agent.prompt_factors`）：
+    - `prompt_sha` 语义指纹，**阻断性**；
+    - `prompt_bytes_sha` 真实字节，用于判断前缀缓存能否跨批复用；
+    - `shell_platform` 解释字节差异来源。
+    后两个是信息性因子：同一语义提示词在不同平台上字节不同，不该拦住对比。
     """
     model = os.environ.get("DEVOPS_AGENT_MODEL", "")
     return {
         "suite_sha": suite.manifest.sha256,
         "grader_version": GRADER_VERSION,
-        "prompt_sha": prompt_fingerprint(),
+        **prompt_factors(),
         "model": model,
         "profile": profile,
         "judge_model": resolve_judge_model() if judge_enabled else "",
@@ -442,6 +459,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = sub.add_parser("validate", help="校验数据集")
     validate.add_argument("--suite", required=True)
+    # 题库达到门禁量之后，CI 应带 --strict：让「样本不足」这类 warning 也成为阻断，
+    # 否则题库会安静地停在 insufficient。
+    validate.add_argument(
+        "--strict",
+        action="store_true",
+        help="warning 也视为阻断（题库达门禁量后 CI 应开启）",
+    )
     validate.set_defaults(func=cmd_validate)
 
     lint = sub.add_parser("prompt-lint", help="静态检查提示词/档位/题库是否自洽")

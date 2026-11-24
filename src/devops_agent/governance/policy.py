@@ -68,14 +68,16 @@ def _profile_allow_specs(profile: PermissionProfile, policy: RuntimePolicy) -> l
     return specs
 
 
-def _profile_deny_specs(profile: PermissionProfile, policy: RuntimePolicy) -> list[RuleSpec]:
-    """档位的拒绝规则。
+def _profile_deny_specs(_profile: PermissionProfile, policy: RuntimePolicy) -> list[RuleSpec]:
+    """档位的拒绝规则 = policy 声明的全部 deny，无条件装配。
 
-    `source: profile` 的规则只服务 hard_deny 档（unrestricted）—— 那一档跳过了
-    逐次确认，deny_rules 是唯一剩下的约束；其余档位越界会 ASK，不需要这层。
+    builtin deny（`.git/`、`.env` 等）是对**所有档位**的硬约束，不随档位开关。
+    旧实现只在 hard_deny 档（unrestricted）装配 `source: profile` 的 deny，
+    理由是「其余档位越界会 ASK」——但 `auto` 档的 dont_ask 对 `.env` 这类
+    工作区内路径直接 allow，ASK 根本不会触发，等于无人值守档能读密钥文件。
+    框架层 deny 优先于 allow/ask，所以无条件并入才是正确的安全默认。
     """
-    hard = profile.fallback == "hard_deny"
-    return [spec for spec in policy.permission.deny_rules if hard or spec.source != "profile"]
+    return list(policy.permission.deny_rules)
 
 
 def build_permission_context(

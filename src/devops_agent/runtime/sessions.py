@@ -23,12 +23,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from devops_agent import model_settings
 from devops_agent.observability import repository as repo
 from devops_agent.runtime.runtime import AgentRuntime
 
 logger = logging.getLogger(__name__)
 
-# 工厂：session_id + 档位 + 历史快照（JSON 或 None）+ 联网开关 → 运行时实例
+# 工厂：session_id + 档位 + 历史快照（JSON 或 None）+ 联网开关 + 参数覆盖 → 运行时实例
 RuntimeFactory = Callable[..., AgentRuntime]
 
 
@@ -60,6 +61,11 @@ class SessionEntry:
     last_used: float
     # 同一会话同时只跑一个 run：SSE 流整段持有它，别让两个请求互相踩 state
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # 该会话的模型参数覆盖（DB 里那份的镜像）：改部署默认时要拿它重算
+    model_overrides: dict[str, Any] = field(default_factory=dict)
+    # 部署默认变了但这个会话正在跑：先挂起，run 结束后再热替换。
+    # 直接广播会打断正在进行的流，只影响新会话又等于「改了但没生效」。
+    pending_model: bool = False
 
 
 class SessionRegistry:
@@ -101,9 +107,22 @@ class SessionRegistry:
             self._entries.pop(victim, None)
             logger.debug("会话实例被回收: %s", victim)
 
+    def _load_model_config(self, session_id: str) -> dict[str, Any]:
+        """从库里取该会话的参数覆盖；库不可用当作无覆盖（回落部署默认）。"""
+        try:
+            with repo.connect(self._db_path) as conn:
+                repo.init_db(conn)
+                return repo.load_session_model_config(conn, session_id)
+        except Exception:  # noqa: BLE001 - 存储故障不该挡住对话
+            logger.warning("读取会话参数覆盖失败: %s", session_id, exc_info=True)
+            return {}
+
     def _build(self, session_id: str, profile: Any, web_search: bool | None) -> SessionEntry:
         state_json = self._load_state(session_id)
-        runtime = self._factory(session_id, profile, state_json, web_search)
+        overrides = self._load_model_config(session_id)
+        runtime = self._factory(
+            session_id, profile, state_json, web_search, model_config=overrides
+        )
         entry = SessionEntry(
             session_id=session_id,
             runtime=runtime,
@@ -112,6 +131,7 @@ class SessionRegistry:
             # 交给运行时解析后才知道到底联没联网，照抄 None 会让开关比较失真。
             web_search=_effective_search(runtime, web_search),
             last_used=_now().timestamp(),
+            model_overrides=overrides,
         )
         return entry
 
@@ -183,6 +203,52 @@ class SessionRegistry:
         self._evict()
         return entry, True
 
+    # --- 模型参数 -----------------------------------------------------
+    def _apply_entry(self, entry: SessionEntry) -> bool:
+        """把「该会话当前应有的参数」推给运行时；Echo 之类没有热替换能力时返回 False。"""
+        apply = getattr(entry.runtime, "apply_model_params", None)
+        if not callable(apply):
+            return False
+        apply(model_settings.effective_params(session=entry.model_overrides))
+        return True
+
+    def apply_model_params(self, session_id: str, overrides: dict[str, Any]) -> bool:
+        """热替换某个会话的参数覆盖；没有活跃实例或不支持热替换时返回 False。
+
+        返回 False 时调用方要说「下一轮生效」—— 不能一律说成立即生效，
+        这是切档端点已经建立的约定。
+        """
+        entry = self.peek(session_id)
+        if entry is None:
+            return False
+        entry.model_overrides = dict(overrides)
+        return self._apply_entry(entry)
+
+    def broadcast_model_defaults(self) -> dict[str, int]:
+        """部署默认改了：遍历活跃会话，逐个判断能不能立刻热替换。
+
+        返回 `{"applied": n, "deferred": m}`，前端据此说「n 个已更新，
+        m 个等当前轮结束」。正在跑的会话不打断，只记 pending，run 结束后补上。
+        """
+        counts = {"applied": 0, "deferred": 0}
+        for entry in self._entries.values():
+            if entry.lock.locked():
+                entry.pending_model = True
+                counts["deferred"] += 1
+            elif self._apply_entry(entry):
+                counts["applied"] += 1
+            else:
+                counts["deferred"] += 1
+        return counts
+
+    def flush_pending(self, session_id: str) -> bool:
+        """一轮结束后应用挂起的部署默认；返回是否真的应用了。"""
+        entry = self._entries.get(session_id)
+        if entry is None or not entry.pending_model or entry.lock.locked():
+            return False
+        entry.pending_model = False
+        return self._apply_entry(entry)
+
     def save(self, session_id: str) -> None:
         """把当前会话快照写回库里；运行时没有快照能力（如 Echo）则跳过。"""
         entry = self._entries.get(session_id)
@@ -216,3 +282,22 @@ class SessionRegistry:
     @property
     def sessions(self) -> list[str]:
         return list(self._entries)
+
+
+def registry_for(request: Any) -> SessionRegistry:
+    """取请求所属 app 的会话注册表，首次访问时按当前 app.state.runtime 建工厂。
+
+    注册表与「它基于哪个 runtime 实例」一起记住：测试 / 部署替换
+    app.state.runtime 后必须重建，否则会一直用旧实例的工厂。
+    放在本模块而不是 main：模型配置端点也要用同一份注册表，
+    让 main 反向被 import 会绕成环。
+    """
+    from devops_agent.runtime.agent import session_runtime_factory  # 避开循环 import
+
+    base = getattr(request.app.state, "runtime", None)
+    registry = getattr(request.app.state, "sessions", None)
+    if registry is None or getattr(request.app.state, "sessions_base", None) is not base:
+        registry = SessionRegistry(session_runtime_factory(base))
+        request.app.state.sessions = registry
+        request.app.state.sessions_base = base
+    return registry

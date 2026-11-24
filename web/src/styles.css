@@ -3428,12 +3428,16 @@ a:hover {
   max-width: var(--reading-max);
 }
 .secrets-table td:last-child {
-  width: 72px;
+  width: 112px;
   text-align: right;
 }
 .secrets-table .mono {
   font-size: 11.5px;
   color: var(--ink-soft);
+}
+.secret-value {
+  color: var(--danger-ink);
+  word-break: break-all;
 }
 .ghost-btn {
   padding: 2px var(--sp-3);
@@ -4329,3 +4333,380 @@ a:hover {
   border-color: #ddd6fe;
 }
 
+/* ============================================================
+ * 上下文占用圆环 + 压缩时间线
+ *
+ * 圆环放在输入栏右侧，与发送按钮同一行：它描述的是「下一次发送会带多少上下文」，
+ * 属于输入侧的约束，不该跑到顶部工具栏去。
+ * 颜色只表达紧迫度（ok / warn / danger），与全站语义色一致。
+ * ============================================================ */
+.ctx-ring {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  color: var(--ink-muted);
+  cursor: default;
+}
+
+.ctx-ring svg {
+  display: block;
+  overflow: visible;
+}
+
+.ctx-ring-track {
+  fill: none;
+  stroke: var(--line-strong);
+}
+
+.ctx-ring-fill {
+  fill: none;
+  transition: stroke-dasharray 320ms ease, stroke 200ms ease;
+}
+
+.ctx-ring.is-ok .ctx-ring-fill {
+  stroke: var(--ok);
+}
+
+.ctx-ring.is-warn .ctx-ring-fill {
+  stroke: var(--warn);
+}
+
+.ctx-ring.is-danger .ctx-ring-fill {
+  stroke: var(--danger);
+}
+
+.ctx-ring.is-warn .ctx-ring-label {
+  color: var(--warn-ink);
+}
+
+.ctx-ring.is-danger .ctx-ring-label {
+  color: var(--danger-ink);
+}
+
+.ctx-ring-label {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+/* 压缩进行中：环体轻微呼吸，表示数字还会变 */
+.ctx-ring.is-busy svg {
+  animation: ctx-ring-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes ctx-ring-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.ctx-timeline {
+  margin: 0 auto var(--sp-4);
+  width: min(100%, 780px);
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.ctx-timeline.is-running {
+  border-left-color: var(--accent);
+  background: var(--accent-faint);
+}
+
+.ctx-timeline-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.ctx-timeline-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.ctx-timeline.is-running .ctx-timeline-title {
+  color: var(--accent-ink);
+}
+
+.ctx-timeline-meta {
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
+
+.ctx-timeline-list {
+  margin: var(--sp-3) 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.ctx-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+
+.ctx-item.is-done .ctx-dot {
+  background: var(--ok);
+}
+
+.ctx-item.is-running .ctx-dot {
+  background: var(--accent);
+  animation: ctx-ring-pulse 1.4s ease-in-out infinite;
+}
+
+.ctx-item-flow {
+  color: var(--ink);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-item-note {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-muted);
+}
+
+.ctx-item-time {
+  flex: none;
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ctx-ring.is-busy svg,
+  .ctx-item.is-running .ctx-dot {
+    animation: none;
+  }
+
+  .ctx-ring-fill {
+    transition: none;
+  }
+}
+
+
+/* ---- 模型设置面板（SPEC-0001） ----
+ * 齿轮贴在权限选择器旁边，面板向上展开贴着输入框：改完参数立刻能发消息验证。
+ * 来源徽标是这套界面的重点，不是装饰：`framework-default` 用虚边 + 淡色，
+ * 表示「这一项没人设过」，正是 context_size 猜了半年没被发现的根因。 */
+.mc-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.mc-gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-md);
+  height: var(--control-md);
+  color: var(--ink-muted);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  transition: color var(--dur-fast) ease, background var(--dur-fast) ease;
+}
+.mc-gear:hover,
+.mc-gear.is-open {
+  color: var(--accent-ink);
+  background: var(--surface-hover);
+}
+.mc-panel {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  width: 420px;
+  max-height: 72vh;
+  padding: var(--sp-3);
+  overflow-y: auto;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 12%);
+}
+.mc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-2);
+}
+.mc-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.mc-badge {
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--ink-muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.mc-body {
+  display: flex;
+  flex-direction: column;
+}
+.mc-row {
+  display: grid;
+  grid-template-columns: 76px 1fr auto;
+  gap: var(--sp-2);
+  align-items: center;
+  padding: 3px 0;
+}
+.mc-row-label {
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+.mc-row-control {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  min-width: 0;
+}
+.mc-row-hint {
+  grid-column: 1 / -1;
+  padding-left: 0;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--ink-muted);
+}
+.mc-input {
+  width: 100%;
+  height: 24px;
+  padding: 0 var(--sp-2);
+  font-size: 11.5px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+}
+.mc-input:focus {
+  border-color: var(--accent-ring);
+  outline: none;
+}
+.mc-src {
+  padding: 0 5px;
+  font-size: 10px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.mc-src.is-session {
+  color: var(--accent-ink);
+  background: var(--accent-faint);
+  border-color: var(--accent-soft);
+}
+.mc-src.is-stored {
+  color: var(--ok-ink);
+  background: var(--ok-soft);
+  border-color: transparent;
+}
+.mc-src.is-yaml,
+.mc-src.is-env {
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  border-color: transparent;
+}
+.mc-src.is-framework-default {
+  color: var(--ink-faint);
+  background: transparent;
+  border-style: dashed;
+}
+.mc-section {
+  padding-top: var(--sp-2);
+  margin: var(--sp-3) 0 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  letter-spacing: 0.04em;
+  border-top: 1px solid var(--line-soft);
+}
+.mc-derived {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: baseline;
+  padding-top: 2px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+.mc-derived.is-warn {
+  color: var(--warn-ink);
+}
+.mc-derived-src {
+  padding: 0 4px;
+  font-size: 9.5px;
+  color: var(--ink-faint);
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+}
+.mc-warn {
+  margin: 2px 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--warn-ink);
+}
+.mc-ack {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  font-size: 10.5px;
+  color: var(--ink-soft);
+}
+.mc-notice {
+  margin: var(--sp-2) 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--accent-ink);
+}
+.mc-readonly {
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
+.mc-actions {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+  padding-top: var(--sp-2);
+  margin-top: var(--sp-3);
+  border-top: 1px solid var(--line-soft);
+}
+.mc-confirm p {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--warn-ink);
+}
+.mc-empty {
+  padding: var(--sp-4) 0;
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+.chat-meta-override {
+  color: var(--accent-ink);
+}

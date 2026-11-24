@@ -78,7 +78,7 @@ def _declared_write(profile: PermissionProfile) -> bool:
 def _check_tool_closure(profiles: list[PermissionProfile]) -> list[Finding]:
     """工具集里的每个工具都必须在提示词里有描述，否则模型不知道它存在。"""
     findings: list[Finding] = []
-    system = _render_system_prompt("<workdir>")
+    system = _render_system_prompt("<workdir>", "<shell>")
     for profile in profiles:
         note = policy_note(profile)
         mentioned = _mentions(system) | _mentions(note)
@@ -118,7 +118,7 @@ def _check_placeholders() -> list[Finding]:
                 hint=f"允许的键: {', '.join(sorted(_EXPECTED_PLACEHOLDERS))}",
             )
         )
-    rendered = _render_system_prompt("<workdir>")
+    rendered = _render_system_prompt("<workdir>", "<shell>")
     if "{" in rendered or "}" in rendered:
         findings.append(_finding("S2", "error", "prompt", "渲染后仍残留花括号，占位符未被替换"))
     hit = _ABS_PATH.search(rendered)

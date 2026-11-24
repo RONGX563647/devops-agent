@@ -153,6 +153,19 @@ class SecretVault:
         assert stored is not None  # 刚写入，必然存在
         return stored
 
+    def name_for_value(self, value: str) -> str | None:
+        """按指纹反查已入库的同一明文，用于输出捕获时复用名字而不重复登记。
+
+        指纹是 sha256 前 12 位，碰撞概率可忽略；即便真碰撞，也只是让两个不同值
+        共用一个占位符（解密时取到先存的那个），不会泄漏明文。
+        """
+        fp = fingerprint(value)
+        with connect(self._db) as conn:
+            row = conn.execute(
+                "SELECT name FROM secrets WHERE fingerprint = ? LIMIT 1", (fp,)
+            ).fetchone()
+        return str(row["name"]) if row is not None else None
+
     def get(self, name: str) -> str | None:
         """取明文并记一次使用；解不开或不存在都返回 None。"""
         clean = safe_name(name)

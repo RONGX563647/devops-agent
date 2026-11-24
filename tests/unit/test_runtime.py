@@ -8,7 +8,6 @@ import pytest
 from agentscope.agent import Agent
 from agentscope.pipeline import GoalPipeline, TeamMember, TeamPipeline
 
-from devops_agent.config import ModelPolicy, ReactPolicy, RuntimePolicy
 from devops_agent.governance.profiles import PROFILES, default_profile
 from devops_agent.runtime.agent import (
     PROFILE_KEY,
@@ -143,21 +142,17 @@ def test_build_chat_model_request_flag_overrides_env(monkeypatch: pytest.MonkeyP
     assert build_chat_model(enable_search=False).extra_body is None
 
 
-def test_build_agent_reads_policy_defaults() -> None:
-    policy = RuntimePolicy(
-        react=ReactPolicy(default=7, delivery=9),
-        model=ModelPolicy(max_retries=5),
-    )
-    general = build_agent("schedule", "sys", MagicMock(), policy=policy)
-    delivery = build_agent("delivery", "sys", MagicMock(), policy=policy)
-    assert general.react_config.max_iters == 7
-    assert delivery.react_config.max_iters == 9
-    assert general.model_config.max_retries == 5
+def test_build_agent_reads_config_defaults() -> None:
+    """默认值只有一个来源：config/model.yaml（此前 policy.yaml 与本文件的硬编码各说一套）。"""
+    general = build_agent("schedule", "sys", MagicMock())
+    delivery = build_agent("delivery", "sys", MagicMock())
+    assert general.react_config.max_iters == 12
+    assert delivery.react_config.max_iters == 16
+    assert general.model_config.max_retries == 3
 
 
-def test_build_agent_explicit_limits_override_policy() -> None:
-    policy = RuntimePolicy(react=ReactPolicy(default=7), model=ModelPolicy(max_retries=5))
-    agent = build_agent("schedule", "sys", MagicMock(), max_iters=2, max_retries=1, policy=policy)
+def test_build_agent_explicit_limits_override_config() -> None:
+    agent = build_agent("schedule", "sys", MagicMock(), max_iters=2, max_retries=1)
     assert agent.react_config.max_iters == 2
     assert agent.model_config.max_retries == 1
 

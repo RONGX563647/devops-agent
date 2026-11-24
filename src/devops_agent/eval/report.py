@@ -233,6 +233,71 @@ def _round_or_none(value: float | None, digits: int = 4) -> float | None:
     return round(value, digits) if value is not None else None
 
 
+def _is_blocking(run: CaseRun) -> bool:
+    """这条用例是否带阻断性硬失败。"""
+    return bool(BLOCKING_KEYS.intersection(run.score.hard_failures))
+
+
+def _is_scoring_only(run: CaseRun) -> bool:
+    """只有计分类硬失败（不含任何阻断类）。"""
+    return bool(set(run.score.hard_failures) - BLOCKING_KEYS)
+
+
+def _mean_trajectory(items: Sequence[CaseRun]) -> tuple[float | None, int]:
+    """轨迹分均值与样本数。分开返回是因为门禁要同时判「值」与「够不够」。"""
+    values = [run.score.trajectory_score for run in items if run.score.trajectory_score is not None]
+    return _round_or_none(_mean(values)), len(values)
+
+
+def _case_rows_of(items: Sequence[CaseRun]) -> list[dict[str, Any]]:
+    """逐用例的通过快照（compare 用它算「哪几条翻转了」）。"""
+    return [
+        {"case_id": run.case.id, "passed": run.score.passed, "status": run.trace.status}
+        for run in items
+    ]
+
+
+def _count_by(items: Sequence[CaseRun], predicate: Callable[[CaseRun], bool]) -> int:
+    """按谓词计数（把带条件的生成器从 summary 拼装里挪出来）。"""
+    return sum(1 for run in items if predicate(run))
+
+
+def _summary_payload(
+    items: Sequence[CaseRun],
+    *,
+    gates: list[dict[str, Any]],
+    judge_means: dict[str, float] | None,
+    trajectory: float | None,
+    min_cases_for_gate: int,
+) -> dict[str, Any]:
+    """拼装配好的 summary 字段。
+
+    单独一个函数是为了把「一堆带条件的分支」和「编排」隔开：
+    圈复杂度门禁是每函数 ≤10，混在一起会双双超标。
+    """
+    n = len(items)
+    passed = _count_by(items, lambda run: run.score.passed)
+    has_blocking = any(_is_blocking(run) for run in items)
+    return {
+        "n": n,
+        "passed": passed,
+        "pass_rate": round(passed / n, 4) if n else 0.0,
+        "hard_failures": _count_hard(items),
+        "hard_blocking": _count_by(items, _is_blocking),
+        "hard_scoring": _count_by(items, _is_scoring_only),
+        "judge": judge_means,
+        "trajectory_score": trajectory,
+        "p95_ms": _p95([run.latency_ms for run in items]),
+        "tokens_total": sum(run.tokens for run in items),
+        "tags": _tag_counts(items),
+        "subjects": _subject_counts(items),
+        "min_cases_for_gate": min_cases_for_gate,
+        "gates": gates,
+        "verdict": _verdict_from_gates(gates, has_blocking),
+        "cases": _case_rows_of(items),
+    }
+
+
 def aggregate(
     runs: Iterable[CaseRun],
     min_cases_for_gate: int = 40,
@@ -244,49 +309,26 @@ def aggregate(
     verdict 由 gates 归约而来，不再是一句 `n < 40 → insufficient` 的硬编码。
     """
     items = list(runs)
-    n = len(items)
     passed = sum(1 for run in items if run.score.passed)
-
-    trajectories = [
-        run.score.trajectory_score for run in items if run.score.trajectory_score is not None
-    ]
-    trajectory = _round_or_none(_mean(trajectories))
+    trajectory, trajectory_n = _mean_trajectory(items)
     judge_means = _judge_means(items)
     gates = _gate_rows(
         passed=passed,
-        n=n,
+        n=len(items),
         judge_means=judge_means,
         judge_counts=_judge_counts(items),
         trajectory=trajectory,
-        trajectory_n=len(trajectories),
+        trajectory_n=trajectory_n,
         thresholds=_normalized_thresholds(thresholds),
         min_cases_for_gate=min_cases_for_gate,
     )
-    blocking_hard = any(BLOCKING_KEYS.intersection(run.score.hard_failures) for run in items)
-
-    return {
-        "n": n,
-        "passed": passed,
-        "pass_rate": round(passed / n, 4) if n else 0.0,
-        "hard_failures": _count_hard(items),
-        "hard_blocking": sum(
-            1 for run in items if BLOCKING_KEYS.intersection(run.score.hard_failures)
-        ),
-        "hard_scoring": sum(1 for run in items if set(run.score.hard_failures) - BLOCKING_KEYS),
-        "judge": judge_means,
-        "trajectory_score": trajectory,
-        "p95_ms": _p95([run.latency_ms for run in items]),
-        "tokens_total": sum(run.tokens for run in items),
-        "tags": _tag_counts(items),
-        "subjects": _subject_counts(items),
-        "min_cases_for_gate": min_cases_for_gate,
-        "gates": gates,
-        "verdict": _verdict_from_gates(gates, blocking_hard),
-        "cases": [
-            {"case_id": run.case.id, "passed": run.score.passed, "status": run.trace.status}
-            for run in items
-        ],
-    }
+    return _summary_payload(
+        items,
+        gates=gates,
+        judge_means=judge_means,
+        trajectory=trajectory,
+        min_cases_for_gate=min_cases_for_gate,
+    )
 
 
 def _subject_counts(items: Sequence[CaseRun]) -> dict[str, dict[str, int]]:

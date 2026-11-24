@@ -10,6 +10,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # 行尾门禁：.gitattributes 规定全仓库 LF；二进制文件显示为 none，放行。
+      # 任何新文件若是 CRLF 或文件内混用，这里直接拦下，不再靠人工 review 发现。
+      - name: line endings (LF only)
+        run: |
+          bad="$(git ls-files --eol | awk '$1 != "i/lf" && $1 != "i/none" || $2 != "w/lf" && $2 != "w/none"')"
+          if [ -n "$bad" ]; then
+            echo "::error::以下文件行尾不是 LF："
+            echo "$bad"
+            exit 1
+          fi
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"

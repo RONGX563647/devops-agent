@@ -212,7 +212,8 @@ describe('TraceTab', () => {
     wrap(<TraceTab session="s-two" />);
 
     expect(await screen.findByRole('heading', { name: '会话轨迹' })).toBeTruthy();
-    // 轮次视图里才有「第 N 轮 · 用户问题」这一行
+    // 轮次视图是默认入口；此刻再点「轮次」胶囊会全部折叠，再点一次才回到全展开
+    fireEvent.click(screen.getByRole('tab', { name: '轮次' }));
     fireEvent.click(screen.getByRole('tab', { name: '轮次' }));
     // 轮次分隔 + 步骤行：入参摘要直接出现在行里，不用点开
     expect(screen.getAllByText(/为什么部署失败/).length).toBeGreaterThan(0);
@@ -318,5 +319,113 @@ describe('TraceTab', () => {
     // 附件数标在轮次头部，只有轮次视图才有
     fireEvent.click(await screen.findByRole('tab', { name: '轮次' }));
     expect(await screen.findByText(/1 附件/)).toBeTruthy();
+  });
+
+  /** 两轮会话：第一轮一次成功工具，第二轮一次失败工具。 */
+  const twoTurns: ChatMessage[] = [
+    { id: 'u1', role: 'user', text: '第一问', at: '2026-11-23T10:00:00.000Z', steps: [] },
+    {
+      id: 'a1',
+      role: 'assistant',
+      text: '看完了。',
+      at: '2026-11-23T10:00:01.000Z',
+      endedAt: '2026-11-23T10:00:03.000Z',
+      steps: [
+        {
+          id: 'tool:t1',
+          kind: 'tool',
+          label: '调用工具 · Bash',
+          detail: '',
+          state: 'success',
+          toolName: 'Bash',
+          at: '2026-11-23T10:00:01.000Z',
+          endedAt: '2026-11-23T10:00:02.000Z',
+          args: '{"command":"ls -la"}',
+          result: 'a.txt',
+        },
+      ],
+    },
+    { id: 'u2', role: 'user', text: '第二问', at: '2026-11-23T10:05:00.000Z', steps: [] },
+    {
+      id: 'a2',
+      role: 'assistant',
+      text: '测试挂了。',
+      at: '2026-11-23T10:05:01.000Z',
+      endedAt: '2026-11-23T10:05:04.000Z',
+      steps: [
+        {
+          id: 'tool:t2',
+          kind: 'tool',
+          label: '调用工具 · Bash',
+          detail: '',
+          state: 'error',
+          toolName: 'Bash',
+          at: '2026-11-23T10:05:01.000Z',
+          endedAt: '2026-11-23T10:05:03.000Z',
+          args: '{"command":"npm test"}',
+          result: 'FAIL 2 tests',
+        },
+      ],
+    },
+  ];
+
+  it('默认只展开最后一轮：长会话进来不会被全展开劝退', async () => {
+    saveMessages('s-default-collapse', twoTurns);
+    const { container } = wrap(<TraceTab session="s-default-collapse" />);
+    await screen.findByText(/第一问/);
+
+    // 只看列表区：右侧检查面板会展示当前选中步骤的入参，不参与这条断言
+    const list = container.querySelector('.trace-scroll')?.textContent ?? '';
+    expect(list).toContain('command: npm test');
+    expect(list).not.toContain('command: ls -la');
+  });
+
+  it('全部折叠 / 全部展开，以及胶囊 toggle 语义', async () => {
+    saveMessages('s-collapse-actions', twoTurns);
+    const { container } = wrap(<TraceTab session="s-collapse-actions" />);
+    const list = () => container.querySelector('.trace-scroll')?.textContent ?? '';
+
+    fireEvent.click(await screen.findByRole('button', { name: '全部展开' }));
+    expect(list()).toContain('command: ls -la');
+
+    fireEvent.click(screen.getByRole('button', { name: '全部折叠' }));
+    expect(list()).not.toContain('command: ls -la');
+    expect(list()).not.toContain('command: npm test');
+
+    // 胶囊 toggle：全展开状态下再点「轮次」= 全部折叠，再点 = 全部展开
+    fireEvent.click(screen.getByRole('button', { name: '全部展开' }));
+    expect(list()).toContain('command: ls -la');
+    const pill = screen.getByRole('tab', { name: '轮次' });
+    fireEvent.click(pill);
+    expect(list()).not.toContain('command: ls -la');
+    fireEvent.click(pill);
+    expect(list()).toContain('command: ls -la');
+  });
+
+  it('仅看异常只留出问题的轮次', async () => {
+    saveMessages('s-only-errors', twoTurns);
+    const { container } = wrap(<TraceTab session="s-only-errors" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '仅看异常' }));
+    const list = container.querySelector('.trace-scroll')?.textContent ?? '';
+    expect(list).not.toContain('第一问');
+    expect(list).toContain('第二问');
+    expect(list).toContain('command: npm test');
+  });
+
+  it('折叠态写进 sessionStorage：刷新后不用重新点', async () => {
+    saveMessages('s-persist', twoTurns);
+    wrap(<TraceTab session="s-persist" />);
+    fireEvent.click(await screen.findByRole('button', { name: '全部折叠' }));
+
+    const raw = sessionStorage.getItem('trace:collapsed:s-persist');
+    expect(raw).toBeTruthy();
+    expect(Object.values(JSON.parse(raw!) as Record<string, boolean>)).toEqual([true, true]);
+
+    // 重新挂载（等价于刷新）：折叠态从存储里恢复
+    cleanup();
+    wrap(<TraceTab session="s-persist" />);
+    expect(await screen.findByText(/第一问/)).toBeTruthy();
+    expect(screen.queryByText(/command: ls -la/)).toBeNull();
   });
 });

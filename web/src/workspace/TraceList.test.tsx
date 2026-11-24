@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useState } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage, ProcessEntry } from '../types';
@@ -81,6 +82,11 @@ function renderList(overrides: Partial<React.ComponentProps<typeof TraceList>> =
     activeStepId: null,
     activeTurnId: null,
     context: null,
+    // 空对象 = 全部展开；「只展开最后一轮」是上层（TraceTab）的默认策略
+    collapsed: {} as Record<string, boolean>,
+    visibleTurns: 5 as number | null,
+    onToggleTurn: vi.fn(),
+    onLoadMore: vi.fn(),
     onSelectStep: vi.fn(),
     onSelectTurn: vi.fn(),
     ...overrides,
@@ -108,11 +114,12 @@ describe('TraceList', () => {
     expect(container.querySelector('mark')?.textContent).toBe('FAIL');
   });
 
-  it('轮次默认展开，点标题收起整轮', () => {
-    renderList({ mode: 'turn' });
+  it('点轮次标题把折叠意图交给上层（受控组件）', () => {
+    const { props } = renderList({ mode: 'turn' });
     expect(screen.getByText(/command: ls -la/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /第 1 轮/ }));
-    expect(screen.queryByText(/command: ls -la/)).toBeNull();
+    // 折叠态由 TraceTab 持有：这里只验证回调带对了轮次
+    expect(props.onToggleTurn).toHaveBeenCalledWith('u0');
   });
 
   it('调用模式按工具聚合次数与总耗时', () => {
@@ -127,7 +134,7 @@ describe('TraceList', () => {
     expect(screen.getByText(/^\+ new\(\);$/)).toBeTruthy();
   });
 
-  it('轮次很多时先只渲染最近 5 轮，可加载更早的', () => {
+  it('轮次很多时先只渲染最近 5 轮，可放开显示全部', () => {
     const many = conversation(
       Array.from({ length: 7 }, (_, i) => ({
         question: `问题 ${i + 1}`,
@@ -135,7 +142,30 @@ describe('TraceList', () => {
         steps: [tool({ id: `t${i}`, toolName: 'Bash', at: `2026-11-23T10:0${i}:01.000Z` })],
       })),
     );
-    renderList({ turns: turnsFromMessages(many) });
+    const turns = turnsFromMessages(many);
+
+    /** 最小受控壳：按钮只负责把「最近 5 轮」放开成全部，验证回调确实被接上了。 */
+    function Harness() {
+      const [visible, setVisible] = useState<number | null>(5);
+      return (
+        <TraceList
+          turns={turns}
+          mode="turn"
+          query=""
+          activeStepId={null}
+          activeTurnId={null}
+          context={null}
+          collapsed={{}}
+          visibleTurns={visible}
+          onToggleTurn={vi.fn()}
+          onLoadMore={() => setVisible(null)}
+          onSelectStep={vi.fn()}
+          onSelectTurn={vi.fn()}
+        />
+      );
+    }
+
+    render(<Harness />);
     expect(screen.getByText(/加载更早的 2 轮/)).toBeTruthy();
     fireEvent.click(screen.getByText(/加载更早的 2 轮/));
     expect(screen.getAllByText(/问题 1/).length).toBeGreaterThan(0);
@@ -195,6 +225,112 @@ describe('TraceList', () => {
     expect(durations[0]).toBe('2.0s');
     expect(container.textContent).toContain('第 2 轮');
     expect(container.textContent).toContain('按耗时降序');
+  });
+
+  const MODEL_TURNS = turnsFromMessages(
+    conversation([
+      {
+        question: '解释一下部署失败',
+        at: '2026-11-23T10:00:00.000Z',
+        text: '镜像拉取超时。',
+        steps: [
+          {
+            id: 'model:1',
+            kind: 'model',
+            label: '模型调用 · qwen3.8',
+            detail: '',
+            state: 'success',
+            at: '2026-11-23T10:00:01.000Z',
+            endedAt: '2026-11-23T10:00:11.000Z',
+            tokensIn: 1_000,
+            tokensOut: 50,
+            cacheTokens: 800,
+          },
+          tool({
+            id: 't1',
+            toolName: 'Bash',
+            at: '2026-11-23T10:00:11.000Z',
+            endedAt: '2026-11-23T10:00:13.000Z',
+            args: '{"command":"kubectl describe pod"}',
+            result: 'ImagePullBackOff',
+          }),
+        ],
+      },
+    ]),
+  );
+
+  it('时长视图纳入模型调用：泳道里有长条，列表里就必须有对应行', () => {
+    const { container } = renderList({ turns: MODEL_TURNS, mode: 'time' });
+    const rows = Array.from(container.querySelectorAll('.trace-step'));
+    // 10s 的模型调用排在 2s 的 Bash 之前，且带「模型」徽标
+    expect(rows[0].textContent).toContain('qwen3.8');
+    expect(rows[0].textContent).toContain('10.0s');
+    expect(rows[0].querySelector('.trace-badge')?.textContent).toBe('模型');
+    expect(rows[1].textContent).toContain('Bash');
+    // 占比列与帕累托合计都在
+    expect(container.textContent).toContain('83%');
+    expect(container.textContent).toContain('前 2 步占 100%');
+  });
+
+  it('估算值沉底并带 ≈，不抢「最慢」的第一行', () => {
+    const turns = turnsFromMessages([
+      { id: 'u1', role: 'user', text: 'q', at: '2026-11-23T10:00:00.000Z', steps: [] },
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '',
+        at: '2026-11-23T10:00:01.000Z',
+        endedAt: '2026-11-23T10:00:30.000Z',
+        steps: [
+          // 没有 endedAt：只能按「下一步时间 − 本步时间」插出 19s
+          tool({ id: 'slow', toolName: 'Bash', at: '2026-11-23T10:00:01.000Z' }),
+          {
+            id: 'model:1',
+            kind: 'model',
+            label: '模型调用 · qwen3.8',
+            detail: '',
+            state: 'success',
+            at: '2026-11-23T10:00:20.000Z',
+            endedAt: '2026-11-23T10:00:22.000Z',
+          },
+        ],
+      },
+    ]);
+    const { container } = renderList({ turns, mode: 'time' });
+    const rows = Array.from(container.querySelectorAll('.trace-step'));
+    // 22s 的模型不是最慢：插值出来的 19s 更大，但必须沉底
+    expect(rows[0].textContent).toContain('qwen3.8');
+    expect(rows[rows.length - 1].querySelector('.trace-dur')?.textContent).toBe('≈19.0s');
+    expect(container.textContent).toContain('1 条估算未计入');
+  });
+
+  it('调用视图按模型/工具分组，点一行就地展开每一次调用', () => {
+    const { container, props } = renderList({ turns: MODEL_TURNS, mode: 'call' });
+    const heads = Array.from(container.querySelectorAll('.trace-call-head'));
+    expect(heads.map((head) => head.textContent)).toEqual([
+      expect.stringContaining('qwen3.8'),
+      expect.stringContaining('Bash'),
+    ]);
+    // 单次调用没有「分位」可言，p95 不显示
+    expect(heads[0].textContent).toContain('1 次 · 合计 10.0s · 均值 10.0s · 最慢 10.0s');
+
+    fireEvent.click(heads[1]);
+    const item = container.querySelector('.trace-call-item');
+    expect(item?.textContent).toContain('第 1 轮');
+    expect(item?.textContent).toContain('ImagePullBackOff');
+    fireEvent.click(item!);
+    // 展开的条目点一下就选中左侧详情
+    expect(props.onSelectStep).toHaveBeenCalledTimes(1);
+  });
+
+  it('全部折叠由上层控制：收起后只留轮次头', () => {
+    const turns = turnsFromMessages(TWO_TURNS);
+    const collapsed = Object.fromEntries(turns.map((turn) => [turn.id, true]));
+    renderList({ turns, collapsed });
+    expect(screen.queryByText(/command: ls -la/)).toBeNull();
+    // 折叠态也要能判断值不值得展开：步数、工具数、耗时、最慢一步都在头上
+    expect(screen.getByText(/3 步 · 2 工具/)).toBeTruthy();
+    expect(screen.getByText(/最慢 Edit 1.0s/)).toBeTruthy();
   });
 
   it('每轮第 0 步给出上下文：默认收起，点开看构成、系统提示词与工具 schema', () => {

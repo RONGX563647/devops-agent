@@ -16,8 +16,10 @@ const STEP: TraceStep = {
   title: 'Bash',
   text: '',
   at: 0,
+  timing: { start: 0, end: 4_400, durationMs: 4_400, source: 'measured' },
   durationMs: 4_400,
   measured: true,
+  share: 0.07,
   status: 'success',
   toolName: 'Bash',
   toolCallId: 'tc_04',
@@ -41,6 +43,8 @@ const TURN = {
   tools: 2,
   failed: false,
   items: [],
+  measuredMs: 30_000,
+  wallMs: 30_000,
   spans: [],
   tokens: { in: 0, out: 0, cache: 0 },
   errorCount: 0,
@@ -85,8 +89,8 @@ describe('TraceInspector', () => {
     wrap(<TraceInspector step={STEP} turn={TURN} totalMs={60_000} />);
     fireEvent.click(screen.getByRole('tab', { name: '计时' }));
     expect(screen.getByText('事件时间戳')).toBeTruthy();
-    expect(screen.getByText('占本轮')).toBeTruthy();
-    expect(screen.getByText('占全会话')).toBeTruthy();
+    expect(screen.getByText('占本轮实测')).toBeTruthy();
+    expect(screen.getByText('占全会话实测')).toBeTruthy();
   });
 
   it('Schema 页签读工具注册表', async () => {

@@ -49,7 +49,9 @@ export function TraceRail({ turns, activeId, streaming, onLocate, onOpenTrace }:
           </strong>
           <p>{hovered.question || '（空问题）'}</p>
           <span className="ws-rail-meta mono">
-            {hovered.tools} 次工具调用 · {formatDuration(hovered.endedAt - hovered.startedAt)}
+            {hovered.tools} 次工具调用 ·{' '}
+            {/* 优先实测（span 并集）；老数据没有 span 时退回起止差 */}
+            {formatDuration(hovered.measuredMs || hovered.endedAt - hovered.startedAt)}
           </span>
         </div>
       )}

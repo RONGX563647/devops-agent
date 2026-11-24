@@ -49,6 +49,9 @@ class RunOut(BaseModel):
     cache_creation_input_tokens: int = 0
     # 本轮权限档位；老记录为空串
     permission: str = ""
+    # 双口径耗时：work_ms 是 span 并集（真正在干活），wall_ms 是起止差（含用户空闲）
+    work_ms: int = 0
+    wall_ms: int = 0
 
 
 class SpanOut(BaseModel):
@@ -68,6 +71,9 @@ class SpanOut(BaseModel):
     output_tokens: int = 0
     cache_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    # run 内单调序号与父 span：泳道与列表共用，工具可追溯到发起它的模型调用
+    seq: int = 0
+    parent_id: int | None = None
 
 
 class InputStageOut(BaseModel):
@@ -299,6 +305,8 @@ def _run_out(run: RunRecord) -> RunOut:
         cache_input_tokens=run.cache_input_tokens,
         cache_creation_input_tokens=run.cache_creation_input_tokens,
         permission=run.permission,
+        work_ms=run.work_ms,
+        wall_ms=run.wall_ms,
     )
 
 
@@ -321,6 +329,8 @@ def _span_out(span: SpanRecord) -> SpanOut:
         output_tokens=span.output_tokens,
         cache_input_tokens=span.cache_input_tokens,
         cache_creation_input_tokens=span.cache_creation_input_tokens,
+        seq=span.seq,
+        parent_id=span.parent_id,
     )
 
 

@@ -1,0 +1,3 @@
+# 全仓库统一 LF：提交时归一化，检出时也用 LF（Windows 上不再变回 CRLF）。
+# text=auto 让 git 自动识别二进制文件，二进制不参与转换。
+* text=auto eol=lf

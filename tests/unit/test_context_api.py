@@ -50,13 +50,24 @@ def test_context_reports_size_and_prefix() -> None:
     assert all(tool["parameters"] for tool in body["tools"])
 
 
-def test_fingerprint_survives_profile_switch() -> None:
-    """切档不改前缀：指纹必须相同——这正是历史还能命中缓存的依据。"""
+def test_fingerprint_survives_approvals_switch() -> None:
+    """同一能力范围内只换打扰程度：工具集不变，前缀指纹必须相同。
+
+    这是「两维拆分」的直接收益：`approvals` 不动工具集，所以把打扰程度调高
+    不会击穿前缀缓存。跨 `scope` 切档（readonly ↔ workspace）会换来写工具，
+    前缀本来就该变 —— 这里同时把这条边界钉住，避免有人把它当成回归。
+    """
     first = client.get("/api/context?profile=readonly").json()
     second = client.get("/api/context?profile=readonly").json()
     workspace = client.get("/api/context?profile=workspace").json()
+    cautious = client.get("/api/context?profile=cautious").json()
+
     assert first["prefix_fingerprint"] == second["prefix_fingerprint"]
-    assert first["prefix_fingerprint"] == workspace["prefix_fingerprint"]
+    # 同 scope、不同 approvals：工具集一致 → 指纹一致
+    assert workspace["prefix_fingerprint"] == cautious["prefix_fingerprint"]
+    # 跨 scope：多了 Write/Edit，指纹必然不同（不是回归，是工具集变了）
+    assert first["prefix_fingerprint"] != workspace["prefix_fingerprint"]
+
     # 档位说明本身仍然不同，只是放在消息末尾而不是前缀里
     assert first["policy_note"] != workspace["policy_note"]
     assert "只读" in first["policy_note"]
@@ -78,7 +89,11 @@ def test_context_unknown_profile_falls_back_to_default() -> None:
 
 
 def test_estimate_tokens_calibrated_on_real_context() -> None:
-    """估算要和实测同量级：409 字提示 + 一万字符 schema 实测约 3060 token。"""
+    """估算要和实测同量级：提示 + 六个工具的 schema 实测约 3700 token。
+
+    量级比旧值（约 3060）高，是因为 workspace 档现在真的下发 Write/Edit ——
+    之前「档名叫工作区可写、工具集里没有写工具」正是被修掉的缺陷之一。
+    """
     body = client.get("/api/context").json()
-    assert 2600 < body["prefix_tokens"] < 3400
+    assert 3200 < body["prefix_tokens"] < 4200
     assert estimate_tokens("中文四个字") == 3  # 5 个汉字 ÷ 1.4

@@ -182,10 +182,10 @@ describe('权限档位', () => {
 
   it('send 带档位时先落档再发，避免请求与界面不一致', () => {
     const { result } = renderHook(() => useSession('s-q'));
-    act(() => send('s-q', 'hi', [], 'execute'));
-    expect(result.current.permission).toBe('execute');
-    expect(loadPermission('s-q')).toBe('execute');
-    expect(streamRunMock.mock.calls[0][6]).toBe('execute');
+    act(() => send('s-q', 'hi', [], 'cautious'));
+    expect(result.current.permission).toBe('cautious');
+    expect(loadPermission('s-q')).toBe('cautious');
+    expect(streamRunMock.mock.calls[0][6]).toBe('cautious');
   });
 
   it('重复切同一档不产生多余提交', () => {

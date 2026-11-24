@@ -20,22 +20,20 @@ from agentscope.middleware import MiddlewareBase
 
 from devops_agent.governance.profiles import PermissionProfile
 
-# 按档位改写的约束句：只读档说「没有写权限」，其余档说边界在哪。
+# 按「能力范围」改写的边界句：只读档说「没有写权限」，其余档说边界在哪。
 # 这条不同步改的话，切到放开档模型仍然不会写文件，表现为「权限切了但毫无变化」。
-_WRITE_RULES: dict[str, str] = {
+_SCOPE_RULES: dict[str, str] = {
     "readonly": "本会话是只读档：没有写权限，不要尝试 Edit/Write 类操作，被拒绝时如实说明。",
-    "workspace": (
-        "本会话可在工作区内建/删/改文件；工作区外的操作会被拦下并要求确认，"
-        "遇到拒绝就说明原因、换方案。"
-    ),
-    "execute": (
-        "本会话可在工作区内建/删/改文件，并可执行白名单内的构建/测试命令；"
-        "越界操作会要求确认，遇到拒绝就说明原因。"
-    ),
-    "auto": "本会话是无人值守档：越界操作一律被拒绝，不要反复重试同一条被拒的命令。",
-    "unrestricted": (
-        "本会话可直接改文件；但 .git/ 与 .env 类路径被硬性拒绝，遇到拒绝就换方案，不要绕过。"
-    ),
+    "workspace": "本会话可在工作区内建/删/改文件；工作区外的操作会被拦下，遇到拒绝就换方案。",
+    "container": "本会话不受工作区范围限制，可直接改文件；但 .git/、.env、.ssh/ 被硬性拒绝。",
+}
+
+# 按「打扰程度」改写的预期管理：用户选了「逐个确认」时，被频繁拦是正常现象，
+# 不要让模型误以为权限没生效而换着写法反复重试。
+_APPROVAL_RULES: dict[str, str] = {
+    "on-risk": "测试/构建命令会直接执行，其余命令会先要求确认；遇到拒绝就说明原因。",
+    "always": "每个动作都会要求确认（这是你选的打扰程度），不要因为被拦就反复重试同一条命令。",
+    "never": "越界操作一律被拒绝，不会有人来确认；不要反复重试同一条被拒的命令。",
 }
 
 _WRITE_TOOL_LINE = (
@@ -43,7 +41,7 @@ _WRITE_TOOL_LINE = (
 )
 
 # 一行说清「这次能干什么」；环境信息（工作目录等）不在这里，否则每轮都要重读历史。
-_POLICY_TAIL = """本会话权限：{profile_label}。{write_tool_line}{write_rule}"""
+_POLICY_TAIL = """本会话权限：{profile_label}。{write_tool_line}{scope_rule}{approval_rule}"""
 
 
 def policy_note(profile: PermissionProfile) -> str:
@@ -54,7 +52,8 @@ def policy_note(profile: PermissionProfile) -> str:
         write_tool_line=(
             _WRITE_TOOL_LINE.format(write_tool="Write", edit_tool="Edit") if writes else ""
         ),
-        write_rule=_WRITE_RULES.get(profile.key, _WRITE_RULES["workspace"]),
+        scope_rule=_SCOPE_RULES.get(profile.scope, _SCOPE_RULES["workspace"]),
+        approval_rule=_APPROVAL_RULES.get(profile.approvals, _APPROVAL_RULES["on-risk"]),
     )
 
 

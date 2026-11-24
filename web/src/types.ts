@@ -1,24 +1,65 @@
 /** 与后端 Pydantic 响应对齐的前端类型。 */
 
-/** 权限档位标识：与 governance/profiles.py 的 key 一一对应。 */
-export type PermissionKey = 'readonly' | 'workspace' | 'execute' | 'unrestricted' | 'auto';
+/** 权限档位标识：与 governance/profiles.py 的预设名一一对应。 */
+export type PermissionKey = 'readonly' | 'workspace' | 'cautious' | 'unattended' | 'container';
 
-/** 越界兜底动作：直接拒 / 弹确认 / deny_rules 硬拦。 */
-export type PermissionFallback = 'deny' | 'ask' | 'hard_deny';
+/** 能力范围：决定工具集与规则生效下限。 */
+export type PermissionScope = 'readonly' | 'workspace' | 'container';
+
+/** 打扰程度：只决定兜底动作（框架 mode），不改工具集。 */
+export type PermissionApprovals = 'always' | 'on-risk' | 'never';
+
+/** 一条已沉淀的规则（config/permissions.local.yaml）。 */
+export interface PermissionRule {
+  tool: string;
+  pattern: string | null;
+  behavior: 'allow' | 'ask' | 'deny';
+  source: string;
+  scope: PermissionScope;
+  /** 生成它的命令原文，撤销时知道当初批准了什么。 */
+  origin: string;
+  created_at: string;
+}
 
 /** 一个可选档位的展示信息（GET /api/permissions）。 */
 export interface PermissionMeta {
   key: PermissionKey;
   label: string;
   note: string;
-  fallback: PermissionFallback;
+  scope: PermissionScope;
+  approvals: PermissionApprovals;
+  /** `scope+approvals` 组合串，与后端重建判据一致。 */
+  combo: string;
+  tools: string[];
   /** 是否挂了 Write/Edit —— 界面据此显示「可写」标记。 */
   write: boolean;
+  /** 以下三行由后端拿真实引擎跑取样命令得出，不是手写文案。 */
+  auto_allow: string[];
+  will_ask: string[];
+  will_deny: string[];
+}
+
+/** 同一前缀被反复询问的计数：前端据此提示「以后都这样」。 */
+export interface PermissionFatigue {
+  tool: string;
+  prefix: string;
+  count: number;
+}
+
+export interface PermissionTrust {
+  mode: 'permissive' | 'strict';
+  workdirs: string[];
 }
 
 export interface PermissionCatalog {
   default: PermissionKey;
   available: PermissionMeta[];
+  scopes: PermissionScope[];
+  approvals: PermissionApprovals[];
+  rules: PermissionRule[];
+  rules_file: string;
+  trust: PermissionTrust;
+  fatigue: PermissionFatigue[];
 }
 
 /** 一条等待确认的调用。input 是服务端给的展示文本，不是可回传的命令。 */
@@ -32,10 +73,20 @@ export interface PendingCall {
 /** 确认作用域：只这次 / 精确这条 / 这个命令前缀。 */
 export type ConfirmScope = 'once' | 'exact' | 'prefix';
 
+/**
+ * 确认卡片的三个按钮：这一次 / 本会话 / 以后都这样。
+ *
+ * 前两者写会话规则，第三者额外落盘（`config/permissions.local.yaml`）。
+ * 与 `ConfirmScope` 分开：作用域管「规则多宽」，按钮管「记多久」。
+ */
+export type ConfirmChoice = 'once' | 'session' | 'forever' | 'reject';
+
 export interface ConfirmDecision {
   tool_call_id: string;
   confirmed: boolean;
   scope: ConfirmScope;
+  /** 「以后都这样」为真：写进部署级规则文件，跨会话保留。 */
+  persist?: boolean;
 }
 
 /** 挂起信息：GET /run/{id}/pending 的返回。 */

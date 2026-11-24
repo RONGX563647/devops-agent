@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import asdict
@@ -26,16 +27,19 @@ from agentscope.event import ConfirmResult, UserConfirmResultEvent
 from agentscope.message import Msg, TextBlock, ToolCallBlock
 from agentscope.middleware import MiddlewareBase
 from agentscope.model import ChatModelBase, OpenAIChatModel
-from agentscope.permission import PermissionBehavior, PermissionMode, PermissionRule
+from agentscope.permission import PermissionBehavior, PermissionRule
 from agentscope.state import AgentState
 from agentscope.tool import Toolkit
 from pydantic import SecretStr
 
 from devops_agent.config import RuntimePolicy, load_policy
+from devops_agent.governance import store
 from devops_agent.governance.policy import build_permission_context
-from devops_agent.governance.profiles import PermissionProfile, default_profile
+from devops_agent.governance.profiles import PROFILES, PermissionProfile, default_profile
+from devops_agent.governance.rules import Rule
 from devops_agent.runtime.confirm import (
     ConfirmDecision,
+    command_of,
     effective_scope,
     pending_call,
     rule_content_for,
@@ -47,9 +51,15 @@ from devops_agent.tools.catalog import build_toolkit_for, shell_name
 
 DEFAULT_SYSTEM_PROMPT = "你是 DevOps 助手，帮助处理持续交付、项目排期与 Bug 定位。"
 
+logger = logging.getLogger(__name__)
+
 # 装配用的工作目录：部署环境可用 DEVOPS_AGENT_WORKDIR 指定 Agent 能看的工作区，
 # 缺省取进程当前目录（本地开发即仓库根）。工具的相对路径与 shell 的 cwd 都基于它。
 WORKDIR_ENV = "DEVOPS_AGENT_WORKDIR"
+
+# 会话快照里记录「这份权限上下文是哪个档位编译的」。`middle_context` 能随
+# `model_dump(mode="json")` 持久化并回读，所以老会话也能识别出档位已变。
+PROFILE_KEY = "perm_key"
 
 # 工具约定必须写进系统提示：修复前 Agent 收到的只有一句角色描述，
 # 模型不知道自己有工具，于是把「工具调用 functions.exec」写进正文后直接结束。
@@ -199,13 +209,20 @@ def build_chat_model(enable_search: bool | None = None) -> OpenAIChatModel:
 def _state_for(profile: PermissionProfile, state: AgentState | None) -> AgentState:
     """准备跨轮状态：没有就新建；有但档位变了就重建权限上下文。
 
-    档位切换必须丢弃旧的 allow_rules —— 那些规则是在另一个信任级别下点
-    「本会话允许」攒的，跨档继续生效等于绕过用户这次的选择。
+    判据是 `profile.key`（`scope+approvals`）而不是 `mode`：`cautious` 与
+    `container` 的 mode 都是 `default`，只比 mode 会漏掉「同 mode 不同档」——
+    表现为切了档什么都没变，以及旧档点「本会话允许」攒下的规则串到新档。
+
+    老快照没有 `perm_key`：视为档位不同，重建一次。只换 `permission_context`，
+    `context`（对话历史）不动，用户无感。
     """
     if state is None:
-        return AgentState(permission_context=build_permission_context(profile=profile))
-    if state.permission_context.mode != PermissionMode(profile.mode):
+        fresh = AgentState(permission_context=build_permission_context(profile=profile))
+        fresh.middle_context[PROFILE_KEY] = profile.key
+        return fresh
+    if state.middle_context.get(PROFILE_KEY) != profile.key:
         state.permission_context = build_permission_context(profile=profile)
+        state.middle_context[PROFILE_KEY] = profile.key
     return state
 
 
@@ -254,15 +271,34 @@ class AgentScopeRuntime:
             asdict(pending_call(block.model_dump(mode="json"))) for block in self.awaiting_blocks()
         ]
 
-    @staticmethod
-    def _rules_for(decision: ConfirmDecision, block: ToolCallBlock) -> list[PermissionRule] | None:
-        """按作用域生成要沉淀的规则；高危命令强制降级为「只这一次」。"""
+    def _rules_for(
+        self, decision: ConfirmDecision, block: ToolCallBlock
+    ) -> list[PermissionRule] | None:
+        """按作用域生成要沉淀的规则；高危命令强制降级为「只这一次」。
+
+        `decision.persist` 为真时额外落盘（`config/permissions.local.yaml`）。
+        只写会话态的话规则随 session_states 快照生存：换会话、清历史、会话被
+        LRU 回收后重建就全部归零，用户体感是「怎么设都没用」。落盘之后跨会话、
+        跨进程、跨重启都在。
+        """
         if not decision.confirmed:
             return None
         scope = effective_scope(block.name, block.input, decision.scope)
         content = rule_content_for(scope, block.name, block.input)
         if content is None:
             return None
+        if decision.persist and self._profile.scope != "readonly":
+            # 记录「批准时的能力范围」：workspace 批准的规则不该渗回只读档
+            store.add_rule(
+                Rule(
+                    tool=block.name,
+                    pattern=content,
+                    behavior="allow",
+                    source="user",
+                    scope=self._profile.scope,
+                    origin=command_of(block.name, block.input),
+                )
+            )
         return [
             PermissionRule(
                 tool_name=block.name,
@@ -302,6 +338,23 @@ class AgentScopeRuntime:
             yield event_to_dict(event)
 
 
+def _apply_trust(profile: PermissionProfile, workdir: Path) -> PermissionProfile:
+    """strict 模式下，未信任的 workdir 强制降到只读档。
+
+    `scope=workspace` 只是路径判定，没有系统级强制（见 profiles.py 的模块
+    docstring）；信任目录是这条判定之外唯一的一层「这个目录我不认识，先别写」。
+    `trust.mode` 默认 `permissive`，不改变既有部署的行为。
+    """
+    if store.trust_config().is_trusted(workdir):
+        return profile
+    logger.warning(
+        "workdir 未被信任，强制降到只读档: %s（在 permissions.local.yaml 的 trust.workdirs "
+        "里加入该目录即可写入）",
+        workdir,
+    )
+    return PROFILES["readonly"]
+
+
 def build_agentscope_runtime(
     system_prompt: str | None = None,
     workdir: str | os.PathLike[str] | None = None,
@@ -311,13 +364,15 @@ def build_agentscope_runtime(
 ) -> AgentScopeRuntime:
     """装配真实运行时（env 提供模型凭据）。
 
-    - 工具：按档位装配（只读档四件套，放开档追加 Write/Edit）；
+    - 工具：按 `scope` 装配（只读档四件套，工作区/容器档追加 Write/Edit）；
     - 密钥：挂 SecretInjectionMiddleware —— 占位符在工具边界换成真值，
       返回里的真值再抹回占位符，模型全程看不到明文；
-    - 权限：注入档位对应的权限上下文（mode + 白名单 + deny_rules）。
+    - 权限：注入由「档位 + 规则」编译出的上下文（三名单 + mode）；
+    - 信任：strict 模式下未信任的 workdir 直接降到只读档。
     """
     resolved = profile if profile is not None else default_profile()
     base = resolve_workdir(workdir)
+    resolved = _apply_trust(resolved, base)
     agent = build_agent(
         name="devops",
         system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),

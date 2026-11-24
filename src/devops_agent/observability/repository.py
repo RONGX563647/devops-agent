@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import sqlite3
 from collections.abc import Iterator
@@ -22,6 +24,8 @@ from devops_agent.observability.models import (
     RunRecord,
     SpanRecord,
 )
+
+logger = logging.getLogger(__name__)
 
 DB_PATH_ENV = "DEVOPS_AGENT_DB_PATH"
 EVAL_DB_PATH_ENV = "DEVOPS_AGENT_EVAL_DB_PATH"
@@ -108,6 +112,15 @@ CREATE TABLE IF NOT EXISTS session_states (
     permission  TEXT NOT NULL DEFAULT '',
     updated_at  TEXT NOT NULL
 );
+-- 通用 KV 配置表：当前只放 model_config，以后 health/gates 的旋钮下放也复用它。
+-- 用 KV 而不是建 model_settings 表，是为了不再为每个配置域加一张表。
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    version    INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS eval_batches (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     suite         TEXT NOT NULL,
@@ -159,6 +172,16 @@ _RUN_COLUMNS: tuple[tuple[str, str], ...] = (
     # 失败原因原文：只记 status=failed 时，「37 个 span 全 ok 却失败」这种
     # 情况无法复盘，日志一滚就彻底丢了
     ("error", "TEXT NOT NULL DEFAULT ''"),
+    # 本轮实际下发的模型参数快照（只含非默认值）。参数可以随时改，
+    # 没有快照的话「参数变化点前后」的健康分与评测批次会混在一起算。
+    ("model_params", "TEXT NOT NULL DEFAULT ''"),
+)
+
+# session_states 上后加的列：会话级模型参数覆盖（JSON；空串 = 无覆盖）。
+# 必须落库：SessionRegistry 是 LRU，会话被回收后从 DB 重建，
+# 覆盖只在内存里的话一次淘汰就丢了。
+_SESSION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("model_config", "TEXT NOT NULL DEFAULT ''"),
 )
 
 # spans 上后加的列：逐调用的 token 分拆与缓存命中，用来回答「哪一步开始全冷」。
@@ -212,6 +235,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     """按 PRAGMA 结果补列。已存在的列跳过，重复执行安全。"""
     _ensure_columns(conn, "runs", _RUN_COLUMNS)
     _ensure_columns(conn, "spans", _SPAN_COLUMNS)
+    _ensure_columns(conn, "session_states", _SESSION_COLUMNS)
 
 
 def _ensure_columns(
@@ -240,8 +264,8 @@ def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
            (session_id, domain, status, input, output, started_at, ended_at,
             duration_ms, model, total_tokens, health_score,
             input_tokens, output_tokens, request_id, permission,
-            cache_input_tokens, cache_creation_input_tokens, work_ms, wall_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            cache_input_tokens, cache_creation_input_tokens, work_ms, wall_ms, model_params)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run.session_id,
             run.domain,
@@ -262,6 +286,7 @@ def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
             run.cache_creation_input_tokens,
             run.work_ms,
             run.wall_ms,
+            run.model_params,
         ),
     )
     assert cur.lastrowid is not None  # INSERT 成功时 sqlite3 保证有 lastrowid
@@ -429,6 +454,8 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         work_ms=row["work_ms"] or 0,
         wall_ms=row["wall_ms"] or 0,
         error=row["error"] or "",
+        # 老记录补列后是空串：读出来表示「未记录」，不假装是默认参数
+        model_params=row["model_params"] or "",
     )
 
 
@@ -590,7 +617,7 @@ def summary_rows(conn: sqlite3.Connection) -> list[RunRecord]:
         """SELECT id, session_id, domain, status, started_at, ended_at, duration_ms,
                   model, total_tokens, health_score, input_tokens, output_tokens, request_id,
                   cache_input_tokens, cache_creation_input_tokens, input, output, permission,
-                  work_ms, wall_ms, error
+                  work_ms, wall_ms, error, model_params
            FROM runs"""
     ).fetchall()
     return [_run_from_row(row) for row in rows]
@@ -747,6 +774,110 @@ def delete_session_state(conn: sqlite3.Connection, session_id: str) -> bool:
     """删除会话快照，返回是否命中。"""
     cur = conn.execute("DELETE FROM session_states WHERE session_id=?", (session_id,))
     return cur.rowcount > 0
+
+
+# --- 会话级模型参数覆盖 --------------------------------------------------
+# 与整份快照分开读写：快照是 AgentState 的大对象，参数覆盖是十几个小键，
+# 分开存才能在「只改一个温度」时不动对话历史。
+
+MODEL_CONFIG_KEY = "model_config"
+
+
+def save_session_model_config(
+    conn: sqlite3.Connection, session_id: str, config: dict[str, object], *, updated_at: str
+) -> None:
+    """写会话级参数覆盖；空 dict 等价于清空。会话行不存在时一并建出来。"""
+    payload = json.dumps(config, ensure_ascii=False, sort_keys=True) if config else ""
+    conn.execute(
+        """INSERT INTO session_states (session_id, state_json, permission, updated_at, model_config)
+           VALUES (?, '', '', ?, ?)
+           ON CONFLICT(session_id) DO UPDATE SET
+             model_config=excluded.model_config,
+             updated_at=excluded.updated_at""",
+        (session_id, updated_at, payload),
+    )
+
+
+def load_session_model_config(conn: sqlite3.Connection, session_id: str) -> dict[str, object]:
+    """读会话级覆盖；没有、为空串或 JSON 损坏时返回空 dict（当作无覆盖）。"""
+    row = conn.execute(
+        "SELECT model_config FROM session_states WHERE session_id=?", (session_id,)
+    ).fetchone()
+    if row is None:
+        return {}
+    raw = str(row["model_config"] or "")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("会话 %s 的 model_config 不是合法 JSON，按无覆盖处理", session_id)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+# --- 部署默认（settings KV） --------------------------------------------
+
+
+def load_setting(conn: sqlite3.Connection, key: str) -> tuple[dict[str, object], int] | None:
+    """读一条 KV 配置，返回 (值, 版本号)；不存在返回 None。"""
+    row = conn.execute("SELECT value, version FROM settings WHERE key=?", (key,)).fetchone()
+    if row is None:
+        return None
+    try:
+        data = json.loads(str(row["value"] or "{}"))
+    except json.JSONDecodeError:
+        logger.warning("settings[%s] 不是合法 JSON，按空配置处理", key)
+        data = {}
+    return (data if isinstance(data, dict) else {}), int(row["version"] or 1)
+
+
+def save_setting(
+    conn: sqlite3.Connection,
+    key: str,
+    value: dict[str, object],
+    *,
+    expected_version: int | None,
+    updated_at: str,
+    updated_by: str = "local",
+) -> int | None:
+    """写一条 KV 配置，返回新版本号；版本不匹配返回 None（调用方回 409）。
+
+    乐观并发与「跨进程失效信号」共用 version 一列：另一个进程读到的版本变了
+    就知道该重载，不需要额外的通知机制。
+    """
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if expected_version is None:
+        conn.execute(
+            """INSERT INTO settings (key, value, version, updated_at, updated_by)
+               VALUES (?, ?, 1, ?, ?)
+               ON CONFLICT(key) DO UPDATE SET
+                 value=excluded.value, version=settings.version+1,
+                 updated_at=excluded.updated_at, updated_by=excluded.updated_by""",
+            (key, payload, updated_at, updated_by),
+        )
+    else:
+        # 一条语句覆盖两种情形：没有记录时插入（version=0 → 1），
+        # 有记录且版本匹配时更新。版本不匹配则 WHERE 不成立、影响 0 行。
+        cur = conn.execute(
+            """INSERT INTO settings (key, value, version, updated_at, updated_by)
+               VALUES (?, ?, 1, ?, ?)
+               ON CONFLICT(key) DO UPDATE SET
+                 value=excluded.value, version=settings.version+1,
+                 updated_at=excluded.updated_at, updated_by=excluded.updated_by
+               WHERE settings.version = ?""",
+            (key, payload, updated_at, updated_by, expected_version),
+        )
+        if cur.rowcount == 0:
+            return None
+    row = conn.execute("SELECT version FROM settings WHERE key=?", (key,)).fetchone()
+    return int(row["version"]) if row is not None else None
+
+
+def current_setting_version(conn: sqlite3.Connection, key: str) -> int:
+    """只看版本号；没有记录时为 0（前端拿它做乐观并发的第一次写入）。"""
+    saved = load_setting(conn, key)
+    return saved[1] if saved is not None else 0
 
 
 # --- 评测批次 -----------------------------------------------------------

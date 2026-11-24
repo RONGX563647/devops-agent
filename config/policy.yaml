@@ -56,10 +56,6 @@ permission:
       source: profile
   ask_rules: []
 
-react:
-  max_iters:
-    default: 12
-    delivery: 16
-
-model:
-  max_retries: 3
+# 模型参数（max_iters / 两级重试 / 采样 / 上下文窗口）已迁到 config/model.yaml：
+# 它们要能在前端改，而 policy.yaml 是「权限与运行时策略」，混在一起会让
+# 「谁能改什么」说不清。这里不再保留同名键，避免两个默认值打架。

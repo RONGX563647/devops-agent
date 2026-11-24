@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 CONFIG_DIR_ENV = "DEVOPS_AGENT_CONFIG_DIR"
 
@@ -75,30 +75,58 @@ class PermissionPolicy(BaseModel):
     ask_rules: list[RuleSpec] = Field(default_factory=list)
 
 
-class ReactPolicy(BaseModel):
-    """policy.yaml 的 react.max_iters 段。"""
-
-    default: int = 12
-    delivery: int = 16
-
-    def max_iters_for(self, name: str) -> int:
-        """按域取 max_iters，未声明的域回退 default。"""
-        value = getattr(self, name, None)
-        return value if isinstance(value, int) else self.default
-
-
-class ModelPolicy(BaseModel):
-    """policy.yaml 的 model 段。"""
-
-    max_retries: int = 3
-
-
 class RuntimePolicy(BaseModel):
-    """policy.yaml 的完整类型化视图。"""
+    """policy.yaml 的完整类型化视图。
+
+    模型参数（含 max_iters / 两级重试）不在这里：它们已迁到 `config/model.yaml`
+    （见 `ModelSettings`）。留两个入口会让同一件事有两个默认值。
+    """
 
     permission: PermissionPolicy = Field(default_factory=PermissionPolicy)
-    react: ReactPolicy = Field(default_factory=ReactPolicy)
-    model: ModelPolicy = Field(default_factory=ModelPolicy)
+
+
+class ModelSettings(BaseModel):
+    """model.yaml 的 model 段：模型参数的部署默认。
+
+    每项都带 `Field(ge=, le=)`：越界在加载期就报错，而不是等到某次模型调用 400。
+    这里只放「部署者能决定」的值；`api_key` / `base_url` / `stream` 不在其中 ——
+    凭据不该经 HTTP 往返，流式关掉会让前端退化成一次性渲染。
+    """
+
+    # 空串 = 用环境变量 DEVOPS_AGENT_MODEL
+    name: str = ""
+    # 上下文窗口：同时决定压缩阈值、圆环分母、压缩后保留量
+    context_size: int = Field(default=128_000, ge=8192, le=2_000_000)
+    # 部署者有没有确认过这个窗口值；false 时前端显示「未校准」
+    context_calibrated: bool = False
+    # 两级重试：最坏尝试 = (1 + model) × (1 + agent)
+    model_max_retries: int = Field(default=3, ge=0, le=5)
+    agent_max_retries: int = Field(default=3, ge=0, le=5)
+    # 按域取值的迭代上限；未声明的域回落 default
+    max_iters: dict[str, int] = Field(default_factory=lambda: {"default": 12})
+    # 采样参数：None = 交给供应商默认（不猜）
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    max_tokens: int | None = Field(default=None, ge=1)
+    top_p: float | None = Field(default=None, gt=0, le=1)
+    reasoning_effort: str | None = None
+    thinking_enable: bool | None = None
+    parallel_tool_calls: bool = True
+    # 上下文压缩（框架 ContextConfig 的三个比例）
+    trigger_ratio: float = Field(default=0.8, gt=0, le=0.9)
+    reserve_ratio: float = Field(default=0.1, gt=0, lt=0.9)
+    context_buffer_ratio: float = Field(default=0.2, ge=0, le=1)
+
+    def max_iters_for(self, domain: str) -> int:
+        """按域取 max_iters，未声明的域回退 default。"""
+        return int(self.max_iters.get(domain, self.max_iters.get("default", 12)))
+
+    @model_validator(mode="after")
+    def _check_ratios(self) -> ModelSettings:
+        """联动约束在加载期就报错：框架的 `_validate_context_config_ratios` 会抛异常，
+        与其等到某次推理前炸掉，不如启动时就说清哪个值写错了。"""
+        if self.reserve_ratio >= self.trigger_ratio:
+            raise ValueError("model.reserve_ratio 必须小于 model.trigger_ratio")
+        return self
 
 
 class QualityGates(BaseModel):
@@ -172,8 +200,20 @@ def load_health() -> HealthPolicy:
     return HealthPolicy.model_validate(data.get("health", data))
 
 
+@cache
+def load_model() -> ModelSettings:
+    """加载并缓存模型参数默认值（model.yaml 的 model 段）。
+
+    文件缺失时返回内置默认（与 `load_policy` 同样的降级策略）：
+    写错配置不该让服务起不来，只是全部回落到默认值。
+    """
+    data = _load_yaml("model.yaml")
+    return ModelSettings.model_validate(data.get("model", data))
+
+
 def clear_cache() -> None:
     """测试中切换配置目录后调用。"""
     load_policy.cache_clear()
     load_gates.cache_clear()
     load_health.cache_clear()
+    load_model.cache_clear()

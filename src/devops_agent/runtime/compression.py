@@ -30,22 +30,30 @@ from typing import Any
 from agentscope.agent import Agent, ContextConfig
 from agentscope.middleware import MiddlewareBase
 
+from devops_agent.config import load_model
+
 CONTEXT_BUDGET = "CONTEXT_BUDGET"
 CONTEXT_COMPRESSION_START = "CONTEXT_COMPRESSION_START"
 CONTEXT_COMPRESSION_END = "CONTEXT_COMPRESSION_END"
 
-# 阈值 = trigger_ratio × context_size。agentscope 内部也是这么算的
-# （_agent.py 的 _compress_context_impl），这里只复述，不另立口径。
-_DEFAULT_TRIGGER_RATIO = 0.8
-_DEFAULT_CONTEXT_SIZE = 128000
+
+def _fallback() -> tuple[float, int]:
+    """兜底值直接来自 config/model.yaml —— 这里不留第二份常量。
+
+    阈值 = trigger_ratio × context_size，agentscope 内部也是这么算的
+    （`_agent.py` 的 `_compress_context_impl`），这里只复述，不另立口径。
+    """
+    settings = load_model()
+    return settings.trigger_ratio, settings.context_size
 
 
 def context_budget(agent: Agent) -> dict[str, Any]:
     """给前端的上下文预算：阈值、模型窗口、触发比例。"""
+    ratio_fallback, size_fallback = _fallback()
     config: ContextConfig = getattr(agent, "context_config", None) or ContextConfig()
-    ratio = float(getattr(config, "trigger_ratio", _DEFAULT_TRIGGER_RATIO))
+    ratio = float(getattr(config, "trigger_ratio", ratio_fallback))
     model = getattr(agent, "model", None)
-    size = int(getattr(model, "context_size", _DEFAULT_CONTEXT_SIZE))
+    size = int(getattr(model, "context_size", size_fallback))
     return {
         "type": CONTEXT_BUDGET,
         "threshold": int(ratio * size),
@@ -102,13 +110,14 @@ class CompressionMiddleware(MiddlewareBase):
         next_handler: Callable[..., Awaitable[None]],
     ) -> None:
         """洋葱钩子：先记检查前状态，再交给框架执行，最后记结果。"""
+        ratio_fallback, size_fallback = _fallback()
         config = input_kwargs.get("context_config") or getattr(agent, "context_config", None)
         ratio = float(
-            getattr(config, "trigger_ratio", _DEFAULT_TRIGGER_RATIO)
+            getattr(config, "trigger_ratio", ratio_fallback)
             if config is not None
-            else _DEFAULT_TRIGGER_RATIO
+            else ratio_fallback
         )
-        size = int(getattr(agent.model, "context_size", _DEFAULT_CONTEXT_SIZE))
+        size = int(getattr(agent.model, "context_size", size_fallback))
         threshold = int(ratio * size)
         before = await count_context_tokens(agent)
         summary_before = getattr(agent.state, "summary", "") or ""

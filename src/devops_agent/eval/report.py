@@ -445,6 +445,9 @@ _FACTOR_FIELDS: tuple[str, ...] = (
     "suite_sha",
     "grader_version",
     "prompt_sha",
+    # 模型参数指纹（temperature / max_tokens / 窗口 / 迭代上限…）。
+    # 参数可配之后，「同一提示词分数变了」既可能是提示词也可能是参数，必须能分开。
+    "params_sha",
     "model",
     "profile",
     "judge_model",
@@ -506,6 +509,9 @@ def _classify(changed: list[str], missing: list[str]) -> tuple[str, list[str]]:
         return "clean", ["所有因子一致，可作为复测样本估计噪声"]
     if set(changed) <= {"prompt_sha"}:
         return "clean", ["只有 prompt_sha 变化，delta 可归因到提示词"]
+    if set(changed) <= {"params_sha"}:
+        # 参数变了仍可比（同一题库、同一提示词），但结论只能落到参数上
+        return "clean", ["只有 params_sha 变化，delta 可归因到模型参数"]
     if set(changed) <= _INFORMATIONAL_FACTORS:
         # 只有平台/字节差异：提示词没改，但前缀缓存不可复用。
         # 这不该拦住对比（不是提示词变更），也不该说成「可归因到提示词」。

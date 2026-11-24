@@ -42,6 +42,9 @@ jobs:
       - name: architecture contracts
         # 把 AGENTS.md 的框架边界与分层约束变成可执行检查。
         run: lint-imports
+      - name: legacy import guard
+        # 已删除的兼容门面（main / runtime.agent / 前端 barrel）不得复活。
+        run: python scripts/check_legacy_imports.py
       - name: file size ratchet
         # 存量超标文件只能变短；新文件不得超过 config/gates.yaml 的 max_lines。
         run: python scripts/check_file_size.py

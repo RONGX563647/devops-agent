@@ -352,10 +352,13 @@ class RunRecorder:
         cache_creation_input_tokens: int = 0,
     ) -> None:
         """落一条 span：偏移/耗时走单调时钟，工具挂到最近一次模型调用下。"""
+        # 1. run 尚未建立时不落库（事件可能早于 start 到达）
         if self._run_id is None:
             return
+        # 2. 偏移与耗时同一口径：有事件时间戳优先，缺失才退回单调时钟
         start_at = str(pending.get("start", ""))
         is_tool = str(pending.get("type", "model")) == "tool"
+        # 3. seq 全局单调递增，泳道与列表共用同一顺序
         self._seq += 1
         span = SpanRecord(
             id=None,
@@ -378,6 +381,7 @@ class RunRecorder:
         )
         with repo.connect(self._db_path) as conn:
             span_id = repo.add_span(conn, span)
+        # 4. 只有模型 span 更新「最近模型」，工具 span 已按它挂好 parent_id
         if not is_tool:
             self._last_model_span_id = span_id
 
@@ -395,29 +399,48 @@ class RunRecorder:
         t0 = _pending_t0(pending)
         return max(0, (end_ns - t0) // 1_000_000)
 
+    def _finish_terminal_fields(self, status: str | None, error: str | None) -> tuple[str, str]:
+        """终态与失败原因：显式 status 优先，否则按结束原因推断；原因缺失时兜底一句。"""
+        final_status = status
+        if final_status is None:
+            final_status = (
+                "failed" if self._finished_reason in ("error", "exceed_max_iters") else "success"
+            )
+        reason = error or ("" if final_status == "success" else "未捕获到异常信息")
+        return final_status, reason
+
+    def _finish_usage_fields(self) -> tuple[int, int, int, int, int]:
+        """汇总本轮 token 与缓存用量（全程累加值）：total/input/output/cache/cache_write。"""
+        return (
+            self._input_tokens + self._output_tokens,
+            self._input_tokens,
+            self._output_tokens,
+            self._cache_input_tokens,
+            self._cache_creation_input_tokens,
+        )
+
     def finish(self, status: str | None = None, error: str | None = None) -> int:
         """回填 run 的终态与汇总，返回 run_id。重复调用幂等。
 
         error 只在失败时给：把异常原文落库，否则 status=failed 只是个标签，
         刷新后既看不到原因也复现不了（实测出现过 span 全绿却 failed 的情况）。
         """
+        # 1. 未建 run 或已收尾：直接返回，保持幂等
         if self._run_id is None:
             return -1
         if self._finished:
             return self._run_id
+        # 2. 确定终态与失败原因（失败时必须有可读原因）
         ended_at = utc_now()
         duration = int(datetime.now(UTC).timestamp() * 1000) - self._started_monotonic_ms
-        final_status = status
-        if final_status is None:
-            final_status = (
-                "failed" if self._finished_reason in ("error", "exceed_max_iters") else "success"
-            )
+        final_status, reason = self._finish_terminal_fields(status, error)
+        total_tokens, in_tokens, out_tokens, cache_in, cache_write = self._finish_usage_fields()
         with repo.connect(self._db_path) as conn:
+            # 3. 双口径耗时：work 是 span 并集，wall 是起止差（含空闲），work 以 wall 封顶
             spans = repo.list_spans(conn, self._run_id)
-            # 实测耗时 = 所有 span 区间的并集；墙钟 = 起止差（含用户空闲）。
-            # 实测不可能超过墙钟（事件时钟偶尔会比 run 起点更早），超了就以墙钟封顶。
             wall_ms = max(0, duration)
             work_ms = _work_ms(spans, wall_ms)
+            # 4. 先落输入阶段，再用终态、正文与用量回填 run 记录
             repo.add_input_stages(conn, self._run_id, self._input_stages)
             repo.finish_run(
                 conn,
@@ -426,18 +449,17 @@ class RunRecorder:
                 output=self._final_text,
                 ended_at=ended_at,
                 duration_ms=max(0, duration),
-                total_tokens=self._input_tokens + self._output_tokens,
+                total_tokens=total_tokens,
                 health_score=None,  # health_score 由 P2 的健康分模块计算
-                input_tokens=self._input_tokens,
-                output_tokens=self._output_tokens,
-                cache_input_tokens=self._cache_input_tokens,
-                cache_creation_input_tokens=self._cache_creation_input_tokens,
+                input_tokens=in_tokens,
+                output_tokens=out_tokens,
+                cache_input_tokens=cache_in,
+                cache_creation_input_tokens=cache_write,
                 work_ms=work_ms,
                 wall_ms=wall_ms,
-                # 失败时优先用显式传入的异常原文；没传但被标成 failed 时留一句兜底，
-                # 免得又出现「有状态没原因、只能靠猜」的记录
-                error=error or ("" if final_status == "success" else "未捕获到异常信息"),
+                error=reason,
             )
+        # 5. 清空过程缓存并标记收尾，避免重复落库
         self._input_stages = []
         self._finished = True
         return self._run_id

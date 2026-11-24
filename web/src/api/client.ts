@@ -2,6 +2,7 @@
 
 import type {
   Attachment,
+  Breakdown,
   EvalBatchDetail,
   EvalBatchList,
   EvalCaseList,
@@ -11,6 +12,7 @@ import type {
   EvalSuiteList,
   EvalTrends,
   Health,
+  HealthMetrics,
   InputStage,
   PendingState,
   PermissionCatalog,
@@ -100,6 +102,14 @@ export function fetchInputStages(id: number): Promise<InputStage[]> {
 
 export function fetchRunHealth(id: number): Promise<RunHealth> {
   return getJson<RunHealth>(`/api/runs/${id}/health`);
+}
+
+export function fetchMetricsHealth(limit = 200): Promise<HealthMetrics> {
+  return getJson<HealthMetrics>(`/api/metrics/health?limit=${limit}`);
+}
+
+export function fetchBreakdown(): Promise<Breakdown> {
+  return getJson<Breakdown>('/api/metrics/breakdown');
 }
 
 export function fetchSummary(): Promise<Summary> {

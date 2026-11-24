@@ -9,8 +9,9 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { fetchRuns, fetchSummary, fetchTimeseries } from '../api/client';
+import { fetchBreakdown, fetchMetricsHealth, fetchRuns, fetchSummary, fetchTimeseries } from '../api/client';
 import { MetricCard } from '../components/MetricCard';
+import { AverageRadar, DeficitChart, ScoreHistogram } from '../components/HealthCharts';
 import { StatusBadge } from '../components/StatusBadge';
 import { formatDateTime, formatDuration } from '../workspace/time';
 
@@ -23,10 +24,22 @@ export function Dashboard() {
   const summary = useQuery({ queryKey: ['summary'], queryFn: fetchSummary, refetchInterval: 5000 });
   const timeseries = useQuery({ queryKey: ['timeseries'], queryFn: () => fetchTimeseries(7), refetchInterval: 10000 });
   const recent = useQuery({ queryKey: ['runs', 'recent'], queryFn: () => fetchRuns({ limit: 8 }), refetchInterval: 5000 });
+  const health = useQuery({
+    queryKey: ['metrics-health'],
+    queryFn: () => fetchMetricsHealth(200),
+    refetchInterval: 15000,
+  });
+  const breakdown = useQuery({
+    queryKey: ['metrics-breakdown'],
+    queryFn: fetchBreakdown,
+    refetchInterval: 15000,
+  });
 
   const s = summary.data;
   const points = timeseries.data ?? [];
   const recentItems = recent.data?.items ?? [];
+  const h = health.data;
+  const b = breakdown.data;
 
   return (
     <div className="page">
@@ -104,11 +117,98 @@ export function Dashboard() {
               <span>工具失败</span>
               <strong className="mono">{s?.tool_failed_count ?? 0}</strong>
             </li>
+            <li>
+              <span>工具失败率</span>
+              <strong className="mono">
+                {b?.tool.failure_rate === null || b?.tool.failure_rate === undefined
+                  ? '—'
+                  : `${(b.tool.failure_rate * 100).toFixed(1)}%`}
+              </strong>
+            </li>
+            <li>
+              <span>权限拒绝率</span>
+              <strong className="mono">
+                {b?.permission.deny_rate === null || b?.permission.deny_rate === undefined
+                  ? '—'
+                  : `${(b.permission.deny_rate * 100).toFixed(1)}%`}
+              </strong>
+            </li>
+            <li>
+              <span>缓存命中率</span>
+              <strong className="mono">
+                {b?.tokens.cache_hit_rate === null || b?.tokens.cache_hit_rate === undefined
+                  ? '—'
+                  : b.tokens.cache_recorded
+                    ? `${(b.tokens.cache_hit_rate * 100).toFixed(1)}%`
+                    : '无缓存数据'}
+              </strong>
+            </li>
+            <li>
+              <span>单次 token</span>
+              <strong className="mono">{b?.model.avg_tokens_per_call ?? '—'}</strong>
+            </li>
           </ul>
           <div className="panel-links">
             <Link to="/?tab=quality">看质量评估</Link>
             <Link to="/?tab=cost">看成本分布</Link>
           </div>
+        </section>
+      </div>
+
+      {health.isError && <p className="query-error">健康分聚合加载失败，稍后自动重试。</p>}
+      {h && (
+        <div className="panel-grid">
+          <section className="panel">
+            <h2>健康分分布</h2>
+            <p className="hint">
+              最近 {h.runs} 次运行按当前口径重算 · 均值 {h.avg_score ?? '—'} · P50 {h.p50 ?? '—'} · P90{' '}
+              {h.p90 ?? '—'}
+              {h.coverage_avg !== null ? ` · 平均覆盖度 ${Math.round(h.coverage_avg * 100)}%` : ''}
+              {h.confidence_avg !== null ? ` · 平均置信度 ${Math.round(h.confidence_avg * 100)}%` : ''}
+            </p>
+            <ScoreHistogram
+              buckets={h.distribution}
+              caption="均值相同也可能一个「都很稳」一个「一半满分一半崩」，所以看分布"
+            />
+          </section>
+          <section className="panel">
+            <h2>四维均值</h2>
+            <p className="hint">权重 执行 35% · 效率 25% · 质量 25% · 安全 15%，缺失维度不参与加权。</p>
+            <AverageRadar averages={h.dimensions} caption="缺口越大越该先修，但先看样本数（n）" />
+          </section>
+        </div>
+      )}
+
+      <div className="panel-grid">
+        <section className="panel">
+          <h2>拖分排行</h2>
+          <p className="hint">权重 ×(100 − 均值)：数字越大，修这个维度越划算。</p>
+          {h ? (
+            <DeficitChart
+              rows={h.deficits}
+              caption={`等级分布 ${Object.entries(h.grades)
+                .map(([grade, count]) => `${grade}×${count}`)
+                .join(' · ') || '暂无'}`}
+            />
+          ) : (
+            <p className="muted">加载中…</p>
+          )}
+        </section>
+        <section className="panel">
+          <h2>失败原因 Top</h2>
+          <p className="hint">同一个报错反复出现才值得先修；没有原因文本的也会单列。</p>
+          {breakdown.isError && <p className="query-error">失败聚类加载失败。</p>}
+          {b && b.failures.length === 0 && <p className="muted">没有失败记录。</p>}
+          {b && b.failures.length > 0 && (
+            <ul className="failure-list">
+              {b.failures.map((item) => (
+                <li key={item.reason}>
+                  <span className="failure-count mono">{item.count}</span>
+                  <span className="failure-reason">{item.reason}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       </div>
 

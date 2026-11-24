@@ -81,7 +81,51 @@ const persisted: InputStage[] = [
 const health: RunHealth = {
   run_id: 7,
   score: 80,
-  dimensions: { execution: 90, efficiency: 70, quality: 80, safety: 85 },
+  grade: 'B',
+  coverage: 1,
+  confidence: 0.88,
+  version: 'v2',
+  budget_ms: 11000,
+  actual_ms: 8000,
+  model_calls: 2,
+  dimensions: {
+    execution: {
+      key: 'execution',
+      label: '执行健康',
+      value: 90,
+      weight: 0.35,
+      confidence: 1,
+      note: '1 次工具失败',
+      items: [{ label: '工具失败', delta: -8, detail: '1/4 次失败' }],
+    },
+    efficiency: {
+      key: 'efficiency',
+      label: '效率成本',
+      value: 70,
+      weight: 0.25,
+      confidence: 1,
+      note: '2 次模型调用 · 预算 11000ms',
+      items: [{ label: '耗时', delta: -30, detail: '12000ms / 预算 11000ms' }],
+    },
+    quality: {
+      key: 'quality',
+      label: '效果质量',
+      value: 80,
+      weight: 0.25,
+      confidence: 0.5,
+      note: '1 条评分',
+      items: [{ label: '样本', delta: 0, detail: '1 条评分' }],
+    },
+    safety: {
+      key: 'safety',
+      label: '安全合规',
+      value: 85,
+      weight: 0.15,
+      confidence: 0.4,
+      note: '没有权限判定记录，按无违规处理',
+      items: [],
+    },
+  },
 };
 
 /** 一份已解析完成的附件：轨迹只关心名字与体积，正文留在服务端。 */
@@ -101,6 +145,12 @@ function wrap(node: React.ReactNode) {
 }
 
 beforeEach(() => {
+  // 健康分面板用 recharts 的 ResponsiveContainer，jsdom 没有 ResizeObserver
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
   resetStore();
   clearAllHistory();
   vi.mocked(fetchRun).mockResolvedValue(makeRun(7, 's-one'));

@@ -606,6 +606,35 @@ def count_spans_by_type(conn: sqlite3.Connection, span_type: str) -> tuple[int, 
     return int(row["n"]), int(row["f"] or 0)
 
 
+def span_stats(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
+    """按 span 类型汇总：调用数、失败数、token 与缓存命中量。
+
+    看板要回答「工具失败率」「权限拒绝率」「缓存命中率」，这些都能在 SQL 里一次算完，
+    不必把所有 span 读进内存——生产库里 span 是最大的一张表。
+    """
+    rows = conn.execute(
+        """SELECT type,
+                  COUNT(*) AS calls,
+                  SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
+                  COALESCE(SUM(tokens), 0) AS tokens,
+                  COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                  COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                  COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens
+           FROM spans GROUP BY type"""
+    ).fetchall()
+    return {
+        str(row["type"]): {
+            "calls": int(row["calls"]),
+            "errors": int(row["errors"] or 0),
+            "tokens": int(row["tokens"]),
+            "input_tokens": int(row["input_tokens"]),
+            "output_tokens": int(row["output_tokens"]),
+            "cache_input_tokens": int(row["cache_input_tokens"]),
+        }
+        for row in rows
+    }
+
+
 def all_scores(conn: sqlite3.Connection) -> list[EvalScoreRecord]:
     """取出全部评分供趋势聚合。"""
     rows = conn.execute("SELECT * FROM eval_scores ORDER BY created_at, id").fetchall()

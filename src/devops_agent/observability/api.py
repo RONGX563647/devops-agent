@@ -183,7 +183,7 @@ def get_input_stages(run_id: int) -> list[InputStageOut]:
 
 @router.get("/runs/{run_id}/health")
 def get_run_health(run_id: int) -> dict[str, object]:
-    """单次运行的健康分与四类子分（实时计算）。"""
+    """单次运行的健康分：总分 + 等级 + 置信度 + 四维明细（含扣分项）。"""
     with repo.connect() as conn:
         repo.init_db(conn)
         run = repo.get_run(conn, run_id)
@@ -192,15 +192,150 @@ def get_run_health(run_id: int) -> dict[str, object]:
         spans = repo.list_spans(conn, run_id)
         scores = repo.list_scores(conn, run_id)
     policy = _health_policy()
+    report = health_mod.report_run(run, spans, scores, policy)
+    model_calls = sum(1 for span in spans if span.type == "model")
+    # 预算与实际耗时一起给：前端要画「花了多少 / 本该花多少」，不能只给一个分数
     return {
         "run_id": run_id,
-        "score": health_mod.score_run(run, spans, scores, policy),
-        "dimensions": {
-            "execution": health_mod.execution_score(run, spans),
-            "efficiency": health_mod.efficiency_score(run, policy.latency_baseline_ms),
-            "quality": health_mod.quality_score(scores),
-            "safety": health_mod.safety_score(spans),
-        },
+        **report.as_dict(),
+        "budget_ms": health_mod.latency_budget(model_calls, policy),
+        "actual_ms": run.work_ms or run.duration_ms or 0,
+        "model_calls": model_calls,
+    }
+
+
+@router.get("/metrics/health")
+def metrics_health(limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, object]:
+    """健康分分布与四维均值（按最近 N 次运行重算，不是缓存的旧分数）。
+
+    为什么要重算：`runs.health_score` 是写入时算的，口径升级后与新算法不可比。
+    看板只在有界窗口（默认 200 次）内重算，既能反映当前口径，又不会打爆生产库。
+    """
+    policy = _health_policy()
+    with repo.connect() as conn:
+        repo.init_db(conn)
+        runs = repo.list_runs(conn, limit=limit)
+        reports = [
+            health_mod.report_run(
+                run,
+                repo.list_spans(conn, run.id) if run.id is not None else [],
+                repo.list_scores(conn, run.id) if run.id is not None else [],
+                policy,
+            )
+            for run in runs
+        ]
+    values = [report.score for report in reports]
+    averages = health_mod.dimension_averages(reports)
+    return {
+        "version": health_mod.SCORING_VERSION,
+        "runs": len(runs),
+        "scored": len(values),
+        "avg_score": health_mod.aggregate(values),
+        "p50": health_mod.percentile(values, 0.5),
+        "p90": health_mod.percentile(values, 0.9),
+        "distribution": health_mod.distribution(values),
+        "grades": health_mod.grade_counts(reports),
+        "dimensions": averages,
+        "deficits": health_mod.deficits(averages, policy),
+        "weights": policy.weights.model_dump(),
+        "coverage_avg": (
+            round(sum(report.coverage for report in reports) / len(reports), 3) if reports else None
+        ),
+        "confidence_avg": (
+            round(sum(report.confidence for report in reports) / len(reports), 3)
+            if reports
+            else None
+        ),
+    }
+
+
+def _failure_clusters(runs: list[RunRecord], top: int = 8) -> list[dict[str, object]]:
+    """把失败原因聚类：同一个报错反复出现才值得先修。"""
+    counter: Counter[str] = Counter()
+    for run in runs:
+        if run.status == "success":
+            continue
+        reason = (run.error or "").strip().splitlines()
+        key = reason[0][:120] if reason else "(未记录失败原因)"
+        counter[key] += 1
+    return [{"reason": text, "count": count} for text, count in counter.most_common(top)]
+
+
+def _rate(part: int, whole: int) -> float | None:
+    """安全比率：分母为 0 返回 None，别把「没有数据」说成 0%。"""
+    return round(part / whole, 4) if whole else None
+
+
+def _tool_block(stats: dict[str, int]) -> dict[str, object]:
+    """工具调用块：次数、失败数、失败率。"""
+    calls = stats.get("calls", 0)
+    failed = stats.get("errors", 0)
+    return {"calls": calls, "failed": failed, "failure_rate": _rate(failed, calls)}
+
+
+def _permission_block(stats: dict[str, int]) -> dict[str, object]:
+    """权限判定块：判定次数、拒绝数、拒绝率。"""
+    decisions = stats.get("calls", 0)
+    denied = stats.get("errors", 0)
+    return {"decisions": decisions, "denied": denied, "deny_rate": _rate(denied, decisions)}
+
+
+def _model_block(stats: dict[str, int]) -> dict[str, object]:
+    """模型调用块：次数、token 合计、次均 token。"""
+    calls = stats.get("calls", 0)
+    tokens = stats.get("tokens", 0)
+    return {
+        "calls": calls,
+        "tokens": tokens,
+        "avg_tokens_per_call": round(tokens / calls) if calls else None,
+    }
+
+
+def _token_block(runs: list[RunRecord]) -> dict[str, object]:
+    """token 块：输入/输出/缓存命中量与命中率。"""
+    input_tokens = sum(run.input_tokens for run in runs)
+    cache_tokens = sum(run.cache_input_tokens for run in runs)
+    return {
+        "input": input_tokens,
+        "output": sum(run.output_tokens for run in runs),
+        "cache_hit": cache_tokens,
+        "cache_hit_rate": _rate(cache_tokens, input_tokens),
+        # 老记录没有缓存字段（全是 0），前端据此显示「无缓存数据」而不是 0%
+        "cache_recorded": any(
+            run.cache_input_tokens or run.cache_creation_input_tokens for run in runs
+        ),
+    }
+
+
+def _outcome_block(runs: list[RunRecord]) -> dict[str, int]:
+    """流程结果：成功/失败/未完成各多少。"""
+    counts = Counter(run.status for run in runs)
+    succeeded = counts.get("success", 0)
+    failed = counts.get("failed", 0)
+    # 「未完成」= 既没成功也没失败（running / parked 等），不要只统计字面 running
+    return {
+        "total": len(runs),
+        "success": succeeded,
+        "failed": failed,
+        "running": len(runs) - succeeded - failed,
+    }
+
+
+@router.get("/metrics/breakdown")
+def metrics_breakdown() -> dict[str, object]:
+    """全局指标拆解：工具/权限/缓存/流程结果，全部走 SQL 聚合不读明细。"""
+    with repo.connect() as conn:
+        repo.init_db(conn)
+        stats = repo.span_stats(conn)
+        runs = repo.summary_rows(conn)
+    return {
+        "version": health_mod.SCORING_VERSION,
+        "outcome": _outcome_block(runs),
+        "tool": _tool_block(stats.get("tool", {})),
+        "permission": _permission_block(stats.get("permission", {})),
+        "model": _model_block(stats.get("model", {})),
+        "tokens": _token_block(runs),
+        "failures": _failure_clusters(runs),
     }
 
 

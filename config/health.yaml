@@ -1,10 +1,44 @@
-# 健康分权重（0-100，加权聚合）
+# 健康分配置（0-100，加权聚合）
 # ADR-0001：把"运行好坏"的四类信号聚合成单一健康分，权重集中在此配置。
+# ADR-0004（口径 v2）：新增的旋钮都在这里，算法只读配置，不在代码里藏常量。
 health:
   weights:
     execution: 0.35  # 执行健康：成功/失败、未收敛、工具失败
-    efficiency: 0.25  # 效率成本：延迟、token 用量
-    quality: 0.25  # 效果质量：correctness / 人工反馈 / judge
-    safety: 0.15  # 安全合规：权限拒绝、越界
-  # 延迟评分基准：端到端耗时 ≤ 此值得满分，超过按线性衰减到 0
+    efficiency: 0.25  # 效率成本：耗时、token 强度
+    quality: 0.25  # 效果质量：correctness 评分（按来源加权）
+    safety: 0.15  # 安全合规：权限拒绝、重复越界
+
+  # ---- 效率 ----
+  # 时间预算 = latency_baseline_ms + per_step_baseline_ms × (模型调用次数 - 1)
+  # 固定一个基准会把「5 步的正常长任务」判成 0 分，按步数给预算才可比。
   latency_baseline_ms: 5000
+  per_step_baseline_ms: 6000
+  # 超预算后的衰减：score = 100 × (预算 / 实际) ** latency_exponent
+  # 0.6 表示慢 2 倍得 ~66 分、慢 10 倍得 ~25 分，不会一刀切归零。
+  latency_exponent: 0.6
+  # 单次模型调用的 token 预算（输入+输出）；按「次均」看，长会话不因总量大被误伤。
+  token_baseline_per_call: 12000
+  token_exponent: 0.5
+  # 效率子分里耗时与 token 的占比；缺一项时按剩余权重重归一化。
+  efficiency_split:
+    latency: 0.7
+    tokens: 0.3
+
+  # ---- 质量 ----
+  # 不同评分来源的可信度：人工 > judge > 规则。
+  source_weights:
+    human: 1.0
+    judge: 0.8
+    rule: 0.6
+  # 向中性先验收缩：等价于「先压一条 0.5 分的样本」。
+  # 单条 0 分会从 0 抬到 0.5，10 条 0 分才压到 ~0.05，避免一条差评打死整轮。
+  quality_prior: 0.5
+  quality_prior_weight: 1.0
+
+  # ---- 等级 ----
+  # 从高到低匹配，value >= 阈值即取该等级；低于最低档为 F。
+  grades:
+    A: 90
+    B: 80
+    C: 70
+    D: 60

@@ -19,6 +19,7 @@ from agentscope.tool._response import ToolResultState
 from devops_agent.secrets.middleware import SecretInjectionMiddleware, build_secret_middleware
 
 SECRET = "sk-live-0123456789abcdef"
+KEY_FROM_DISK = "AKIA" + "Z" * 16  # 模拟工具从 config.yaml 读到的明文，非注入
 
 
 def _chunk(text: str) -> ToolChunk:
@@ -141,3 +142,64 @@ def test_middleware_default_resolver_never_raises(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(vault_mod, "get_vault", boom)
     assert SecretInjectionMiddleware() is not None
+
+
+def test_captures_tool_read_secret_even_without_injection() -> None:
+    """工具自己从磁盘读到的明文（不在注入集合里）也必须被捕获。
+
+    这是原来 `yield chunk if resolved else chunk` 的漏洞：resolved 为空时
+    连 mask 都不走，cat/printenv 读到的 key 原样进上下文与 spans。
+    """
+    from devops_agent.secrets.capture import Captured
+
+    registered: list[Captured] = []
+
+    def capture(item: Captured) -> str:
+        registered.append(item)
+        return item.name
+
+    middleware = build_secret_middleware(_resolver({}), capture=capture)
+
+    async def handler(**_: Any) -> Any:
+        yield ToolChunk(
+            content=[TextBlock(type="text", text="config: AWS_KEY=" + KEY_FROM_DISK)],
+            state=ToolResultState.SUCCESS,
+        )
+
+    async def collect() -> list[ToolChunk]:
+        return [
+            chunk
+            async for chunk in middleware.on_tool_call(
+                tool=None, input_kwargs={"command": "cat config.yaml"}, next_handler=handler
+            )
+        ]
+
+    text = asyncio.run(collect())[0].content[0].text
+    assert KEY_FROM_DISK not in text
+    assert "{{secret:" in text
+    assert len(registered) == 1
+    assert registered[0].value == KEY_FROM_DISK
+
+
+def test_capture_does_not_rebuild_chunk_when_clean() -> None:
+    """输出没有任何敏感串时不重建块，保持原样返回。"""
+    from devops_agent.secrets.capture import Captured
+
+    def capture(item: Captured) -> str:
+        return item.name
+
+    middleware = build_secret_middleware(_resolver({}), capture=capture)
+    chunk = _chunk("all clear, nothing secret here")
+
+    async def handler(**_: Any) -> Any:
+        yield chunk
+
+    async def collect() -> list[ToolChunk]:
+        return [
+            item
+            async for item in middleware.on_tool_call(
+                tool=None, input_kwargs={"command": "ls"}, next_handler=handler
+            )
+        ]
+
+    assert asyncio.run(collect())[0] is chunk

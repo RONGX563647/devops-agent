@@ -20,6 +20,7 @@ import type {
   RunHealth,
   RunList,
   SecretMeta,
+  SecretValue,
   Span,
   Summary,
   TimePoint,
@@ -74,6 +75,11 @@ export function fetchSecrets(): Promise<SecretMeta[]> {
 export async function deleteSecret(name: string): Promise<void> {
   const resp = await fetch(`/api/secrets/${encodeURIComponent(name)}`, { method: 'DELETE' });
   if (!resp.ok) throw new Error(`删除失败 ${resp.status}`);
+}
+
+/** 受控读回一条凭据明文；每次调用服务端都会记一次使用。 */
+export function fetchSecretValue(name: string): Promise<SecretValue> {
+  return getJson<SecretValue>(`/api/secrets/${encodeURIComponent(name)}/value`);
 }
 
 export function fetchRun(id: number): Promise<Run> {

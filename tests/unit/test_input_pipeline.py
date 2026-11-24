@@ -6,6 +6,7 @@ import pytest
 
 from devops_agent import input as input_pkg
 from devops_agent.input import pipeline as pipe
+from devops_agent.input.attachments import Attachment
 
 
 def _stage(prepared: pipe.PreparedInput, name: str) -> pipe.Stage:
@@ -92,6 +93,65 @@ def test_expand_reports_partial_failure(tmp_path: Path, monkeypatch: pytest.Monk
     assert expand.failed == 1
     assert prepared.degraded == 1  # 部分降级仍要进「降级」计数
     assert "1 条成功 · 1 条降级" == expand.summary
+
+
+def test_failed_reference_reaches_model_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """抓不到的引用必须写进上下文：只记在阶段详情里，模型会自己去重抓同一个地址。"""
+
+    def boom(url: str) -> str:
+        raise TimeoutError("timeout")
+
+    monkeypatch.setattr(pipe, "_fetch_text", boom)
+    prepared = pipe.prepare(
+        "讲解 https://example.com/x", workspace_root=tmp_path, remote_fetch=True
+    )
+    assert "### 本轮未能取到的材料" in prepared.text
+    assert "https://example.com/x → 抓取失败：TimeoutError" in prepared.text
+    assert "同一目标失败两次就停止尝试" in prepared.text
+    compose = _stage(prepared, "compose")
+    # 以前只拼成功材料，全失败等于原样透传 —— 模型完全不知道材料没拿到
+    assert compose.status == "ok"
+    assert "未取到 1 份" in compose.summary
+
+
+def test_failed_attachment_reaches_model_context() -> None:
+    """附件解析失败同样要说进上下文，否则模型会以为用户没给材料。"""
+    broken = Attachment(id="a1", name="broken.pdf", size=10, suffix=".pdf", problem="解析失败")
+    prepared = pipe.prepare("看附件", workspace_root=None, attachments=[broken])
+    assert "broken.pdf → 解析失败" in prepared.text
+
+
+def test_materials_and_misses_coexist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """部分成功时两节都要在：拿到的是材料，没拿到的是清单。"""
+    (tmp_path / "ok.md").write_text("有效内容", encoding="utf-8")
+
+    def boom(url: str) -> str:
+        raise TimeoutError("timeout")
+
+    monkeypatch.setattr(pipe, "_fetch_text", boom)
+    prepared = pipe.prepare(
+        "看 ./ok.md 和 https://example.com/x", workspace_root=tmp_path, remote_fetch=True
+    )
+    assert "### 引用材料 1 · ./ok.md" in prepared.text
+    assert "### 本轮未能取到的材料" in prepared.text
+    assert prepared.text.index("引用材料 1") < prepared.text.index("本轮未能取到")
+    assert "1 份材料 · 未取到 1 份" in _stage(prepared, "compose").summary
+
+
+def test_resolved_input_has_no_miss_section(tmp_path: Path) -> None:
+    """全部取到就不该冒出空的「未能取到」小节。"""
+    (tmp_path / "ok.md").write_text("有效内容", encoding="utf-8")
+    prepared = pipe.prepare("看 ./ok.md", workspace_root=tmp_path)
+    assert "本轮未能取到的材料" not in prepared.text
+
+
+def test_remote_fetch_off_is_not_reported_as_miss(tmp_path: Path) -> None:
+    """远程抓取默认关闭不是「内容不可得」：不能写进上下文劝退模型自己取。"""
+    prepared = pipe.prepare("看 https://example.com/x", workspace_root=tmp_path)
+    assert "本轮未能取到的材料" not in prepared.text
+    assert "远程抓取未开启" in _stage(prepared, "expand").detail
 
 
 def test_expand_fetches_remote_when_enabled(

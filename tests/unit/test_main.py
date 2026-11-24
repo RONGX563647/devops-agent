@@ -13,7 +13,10 @@ client = TestClient(app)
 def test_health() -> None:
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    body = resp.json()
+    assert body["status"] == "ok"
+    # 工具依赖就绪状态一并返回：缺 rg 这类问题不该等到模型调用失败才暴露。
+    assert "grep" in body["tools"]
 
 
 def test_run_endpoint_is_removed() -> None:

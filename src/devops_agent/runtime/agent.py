@@ -63,8 +63,9 @@ _TOOL_PROMPT = """你可以调用以下工具来获取真实信息，而不是�
 硬性要求：
 1. 需要文件内容、目录列表、命令输出时，必须真的发起工具调用；
    不要用「工具调用 xxx」这样的文字描述代替调用。
-2. 不要编造命令输出或文件内容。工具失败就据实说明失败原因，
-   并改用其他只读手段（如 {glob_tool} / {grep_tool}）重试。
+2. 不要编造命令输出或文件内容。工具失败就据实说明失败原因；
+   同一个工具连续失败两次就换手段（例如 {glob_tool} 与 shell 互换），
+   不要反复重试同一种调用。
 3. 最终回答用中文，可用 Markdown（标题、列表、表格、代码块）；引用工具输出时保持原样。"""
 
 
@@ -77,8 +78,10 @@ def resolve_workdir(workdir: str | os.PathLike[str] | None = None) -> Path:
 
 # 提示词版本：改动系统提示或档位说明时手动递增，评测批次会记录它，
 # 便于把「分数变化」和「哪一版提示词」对上。hash 由 prompt_fingerprint() 现算。
+# v2：重试条款改成「同一工具连续失败两次就换手段」，不再指定具体工具名 ——
+#     依赖缺失时（如缺 rg）原来的「改用 Grep 重试」会把模型推回同一堵墙。
 PROMPT_ID = "agent-system"
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 
 def _render_system_prompt(workdir_label: str) -> str:

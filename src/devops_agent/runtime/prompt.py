@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import sys
 from pathlib import Path
 
 from devops_agent.model_settings import ModelParams, effective_params
@@ -59,15 +58,7 @@ PROMPT_VERSION = "v4"
 
 
 def _shell_name() -> str:
-    """解析 shell 名，优先取兼容门面 `runtime.agent` 上的实现。
-
-    单测通过 `monkeypatch.setattr(devops_agent.runtime.agent, "shell_name", ...)`
-    模拟不同平台，这条替换路径必须继续生效，因此按调用时动态解析。
-    """
-    facade = sys.modules.get("devops_agent.runtime.agent")
-    resolver = getattr(facade, "shell_name", None)
-    if callable(resolver):
-        return str(resolver())
+    """解析当前平台的 shell 名。"""
     return shell_name()
 
 

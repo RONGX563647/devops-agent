@@ -29,11 +29,11 @@
 
 ### 架构约束的遵守方式
 
-`AGENTS.md` 规定 `agent.py` 是唯一允许直接 `import agentscope` 的业务装配点。本方案不破坏该约束：
+`AGENTS.md` 规定 `assembly.py` 是允许直接 `import agentscope` 的业务装配点之一。本方案不破坏该约束：
 
 - 事件消费逻辑留在 `main.py`，**只用属性访问（duck typing）读取事件字段，不 import agentscope 事件类型**；
 - 转换为普通 `dict` 后交给 `observability/` 层，该层完全框架无关，不 import agentscope；
-- 未来的中间件装配若在 `agent.py` 内进行，仍保持单一装配点。
+- 未来的中间件装配若在 `assembly.py` 内进行，仍保持单一装配点。
 
 ## 数据模型：运行好坏的四类信号
 

@@ -1,6 +1,6 @@
 """确认协议 —— 框架无关的数据结构与风险分级。
 
-这一层不 import agentscope：确认事件的对象构造放在 runtime/agent.py（装配点），
+这一层不 import agentscope：确认事件的对象构造放在 runtime/scope_runtime.py（装配点），
 HTTP 层只跟这里的数据结构打交道。
 
 一条重要约定：**客户端永远不回传命令原文**。

@@ -19,7 +19,7 @@ from devops_agent.governance.profiles import PROFILES
 from devops_agent.main import app
 from devops_agent.observability import repository as repo
 from devops_agent.observability.recorder import RunRecorder
-from devops_agent.runtime.agent import session_runtime_factory
+from devops_agent.runtime.assembly import session_runtime_factory
 from devops_agent.runtime.sessions import SessionRegistry
 
 client = TestClient(app)

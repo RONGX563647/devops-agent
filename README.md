@@ -34,7 +34,7 @@ AGENTS.md §3.1 声称的清单是 8 个，实际 `grep -rn 'import agentscope' 
 
 ```
 executor/boundary.py     governance/policy.py      memory/ledger.py
-runtime/agent.py         runtime/compression.py    runtime/profile_note.py
+runtime/assembly.py      runtime/compression.py    runtime/profile_note.py
 runtime/supervisor.py    secrets/middleware.py     tools/catalog.py
 ```
 
@@ -73,7 +73,7 @@ devops-agent/
 │   ├── model_api.py          # 模型参数端点（部署默认 + 会话覆盖）
 │   ├── model_settings.py     # 参数五层解析与 derived 推算
 │   ├── runtime/
-│   │   ├── agent.py          #   build_agent / AgentScopeRuntime（系统提示、工具、中间件）
+│   │   ├── assembly.py       #   build_agent / build_agentscope_runtime（系统提示、工具、中间件）
 │   │   ├── sessions.py       #   SessionRegistry：LRU + DB 快照重建 + 参数热替换
 │   │   ├── confirm.py        #   确认协议：风险分级、作用域、前缀沉淀规则
 │   │   ├── profile_note.py   #   档位说明 + 联网说明追加在消息末尾（保前缀缓存）
@@ -191,7 +191,7 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 - `DEVOPS_AGENT_SEARCH_MODE=forced`（默认）：如上，点了就一定搜。
 - `DEVOPS_AGENT_SEARCH_MODE=auto`：只发 `enable_search`，把裁量权交回模型（省 token，但多数情况下不会搜）。写成其他值一律按 `forced` 处理，避免拼错一个环境变量就把联网退化成空开关。
 
-开关实现在 [agent.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/agent.py) 的 `_search_extra_body()`。
+开关实现在 [chat_model.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/chat_model.py) 的 `_search_extra_body()`。
 
 开启联网的那一轮，末条消息会追加一段说明：检索结果**若存在**，会以带来源的引用块出现在上下文里，看到就用、看不到就直说没有检索到；并明确「不需要再用工具抓网页，同一地址失败两次就停」。这句话与档位说明一样放在消息末尾而不是系统提示里——系统提示在请求最前面，改一个字后面的工具 schema 与整段历史全部缓存失效。
 
@@ -383,7 +383,7 @@ SSE 帧约定：
 
 | 本项目的职责 | agentscope 类 | 生产接线 |
 |---|---|---|
-| Agent 核心 | `Agent(name, system_prompt, model, toolkit, ...)` | ✅ `runtime/agent.py` |
+| Agent 核心 | `Agent(name, system_prompt, model, toolkit, ...)` | ✅ `runtime/assembly.py` |
 | 工具装配 | `Bash` / `Read` / `Glob` / `Grep` / `Write` / `Edit` + `Toolkit` / `ToolGroup` | ✅ `tools/catalog.py` |
 | 沙箱执行面 | `LocalWorkspace` / `DockerWorkspace` | Local ✅；Docker 仅单测 |
 | 权限治理 | `PermissionEngine` + `PermissionContext` + `PermissionRule` | ✅ `governance/policy.py` |
@@ -530,7 +530,7 @@ PYTHONPATH=src E:/code/devops-agent/.venv/Scripts/python.exe -m pytest --cov=dev
 | 项目排期 | schedule | 需求拆解、依赖排期、资源/人力、风险预警、进度同步 |
 | Bug 测试定位 | debug | 测试生成、失败定位（证据 `file:line`）、修复建议 |
 
-共用装配入口 [build_agent(name, system_prompt, model, toolkit, middlewares, max_iters, max_retries, context_config, state)](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/agent.py)。
+共用装配入口 [build_agent(name, system_prompt, model, toolkit, middlewares, max_iters, max_retries, context_config, state)](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/assembly.py)。
 但**各域的 system_prompt 与真实业务工具函数尚未实现**：目前每次对话用的都是一个通用 Agent，
 `TeamPipeline` / `GoalPipeline` 只被单测调用，没有接到 `main.py` 的请求链路上。
 

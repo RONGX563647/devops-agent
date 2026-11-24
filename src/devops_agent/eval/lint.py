@@ -7,7 +7,7 @@
 - 系统提示里渲染了绝对路径，同一份 prompt_sha 下每批次下发文本都不同；
 - 用例断言了一个该档根本不装配的工具，判定恒真，等于没测。
 
-六条规则（S1–S6）覆盖三个事实源的交界：`runtime/agent.py` 的提示词、
+六条规则（S1–S6）覆盖三个事实源的交界：`runtime/prompt.py` 的提示词、
 `governance/profiles.py` 的档位、`eval/suites/*.jsonl` 的用例。
 """
 
@@ -27,8 +27,8 @@ from devops_agent.eval.dataset import (
 )
 from devops_agent.governance.policy import bash_decision
 from devops_agent.governance.profiles import PROFILES, PermissionProfile
-from devops_agent.runtime.agent import _TOOL_PROMPT, _render_system_prompt
 from devops_agent.runtime.profile_note import policy_note
+from devops_agent.runtime.prompt import _TOOL_PROMPT, _render_system_prompt
 from devops_agent.tools.catalog import READONLY_TOOL_NAMES, WRITE_TOOL_NAMES
 
 ALL_TOOL_NAMES: tuple[str, ...] = (*READONLY_TOOL_NAMES, *WRITE_TOOL_NAMES)

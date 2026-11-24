@@ -413,6 +413,26 @@ describe('TraceTab', () => {
     expect(list).toContain('command: npm test');
   });
 
+  it('点第几轮，右侧就换成第几轮的概要与上下文', async () => {
+    saveMessages('s-pick-turn', twoTurns);
+    const { container } = wrap(<TraceTab session="s-pick-turn" />);
+    await screen.findByText(/第一问/);
+
+    const inspector = () => container.querySelector('.inspector')?.textContent ?? '';
+    // 默认落在「最慢的一步」（第二轮的工具），起点先确认
+    expect(inspector()).toContain('第 2 轮');
+
+    // 点标题 = 选中这一轮：右侧跟着换，而不是被默认步骤牵住
+    fireEvent.click(screen.getByRole('button', { name: /第 1 轮/ }));
+    expect(inspector()).toContain('第 1 轮 · 2 步');
+    expect(inspector()).toContain('第一问');
+
+    // 步骤模式也有「上下文」页签；第 1 轮没有历史，要说明而不是留白
+    fireEvent.click(screen.getByRole('tab', { name: '上下文' }));
+    expect(inspector()).toContain('历史上下文');
+    expect(inspector()).toContain('这是第一轮');
+  });
+
   it('折叠态写进 sessionStorage：刷新后不用重新点', async () => {
     saveMessages('s-persist', twoTurns);
     wrap(<TraceTab session="s-persist" />);

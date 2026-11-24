@@ -2439,6 +2439,87 @@ a:hover {
 .ctx-legend i[data-kind='policy'] {
   background: var(--line-strong);
 }
+/* 轮次标题左侧的折叠箭头：折叠与「选中这一轮」拆成两个按钮，不抢一次点击 */
+.trace-caret-btn {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.trace-caret-btn:hover .trace-caret {
+  color: var(--accent-ink);
+}
+/* 上下文页签：分块给原文；历史按轮分开，默认收起，长会话也不会糊成一片 */
+.ctx-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ctx-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+}
+.ctx-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink-soft);
+  font-size: var(--text-2xs);
+}
+.ctx-section-head .mono {
+  color: var(--ink-faint);
+}
+.ctx-history {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ctx-history-turn {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.ctx-history-turn > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 6px;
+  cursor: pointer;
+  font-size: var(--text-2xs);
+}
+.ctx-history-no {
+  flex: none;
+  color: var(--ink-faint);
+}
+.ctx-history-q {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--ink-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ctx-history-size {
+  flex: none;
+  color: var(--ink-faint);
+}
+.ctx-history-body {
+  padding: 4px 6px 6px;
+  border-top: 1px solid var(--line-soft);
+}
+.ctx-history-body .trace-detail-label {
+  display: block;
+  margin-top: 4px;
+}
 .ctx-tools {
   display: flex;
   flex-direction: column;
@@ -4020,3 +4101,4 @@ a:hover {
   background: #f5f3ff;
   border-color: #ddd6fe;
 }
+

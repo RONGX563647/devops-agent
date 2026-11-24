@@ -214,12 +214,17 @@ function SessionTrace({
     return map;
   }, [shownTurns, overrides, lastIndex]);
 
-  const activeStepId = selectedStepId ?? initial?.step.id ?? null;
   const flat = useMemo(() => turns.flatMap((turn) => turn.items), [turns]);
+  // 手选了轮次就不再回落到「最慢一步」：否则点哪轮，右侧都被默认步骤牵着走
+  const activeStepId =
+    selectedStepId ?? (selectedTurnId === null ? initial?.step.id ?? null : null);
   const activeStep = flat.find((step) => step.id === activeStepId) ?? null;
   const activeTurn =
-    (activeStep && turns.find((turn) => turn.items.some((step) => step.id === activeStep.id))) ||
-    turns.find((turn) => turn.id === selectedTurnId) ||
+    (activeStep
+      ? turns.find((turn) => turn.items.some((step) => step.id === activeStep.id))
+      : null) ??
+    turns.find((turn) => turn.id === selectedTurnId) ??
+    initial?.turn ??
     null;
 
   function toggleTurn(id: string) {
@@ -251,9 +256,11 @@ function SessionTrace({
     const index = flat.findIndex((step) => step.id === activeStepId);
     if (event.key === 'j' || event.key === 'ArrowDown') {
       event.preventDefault();
+      setSelectedTurnId(null);
       setSelectedStepId(flat[Math.min(flat.length - 1, index + 1)]?.id ?? null);
     } else if (event.key === 'k' || event.key === 'ArrowUp') {
       event.preventDefault();
+      setSelectedTurnId(null);
       setSelectedStepId(flat[Math.max(0, index - 1)]?.id ?? null);
     } else if (event.key === '/') {
       event.preventDefault();
@@ -396,17 +403,26 @@ function SessionTrace({
                 visibleTurns={visibleTurns}
                 onToggleTurn={toggleTurn}
                 onLoadMore={() => setVisibleTurns(null)}
-                onSelectStep={(step) => setSelectedStepId(step.id)}
-                onSelectTurn={(turn) => setSelectedTurnId(turn.id)}
+                onSelectStep={(step) => {
+                  setSelectedStepId(step.id);
+                  setSelectedTurnId(null);
+                }}
+                onSelectTurn={(turn) => {
+                  setSelectedTurnId(turn.id);
+                  setSelectedStepId(null);
+                }}
               />
             </div>
-            {/* key 随步骤变：换一条时页签回到「概述」，避免误读上一条的参数 */}
+            {/* key 随步骤变：换一条时页签回到「概述」，避免误读上一条的参数；
+                只切轮次时不重建，停在「上下文」就能连着看几轮的装配 */}
             <TraceInspector
-              key={activeStep?.id ?? 'none'}
+              key={activeStep?.id ?? 'turn'}
               step={activeStep}
               turn={activeTurn}
               totalMs={stats.measuredMs}
               profile={context.data?.profile}
+              context={context.data ?? null}
+              turns={turns}
             />
           </div>
 
@@ -481,3 +497,4 @@ export function TraceTab({ session, onAsk }: Props) {
 }
 
 export { formatClock };
+

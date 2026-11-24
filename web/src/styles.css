@@ -4710,3 +4710,35 @@ a:hover {
 .chat-meta-override {
   color: var(--accent-ink);
 }
+
+/* OpenJudge 视图：批次切换、抽屉与筛选行 */
+.oj-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.oj-drawer {
+  margin-top: 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 8px;
+  background: var(--panel-alt, rgba(255, 255, 255, 0.03));
+}
+
+.oj-drawer h3,
+.oj-drawer h4 {
+  margin: 8px 0;
+}
+
+.case-row {
+  cursor: pointer;
+}

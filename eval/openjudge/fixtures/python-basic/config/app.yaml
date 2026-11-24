@@ -1,0 +1,3 @@
+service: checkout
+retry: 3
+timeout_seconds: 30

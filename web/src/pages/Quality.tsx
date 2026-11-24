@@ -1,15 +1,17 @@
 import { useState } from 'react';
 import { Overview } from './quality/Overview';
 import { SuitePanel } from './quality/SuitePanel';
+import { OpenJudge } from './quality/OpenJudge';
 import { EvalBatches } from './eval/Batches';
 
-/** 三个视图：「能不能用」→「拿什么测的」→「逐条明细」。 */
-type QualityView = 'overview' | 'suite' | 'batches';
+/** 四个视图：「能不能用」→「拿什么测的」→「逐条明细」→「OpenJudge 基准」。 */
+type QualityView = 'overview' | 'suite' | 'batches' | 'openjudge';
 
 const VIEWS: { key: QualityView; label: string }[] = [
   { key: 'overview', label: '概览' },
   { key: 'suite', label: '评测集' },
   { key: 'batches', label: '评测批次' },
+  { key: 'openjudge', label: 'OpenJudge' },
 ];
 
 export function Quality() {
@@ -38,6 +40,7 @@ export function Quality() {
       {view === 'overview' && <Overview onShowBatches={() => setView('batches')} />}
       {view === 'suite' && <SuitePanel />}
       {view === 'batches' && <EvalBatches />}
+      {view === 'openjudge' && <OpenJudge />}
     </div>
   );
 }

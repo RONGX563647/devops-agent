@@ -9,6 +9,13 @@ import {
   fetchEvalMatrix,
   fetchEvalSeries,
   fetchEvalSuites,
+  fetchOpenJudgeBatch,
+  fetchOpenJudgeBatches,
+  fetchOpenJudgeCases,
+  fetchOpenJudgeCompare,
+  fetchOpenJudgeCoverage,
+  fetchOpenJudgeHealth,
+  fetchOpenJudgeRubrics,
 } from '../api/client';
 import type { EvalBatch, EvalSuite } from '../types';
 import { Quality } from './Quality';
@@ -21,6 +28,14 @@ vi.mock('../api/client', () => ({
   fetchEvalCases: vi.fn(),
   fetchEvalCompare: vi.fn(),
   fetchEvalMatrix: vi.fn(),
+  fetchOpenJudgeHealth: vi.fn(),
+  fetchOpenJudgeBatches: vi.fn(),
+  fetchOpenJudgeBatch: vi.fn(),
+  fetchOpenJudgeCases: vi.fn(),
+  fetchOpenJudgeCase: vi.fn(),
+  fetchOpenJudgeCompare: vi.fn(),
+  fetchOpenJudgeCoverage: vi.fn(),
+  fetchOpenJudgeRubrics: vi.fn(),
 }));
 
 const mockSuites = vi.mocked(fetchEvalSuites);
@@ -29,6 +44,44 @@ const mockBatches = vi.mocked(fetchEvalBatches);
 const mockCases = vi.mocked(fetchEvalCases);
 const mockCompare = vi.mocked(fetchEvalCompare);
 const mockMatrix = vi.mocked(fetchEvalMatrix);
+const mockOjHealth = vi.mocked(fetchOpenJudgeHealth);
+const mockOjBatches = vi.mocked(fetchOpenJudgeBatches);
+const mockOjBatch = vi.mocked(fetchOpenJudgeBatch);
+const mockOjCases = vi.mocked(fetchOpenJudgeCases);
+const mockOjCompare = vi.mocked(fetchOpenJudgeCompare);
+const mockOjCoverage = vi.mocked(fetchOpenJudgeCoverage);
+const mockOjRubrics = vi.mocked(fetchOpenJudgeRubrics);
+
+function makeOjBatch() {
+  return {
+    id: 3,
+    verdict: 'pass' as const,
+    model: 'deepseek-v4.1-flash',
+    suite_sha: 'suite123456789',
+    plan_sha: 'plan123456789',
+    started_at: '2026-11-25T06:00:00Z',
+    finished_at: '2026-11-25T06:10:00Z',
+    summary: {
+      verdict: 'pass' as const,
+      kpi: { cases: 90, passed: 80, judge_n: 60, violations: 0 },
+      tracks: {
+        A: { n: 28, passed: 24, pass_rate: 0.857, judge_avg: 0.72, violations: 0, verdict: 'pass' as const },
+      },
+      subjects: {},
+      failures: [
+        {
+          case_id: 'a-fail',
+          track: 'A',
+          status: 'success',
+          violations: 0,
+          failed_checks: ['must_cite:x'],
+          repro: 'python -m devops_agent.openjudge run --case a-fail --no-judge',
+        },
+      ],
+      pareto: [{ check: 'must_cite:x', count: 1 }],
+    },
+  };
+}
 
 function makeBatch(overrides: Partial<EvalBatch> = {}): EvalBatch {
   return {
@@ -151,6 +204,55 @@ beforeEach(() => {
   mockCases.mockReset();
   mockCompare.mockReset();
   mockMatrix.mockReset();
+  mockOjHealth.mockReset();
+  mockOjBatches.mockReset();
+  mockOjBatch.mockReset();
+  mockOjCases.mockReset();
+  mockOjCompare.mockReset();
+  mockOjCoverage.mockReset();
+  mockOjRubrics.mockReset();
+
+  mockOjHealth.mockResolvedValue({
+    has_data: true,
+    latest_batch: makeOjBatch(),
+    calibration: null,
+    anchors: null,
+  });
+  mockOjBatches.mockResolvedValue({ items: [makeOjBatch()], total: 1 });
+  mockOjBatch.mockResolvedValue(makeOjBatch());
+  mockOjCases.mockResolvedValue({
+    items: [
+      {
+        id: 11,
+        case_id: 'a-fail',
+        track: 'A',
+        subject: 'repo_qa',
+        risk: 'low',
+        status: 'success',
+        passed: false,
+        latency_ms: 1200,
+        tokens: { input: 10, output: 5 },
+      },
+    ],
+    total: 1,
+    limit: 50,
+    offset: 0,
+  });
+  mockOjCompare.mockResolvedValue({
+    base: 1,
+    head: 2,
+    comparable: true,
+    suite_sha: ['a', 'b'],
+    tracks: { A: { base: 0.5, head: 0.8, delta: 0.3 } },
+    flips: [{ case_id: 'a-fail', base: false, head: true }],
+  });
+  mockOjCoverage.mockResolvedValue({
+    cases: 90,
+    suite_sha: 'suite123456789',
+    coverage: { tracks: { A: 28, B: 24 } },
+    problems: [],
+  });
+  mockOjRubrics.mockResolvedValue({ items: [], total: 0 });
 
   mockSuites.mockResolvedValue({ items: [makeSuite()] });
   mockSeries.mockResolvedValue({
@@ -246,5 +348,15 @@ describe('Quality 三视图', () => {
     fireEvent.click(screen.getByText('评测批次'));
 
     expect(await screen.findByText('#7')).toBeTruthy();
+  });
+
+  it('OpenJudge 视图展示批次、赛道与失败用例', async () => {
+    renderQuality();
+    fireEvent.click(screen.getByText('OpenJudge'));
+
+    expect((await screen.findAllByText(/#3/)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText('A 仓库问答')).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText('a-fail')).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText('must_cite:x')).length).toBeGreaterThan(0);
   });
 });

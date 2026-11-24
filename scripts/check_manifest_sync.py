@@ -184,10 +184,7 @@ def _risk_min_problems(layer: str, minimum: object) -> list[str]:
         return [f"  risk_thresholds.{layer}={minimum} 超出量纲 [0, 1]"]
     floor = _RISK_GATE_FLOORS[layer]
     if minimum < floor:
-        return [
-            f"  risk_thresholds.{layer}={minimum} 低于项目下界 {floor}："
-            "调低阈值等于把门禁关掉"
-        ]
+        return [f"  risk_thresholds.{layer}={minimum} 低于项目下界 {floor}：调低阈值等于把门禁关掉"]
     return []
 
 

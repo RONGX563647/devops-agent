@@ -15,7 +15,7 @@
 
 **第一次：切档不重建权限上下文。**
 
-`src/devops_agent/runtime/agent.py` 的 `_state_for()` 判据是 `state.permission_context.mode != PermissionMode(profile.mode)`。而 `workspace` 与 `execute` 两档的 `mode` 都是 `accept_edits`（`governance/profiles.py`），两者唯一的差别是 `execute` 多一组 `command_allowlist`。实测：
+`src/devops_agent/runtime/assembly.py` 的 `_state_for()` 判据是 `state.permission_context.mode != PermissionMode(profile.mode)`。而 `workspace` 与 `execute` 两档的 `mode` 都是 `accept_edits`（`governance/profiles.py`），两者唯一的差别是 `execute` 多一组 `command_allowlist`。实测：
 
 ```
 workspace 建态    mode=ACCEPT_EDITS  allow_rules={}
@@ -67,9 +67,9 @@ workspace 建态    mode=ACCEPT_EDITS  allow_rules={}
 
 | # | 缺陷 | 位置 | 后果 |
 |---|---|---|---|
-| 1 | 切档只比 `mode` | `runtime/agent.py:204` | 同 mode 的不同档位互不生效 |
+| 1 | 切档只比 `mode` | `runtime/scope_runtime.py` | 同 mode 的不同档位互不生效 |
 | 2 | 一个档位捆绑 `mode`+`tools`+`allowlist`+`fallback` | `governance/profiles.py` | 「工作区可写但不问」无法表达 |
-| 3 | 沉淀只活在会话快照里 | `runtime/agent.py:_rules_for` | 换会话即归零，用户反复从零教育 |
+| 3 | 沉淀只活在会话快照里 | `runtime/scope_runtime.py:_rules_for` | 换会话即归零，用户反复从零教育 |
 | 4 | prefix 只取命令第一个词 | `runtime/confirm.py:rule_content_for` | `git commit -m x` 沉淀成 `git:*` |
 | 5 | 不解析 shell 结构 | `runtime/confirm.py:command_of` | `cd /repo && rm -rf build` 沉淀成 `cd:*` |
 | 6 | `deny` 绑在 `hard_deny` 档上 | `governance/policy.py:_profile_deny_specs` | workspace 补上写工具后，`.git/`、`.env` 立刻失守 |
@@ -84,8 +84,8 @@ workspace 建态    mode=ACCEPT_EDITS  allow_rules={}
 ```python
 @dataclass(frozen=True, slots=True)
 class PermissionProfile:
-    scope: str          # readonly | workspace | container
-    approvals: str      # always | on-risk | never
+    scope: str  # readonly | workspace | container
+    approvals: str  # always | on-risk | never
     tools: tuple[str, ...]
 
     @property
@@ -128,11 +128,12 @@ class PermissionProfile:
 ```python
 @dataclass(frozen=True, slots=True)
 class Rule:
-    tool: str                # Bash | Write | Edit
-    pattern: str | None      # None = 整个工具；"git add:*" / ".env"
-    behavior: str            # allow | ask | deny
-    source: str              # builtin | project | user | session
-    scope: str               # readonly | workspace | container：生效范围下限
+    tool: str  # Bash | Write | Edit
+    pattern: str | None  # None = 整个工具；"git add:*" / ".env"
+    behavior: str  # allow | ask | deny
+    source: str  # builtin | project | user | session
+    scope: str  # readonly | workspace | container：生效范围下限
+
 
 SCOPE_ORDER = {"readonly": 0, "workspace": 1, "container": 2}
 ```
@@ -225,11 +226,19 @@ Codex 把这两件事做成两个独立配置项（`sandbox_mode` 与 `approval_
 
 ```python
 PROFILES: dict[str, PermissionProfile] = {
-    "readonly":   PermissionProfile(scope="readonly",  approvals="never",   tools=READONLY_TOOLS),
-    "workspace":  PermissionProfile(scope="workspace", approvals="on-risk", tools=READONLY_TOOLS + WRITE_TOOLS),
-    "cautious":   PermissionProfile(scope="workspace", approvals="always",  tools=READONLY_TOOLS + WRITE_TOOLS),
-    "unattended": PermissionProfile(scope="workspace", approvals="never",   tools=READONLY_TOOLS + WRITE_TOOLS),
-    "container":  PermissionProfile(scope="container", approvals="never",   tools=READONLY_TOOLS + WRITE_TOOLS),
+    "readonly": PermissionProfile(scope="readonly", approvals="never", tools=READONLY_TOOLS),
+    "workspace": PermissionProfile(
+        scope="workspace", approvals="on-risk", tools=READONLY_TOOLS + WRITE_TOOLS
+    ),
+    "cautious": PermissionProfile(
+        scope="workspace", approvals="always", tools=READONLY_TOOLS + WRITE_TOOLS
+    ),
+    "unattended": PermissionProfile(
+        scope="workspace", approvals="never", tools=READONLY_TOOLS + WRITE_TOOLS
+    ),
+    "container": PermissionProfile(
+        scope="container", approvals="never", tools=READONLY_TOOLS + WRITE_TOOLS
+    ),
 }
 ```
 
@@ -260,14 +269,15 @@ PROFILES: dict[str, PermissionProfile] = {
 
 ```python
 MODES: dict[tuple[str, str], str] = {
-    ("readonly",  "never"):   "explore",
-    ("workspace", "always"):  "default",
+    ("readonly", "never"): "explore",
+    ("workspace", "always"): "default",
     ("workspace", "on-risk"): "accept_edits",
-    ("workspace", "never"):   "dont_ask",
-    ("container", "always"):  "default",
+    ("workspace", "never"): "dont_ask",
+    ("container", "always"): "default",
     ("container", "on-risk"): "bypass",
-    ("container", "never"):   "bypass",
+    ("container", "never"): "bypass",
 }
+
 
 def compile_context(profile, rules, policy) -> PermissionContext:
     active = [r for r in rules if SCOPE_ORDER[profile.scope] >= SCOPE_ORDER[r.scope]]
@@ -282,19 +292,22 @@ def compile_context(profile, rules, policy) -> PermissionContext:
         mode=PermissionMode(MODES[(profile.scope, profile.approvals)]),
         working_directories=_dirs(policy, profile.scope),
         allow_rules=_to_rule_map(allow),
-        deny_rules=_to_rule_map(deny),      # builtin 规则无条件并入，不按档位开关
+        deny_rules=_to_rule_map(deny),  # builtin 规则无条件并入，不按档位开关
         ask_rules=_to_rule_map(ask),
     )
 ```
 
 builtin deny 的注入点从 `_profile_deny_specs()`（按 `hard_deny` 过滤）改成无条件并入——这是缺陷 6 的修法，也是不变量 1 的落地点。
 
-### `runtime/agent.py:_state_for`
+### `runtime/assembly.py:_state_for`
 
 ```python
 _PROFILE_KEY = "perm_key"
 
-def _state_for(profile: PermissionProfile, rules: Sequence[Rule], state: AgentState | None) -> AgentState:
+
+def _state_for(
+    profile: PermissionProfile, rules: Sequence[Rule], state: AgentState | None
+) -> AgentState:
     if state is None:
         state = AgentState(permission_context=compile_context(profile, rules))
         state.middle_context[_PROFILE_KEY] = profile.key

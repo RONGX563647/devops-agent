@@ -10,7 +10,7 @@ import {
   fetchEvalMatrix,
 } from '../api/client';
 import type { EvalBatch, EvalCaseItem, EvalGate } from '../types';
-import { EvalBatches } from './EvalBatches';
+import { EvalBatches } from './eval/Batches';
 
 vi.mock('../api/client', () => ({
   fetchEvalBatches: vi.fn(),

@@ -4,8 +4,8 @@ from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 
-from devops_agent.main import app
-from devops_agent.runtime.agent import build_agent
+from devops_agent.gateway.app import app
+from devops_agent.runtime.assembly import build_agent
 from devops_agent.runtime.supervisor import as_member, build_team_pipeline
 
 

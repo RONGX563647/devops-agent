@@ -4,24 +4,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchRuns } from '../api/client';
 import type { ConfirmDecision, PendingCall, Run, StreamEvent } from '../types';
 import { clearAllHistory, loadMessages, loadPermission } from './history';
-import {
-  confirm,
-  ensureHistory,
-  listSessions,
-  refreshPending,
-  resetStore,
-  send,
-  setPermission,
-  stop,
-  useSession,
-} from './store';
+import { confirm, refreshPending, send, setPermission, stop } from './store/actions';
+import { ensureHistory, listSessions } from './store/history';
+import { resetStore, useSession } from './store/state';
 
 const streamRunMock = vi.hoisted(() => vi.fn());
 const streamConfirmMock = vi.hoisted(() => vi.fn());
 const fetchPendingMock = vi.hoisted(() => vi.fn());
 
-vi.mock('../api/useRunStream', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../api/useRunStream')>();
+vi.mock('../api/stream', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/stream')>();
   return { ...actual, streamRun: streamRunMock, streamConfirm: streamConfirmMock };
 });
 

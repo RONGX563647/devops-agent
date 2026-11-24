@@ -15,11 +15,11 @@ from fastapi.testclient import TestClient
 
 from devops_agent import config as cfg
 from devops_agent import model_settings as ms
+from devops_agent.gateway.app import app
 from devops_agent.governance.profiles import PROFILES
-from devops_agent.main import app
 from devops_agent.observability import repository as repo
 from devops_agent.observability.recorder import RunRecorder
-from devops_agent.runtime.agent import session_runtime_factory
+from devops_agent.runtime.assembly import session_runtime_factory
 from devops_agent.runtime.sessions import SessionRegistry
 
 client = TestClient(app)
@@ -142,9 +142,7 @@ def test_session_override_wins_and_is_hot_swapped(hot: HotRuntime) -> None:
     assert hot.applied[-1].temperature == 0.2
     assert hot.applied[-1].max_iters == 30
     # 合并语义：另一次 PATCH 只改一项，不把之前的覆盖冲掉
-    body = client.patch(
-        "/api/session/s1/model-config", json={"overrides": {"top_p": 0.5}}
-    ).json()
+    body = client.patch("/api/session/s1/model-config", json={"overrides": {"top_p": 0.5}}).json()
     assert body["overrides"] == {"temperature": 0.2, "max_iters": 30, "top_p": 0.5}
 
 

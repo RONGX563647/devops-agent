@@ -1,6 +1,6 @@
 """事件转译层 —— 把 AgentScope 事件对象转成普通 dict。
 
-本模块是 import agentscope 的边界之一（与 agent.py 同属装配区）。
+本模块是 import agentscope 的边界之一（与 assembly.py 等同属装配区）。
 转换后用普通 dict 越过边界，observability 层只认 dict，不依赖框架。
 
 设计要点：

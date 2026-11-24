@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from agentscope.agent import Agent, ContextConfig
 
-from devops_agent.runtime.agent import AgentScopeRuntime, build_agentscope_runtime
+from devops_agent.runtime.assembly import build_agentscope_runtime
 from devops_agent.runtime.compression import (
     CONTEXT_BUDGET,
     CONTEXT_COMPRESSION_END,
@@ -21,6 +21,7 @@ from devops_agent.runtime.compression import (
     context_budget,
     count_context_tokens,
 )
+from devops_agent.runtime.scope_runtime import AgentScopeRuntime
 
 
 class FakeModel:

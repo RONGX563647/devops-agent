@@ -11,7 +11,7 @@
  */
 import type { AgentContext } from '../api/client';
 import type { TraceTurn } from '../types';
-import { Composition, fmtTok } from './TraceList';
+import { Composition, fmtTok } from './traceViews/TraceList';
 
 interface Props {
   context: AgentContext | null;

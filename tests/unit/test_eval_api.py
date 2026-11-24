@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from devops_agent.main import app
+from devops_agent.gateway.app import app
 from devops_agent.observability import repository as repo
 
 client = TestClient(app)

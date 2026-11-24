@@ -1,6 +1,6 @@
 """模型参数配置端点 —— 部署默认 / 会话覆盖 / 只读凭据（SPEC-0001）。
 
-为什么单独一个模块而不是塞进 main.py：main 已经承担 SSE 收尾、挂起恢复、
+为什么单独一个模块而不是塞进网关：网关已经承担 SSE 收尾、挂起恢复、
 权限切档三件事，再把十几个参数校验放进去，任何一处改动都要重读整个文件。
 
 三条硬约定：
@@ -140,9 +140,7 @@ def _save_stored(merged: dict[str, Any], *, expected: int) -> int:
 
 
 @router.get("/api/model-config")
-def read_model_config(
-    session: str | None = None, domain: str = DEFAULT_DOMAIN
-) -> dict[str, Any]:
+def read_model_config(session: str | None = None, domain: str = DEFAULT_DOMAIN) -> dict[str, Any]:
     """当前生效参数 + 逐项来源 + 边界 + 派生值。
 
     `session` 给了就把该会话的覆盖一起算进来（前端面板打开时用）。

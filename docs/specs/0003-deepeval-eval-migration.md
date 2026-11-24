@@ -114,8 +114,11 @@ eval = ["deepeval>=2,<3"]
 Golden(
     input=case.input,
     additional_metadata={
-        "case_id": case.id, "tags": case.tags, "subject": case.subject,
-        "permission": case.permission, "fixture": case.fixture,
+        "case_id": case.id,
+        "tags": case.tags,
+        "subject": case.subject,
+        "permission": case.permission,
+        "fixture": case.fixture,
         "expected": case.expected.model_dump(mode="json"),
         "timeout_s": case.timeout_s,
     },
@@ -137,9 +140,9 @@ LLMTestCase(
     token_cost=None,  # 无单价，不编造；token 明细进 metadata
     additional_metadata={
         "status": trace.status,
-        "tool_names": trace.tool_names,        # 叫过
-        "executed_tools": trace.executed_tools,# 跑过
-        "denied_tools": trace.denied_tools,    # 被拒
+        "tool_names": trace.tool_names,  # 叫过
+        "executed_tools": trace.executed_tools,  # 跑过
+        "denied_tools": trace.denied_tools,  # 被拒
         "tokens": trace.tokens,
         "cache_input_tokens": trace.cache_input_tokens,
         "cache_creation_tokens": trace.cache_creation_tokens,

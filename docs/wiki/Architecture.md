@@ -4,12 +4,12 @@
 
 ```
                      ┌──────────────────────────────────────────┐
-  HTTP / SSE   →     │ main.py  网关：会话、权限、SSE、挂起续跑   │
+  HTTP / SSE   →     │ gateway/  网关：会话、权限、SSE、挂起续跑    │
                      └───────────────┬──────────────────────────┘
                                      │ 只依赖协议
                      ┌───────────────▼──────────────────────────┐
    编排层             │ runtime/runtime.py  AgentRuntime 协议     │
-                     │   ├─ runtime/agent.py   AgentScopeRuntime │
+                     │   ├─ runtime/scope_runtime.py  AgentScopeRuntime │
                      │   ├─ runtime/sessions.py SessionRegistry  │
                      │   └─ runtime/confirm.py  确认协议数据结构  │
                      └───────────────┬──────────────────────────┘
@@ -26,11 +26,11 @@
 
 三层硬约束：
 
-1. **网关不 import 框架**：`main.py` 只认 `AgentRuntime` 协议与普通 dict 事件。
+1. **网关不 import 框架**：`gateway/` 只认 `AgentRuntime` 协议与普通 dict 事件。
 2. **编排与执行分离**：`runtime/` 决定「下一步做什么」，`executor/boundary.py`
    决定「在哪执行」（目前只用 `LocalWorkspace`）。
 3. **框架隔离边界 9 个文件**：`executor/boundary.py`、`governance/policy.py`、
-   `memory/ledger.py`、`runtime/agent.py`、`runtime/compression.py`、
+   `memory/ledger.py`、`runtime/assembly.py`、`runtime/compression.py`、
    `runtime/profile_note.py`、`runtime/supervisor.py`、`secrets/middleware.py`、
    `tools/catalog.py`。
 
@@ -61,7 +61,9 @@
 
 | 文件 | 职责 | 关键事实 |
 |---|---|---|
-| `agent.py` | 唯一主装配点 | `build_agent` / `build_chat_model` / `build_agentscope_runtime`；`PROFILE_KEY` 写进 `middle_context` |
+| `assembly.py` | Agent 装配 | `build_agent` / `build_agentscope_runtime` / `session_runtime_factory` |
+| `chat_model.py` | 模型与上下文配置 | `build_chat_model` / `build_context_config` / 搜索参数 |
+| `scope_runtime.py` | 框架运行时适配 | `AgentScopeRuntime`；`PROFILE_KEY` 写进 `middle_context` |
 | `sessions.py` | 会话隔离 | `max_entries=16`；`acquire/peek/switch/save/drop/flush_pending/broadcast_model_defaults` |
 | `confirm.py` | 确认协议数据结构 | 风险分级、`RULE_SCOPES`、`prefix` 沉淀规则；**不 import 框架** |
 | `profile_note.py` | 档位说明 + 联网说明下发位置 | 追加在消息末尾，保前缀缓存（21% → 96%）；`set_profile()` / `set_web_search()` 支持运行中切换 |

@@ -1,0 +1,42 @@
+[importlinter]
+root_package = devops_agent
+include_external_packages = True
+
+[importlinter:contract:eval-no-framework]
+name = eval 层不得直接依赖 AgentScope
+type = forbidden
+source_modules = devops_agent.eval
+forbidden_modules = agentscope
+allow_indirect_imports = True
+
+[importlinter:contract:input-no-framework]
+name = input 层不得直接依赖 AgentScope
+type = forbidden
+source_modules = devops_agent.input
+forbidden_modules = agentscope
+allow_indirect_imports = True
+
+[importlinter:contract:observability-no-framework]
+name = observability 层不得直接依赖 AgentScope
+type = forbidden
+source_modules = devops_agent.observability
+forbidden_modules = agentscope
+allow_indirect_imports = True
+
+[importlinter:contract:observability-no-gateway]
+name = observability 不得反向依赖网关
+type = forbidden
+source_modules = devops_agent.observability
+forbidden_modules = devops_agent.gateway
+
+[importlinter:contract:input-no-runtime]
+name = input 不得依赖 runtime
+type = forbidden
+source_modules = devops_agent.input
+forbidden_modules = devops_agent.runtime
+
+[importlinter:contract:runtime-no-gateway]
+name = runtime 不得反向依赖网关
+type = forbidden
+source_modules = devops_agent.runtime
+forbidden_modules = devops_agent.gateway

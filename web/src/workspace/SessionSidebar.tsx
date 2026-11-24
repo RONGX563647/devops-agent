@@ -10,7 +10,8 @@ import {
   type SessionGroup,
   type SessionItem,
 } from './sidebar-utils';
-import { listSessions, useStoreVersion } from './store';
+import { listSessions } from './store/history';
+import { useStoreVersion } from './store/state';
 import type { StoredSession } from './history';
 
 export { GROUP_ORDER, groupOf, toSessionTitle };

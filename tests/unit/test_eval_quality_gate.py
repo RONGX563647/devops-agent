@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from devops_agent.eval.dataset import EvalCase, Manifest, Suite, validate_suite
+from devops_agent.eval.dataset import EvalCase, Manifest, Suite
 from devops_agent.eval.graders import CaseScore, Check, TraceResult, grade
-from devops_agent.eval.lint import run_preflight
+from devops_agent.eval.preflight import run_preflight
 from devops_agent.eval.report import aggregate
 from devops_agent.eval.runner import CaseRun
+from devops_agent.eval.validation import validate_suite
 
 
 def make_case(case_id: str, risk: str | None = "core", **extra: Any) -> EvalCase:
@@ -134,8 +135,7 @@ def test_funnel_is_cumulative_and_attribution_excludes_harness() -> None:
 
 def test_risk_gate_fails_only_below_threshold() -> None:
     runs = [
-        make_run(f"c{i}", passed=False, answer=False, attribution="model_answer")
-        for i in range(3)
+        make_run(f"c{i}", passed=False, answer=False, attribution="model_answer") for i in range(3)
     ]
     runs += [make_run(f"h{i}", risk="high_risk") for i in range(2)]
     summary = aggregate(

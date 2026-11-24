@@ -3,8 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from devops_agent import main
-from devops_agent.main import app
+from devops_agent.gateway.app import app, runtime_status, select_runtime
 from devops_agent.runtime.runtime import EchoRuntime
 
 client = TestClient(app)
@@ -35,7 +34,7 @@ def test_health_reports_echo_degradation() -> None:
 
 def test_runtime_status_reports_model_for_real_runtime() -> None:
     """真实运行时给模型名、且没有告警文案（免得横幅一直挂着）。"""
-    status = main.runtime_status(object())  # type: ignore[arg-type]
+    status = runtime_status(object())  # type: ignore[arg-type]
     assert status["kind"] == "agentscope"
     assert status["notice"] == ""
 
@@ -47,10 +46,10 @@ def test_run_endpoint_is_removed() -> None:
 
 
 def test_select_runtime_is_exposed() -> None:
-    assert callable(main.select_runtime)
+    assert callable(select_runtime)
 
 
 def test_select_runtime_falls_back_to_echo(monkeypatch: pytest.MonkeyPatch) -> None:
     """缺凭据时选 Echo 自检运行时（不触网）。"""
     monkeypatch.delenv("DEVOPS_AGENT_API_KEY", raising=False)
-    assert isinstance(main.select_runtime(), EchoRuntime)
+    assert isinstance(select_runtime(), EchoRuntime)

@@ -146,7 +146,7 @@ git fetch origin && git checkout main && git pull
 
 1. **框架隔离**：`import agentscope` 只允许出现在 9 个装配模块
    （`executor/boundary.py`、`governance/policy.py`、`memory/ledger.py`、
-   `runtime/agent.py`、`runtime/compression.py`、`runtime/profile_note.py`、
+   `runtime/assembly.py`、`runtime/compression.py`、`runtime/profile_note.py`、
    `runtime/supervisor.py`、`secrets/middleware.py`、`tools/catalog.py`）。
    新增装配点时集中在此边界内并同步更新清单（AGENTS.md §3.1 目前只列了 8 个）。
 2. **编排与执行分离**：`runtime/` 只做编排，`executor/boundary.py` 管执行面。

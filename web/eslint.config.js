@@ -25,4 +25,19 @@ export default tseslint.config(
       complexity: ['error', frontendGates.complexity_threshold ?? 10],
     },
   },
+  {
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/**/*.test.{ts,tsx}'],
+    rules: {
+      // 所有前端文件统一受 max-lines 约束；拆分后不再保留存量豁免。
+      'max-lines': [
+        'error',
+        {
+          max: frontendGates.max_lines ?? 500,
+          skipBlankLines: true,
+          skipComments: true,
+        },
+      ],
+    },
+  },
 );

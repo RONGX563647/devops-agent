@@ -120,9 +120,7 @@ class SessionRegistry:
     def _build(self, session_id: str, profile: Any, web_search: bool | None) -> SessionEntry:
         state_json = self._load_state(session_id)
         overrides = self._load_model_config(session_id)
-        runtime = self._factory(
-            session_id, profile, state_json, web_search, model_config=overrides
-        )
+        runtime = self._factory(session_id, profile, state_json, web_search, model_config=overrides)
         entry = SessionEntry(
             session_id=session_id,
             runtime=runtime,
@@ -297,7 +295,7 @@ def registry_for(request: Any) -> SessionRegistry:
     放在本模块而不是 main：模型配置端点也要用同一份注册表，
     让 main 反向被 import 会绕成环。
     """
-    from devops_agent.runtime.agent import session_runtime_factory  # 避开循环 import
+    from devops_agent.runtime.assembly import session_runtime_factory  # 避开循环 import
 
     base = getattr(request.app.state, "runtime", None)
     registry = getattr(request.app.state, "sessions", None)

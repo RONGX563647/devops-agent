@@ -107,7 +107,7 @@ def test_incomparable_baseline_returns_2(tmp_path: Path, monkeypatch: pytest.Mon
     )
     monkeypatch.setattr(cli_mod, "load_suite", lambda path: suite)
     monkeypatch.setattr(cli_mod, "_init_judge", lambda enabled: (None, ""))
-    monkeypatch.setattr(cli_mod, "_runtime_factory", lambda profile: (lambda case, workdir: None))
+    monkeypatch.setattr(cli_mod, "_runtime_factory", lambda profile: lambda case, workdir: None)
     monkeypatch.setattr(cli_mod, "_persist", lambda *args, **kwargs: 1)
     monkeypatch.setattr(cli_mod, "_write_outputs", lambda *args, **kwargs: None)
 

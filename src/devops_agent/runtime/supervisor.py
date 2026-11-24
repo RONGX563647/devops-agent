@@ -46,7 +46,5 @@ def build_goal_pipeline(
         executor=executor,
         verifier=verifier,
         max_iters=max_iters if max_iters is not None else settings.max_iters_for("default"),
-        max_retries=(
-            max_retries if max_retries is not None else settings.agent_max_retries
-        ),
+        max_retries=(max_retries if max_retries is not None else settings.agent_max_retries),
     )

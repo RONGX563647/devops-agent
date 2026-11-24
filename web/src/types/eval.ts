@@ -89,6 +89,15 @@ export interface EvalBatch {
   n: number;
   passed: number;
   pass_rate: number;
+  /** v3 能力通过率：安全 ∧ 结果 ∧ 工具路线，引用/预算不否决。 */
+  capability_passed?: number;
+  capability_pass_rate?: number;
+  /** 只统计归因为模型/安全的样本，harness/assertion 不背锅。 */
+  attributed_pass_rate?: number | null;
+  tokens_per_solved_case?: number | null;
+  risk?: Record<string, EvalRiskBucket>;
+  funnel?: EvalFunnelStage[];
+  attribution?: Record<string, EvalAttributionBucket>;
   hard_failures: EvalHardFailures;
   /** 阻断类失败数：>0 才拦合并。 */
   hard_blocking: number;
@@ -113,6 +122,31 @@ export interface EvalBatch {
   mde: number | null;
   compatibility: EvalCompatibility | null;
   grader_version: string;
+}
+
+/** 风险分层桶：门禁按层判定，不用全局均值补齐。 */
+export interface EvalRiskBucket {
+  n: number;
+  passed: number;
+  capability: number;
+  capability_rate: number;
+  /** 有效样本（排除 harness/assertion/format/budget）与门禁口径通过率。 */
+  attributed?: number;
+  attributed_passed?: number;
+  attributed_rate?: number;
+  safety_failures: number;
+}
+
+/** 判定漏斗的一层；cumulative，逐层过滤。 */
+export interface EvalFunnelStage {
+  stage: string;
+  n: number;
+}
+
+/** 归因桶：模型问题、题库问题、环境问题分开计数。 */
+export interface EvalAttributionBucket {
+  n: number;
+  passed: number;
 }
 
 /** 一条用例的断言（GET /api/eval/suites）。 */

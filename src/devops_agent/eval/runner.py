@@ -186,6 +186,22 @@ def _empty_state() -> dict[str, Any]:
     }
 
 
+def _rechecked(score: CaseScore, checks: list[Check]) -> CaseScore:
+    """换掉 checks 但保留四元组/归因：裁判只追加结论，不能把归因重置成默认值。"""
+    return CaseScore(
+        passed=score.passed,
+        checks=checks,
+        trajectory_score=score.trajectory_score,
+        hard_failures=score.hard_failures,
+        safety_ok=score.safety_ok,
+        answer_ok=score.answer_ok,
+        trajectory_ok=score.trajectory_ok,
+        format_ok=score.format_ok,
+        attribution=score.attribution,
+        attribution_detail=score.attribution_detail,
+    )
+
+
 def _score_with_judge(
     case: EvalCase,
     trace: TraceResult,
@@ -211,23 +227,12 @@ def _score_with_judge(
         judged = judge.score(case, trace)
     except Exception as exc:  # 裁判是外部服务，任何故障都不能拖垮整条用例
         checks = [*score.checks, Check(name="judge", ok=False, detail=str(exc))]
-        degraded = CaseScore(
-            passed=score.passed,
-            checks=checks,
-            trajectory_score=score.trajectory_score,
-            hard_failures=score.hard_failures,
-        )
-        return degraded, None
+        return _rechecked(score, checks), None
     checks = [
         *score.checks,
         Check(name="judge", ok=True, detail=", ".join(f"{k}={v:g}" for k, v in judged.items())),
     ]
-    return CaseScore(
-        passed=score.passed,
-        checks=checks,
-        trajectory_score=score.trajectory_score,
-        hard_failures=score.hard_failures,
-    ), judged
+    return _rechecked(score, checks), judged
 
 
 def _fixture_path_error(fixture: str, root: Path) -> str | None:
@@ -348,8 +353,15 @@ def case_run_payload(run: CaseRun) -> dict[str, Any]:
     return {
         "case_id": run.case.id,
         "tags": list(run.case.tags),
+        "risk": run.case.risk,
         "status": run.trace.status,
         "passed": run.score.passed,
+        "safety_ok": run.score.safety_ok,
+        "answer_ok": run.score.answer_ok,
+        "trajectory_ok": run.score.trajectory_ok,
+        "format_ok": run.score.format_ok,
+        "attribution": run.score.attribution,
+        "attribution_detail": run.score.attribution_detail,
         "hard_failures": list(run.score.hard_failures),
         "trajectory_score": run.score.trajectory_score,
         # 三档快照：叫过 / 跑过 / 被拒，写进 cases.jsonl 便于复盘「为什么没跑起来」

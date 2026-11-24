@@ -17,10 +17,9 @@ from devops_agent.eval.dataset import (
     Suite,
     load_suite,
     scenario_of,
-    split_warnings,
     suite_sha256,
-    validate_suite,
 )
+from devops_agent.eval.validation import split_warnings, validate_suite
 
 
 def make_case(

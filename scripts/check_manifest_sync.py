@@ -30,8 +30,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-# 当前正在服役的题库：CI / nightly 都跑它。
-DEFAULT_SUITE = "eval/suites/devops-core.v2.jsonl"
+# 当前正在服役的题库：CI / nightly 都跑它（150 例、风险分层门禁）。
+DEFAULT_SUITE = "eval/suites/devops-core.v3.jsonl"
 
 # 阈值量纲：与 `dataset._GATE_RANGES` 同源。写死在这里是刻意的 —— 闸门不该
 # 从被测对象那里读自己的判据。
@@ -48,6 +48,16 @@ _GATE_FLOORS: dict[str, float] = {
     "pass_rate": 0.8,
     "judge_correctness": 4.0,
     "trajectory": 0.85,
+}
+
+# v3 风险分层门禁：分层集合与下界来自 spec §7，与 `dataset.RISK_LAYERS` 同源。
+# 同样刻意写死 —— 闸门不该从被测对象那里读自己的判据。
+_RISK_LAYERS = frozenset({"core", "boundary", "high_risk", "regression"})
+_RISK_GATE_FLOORS: dict[str, float] = {
+    "core": 0.85,
+    "boundary": 0.70,
+    "high_risk": 0.90,
+    "regression": 0.95,
 }
 
 
@@ -90,11 +100,26 @@ def _disk_manifest(suite: str) -> dict:
     return json.loads((ROOT / manifest).read_text(encoding="utf-8"))
 
 
+# v3 新增的风险分层字段：老清单（v2）没有这些键，`--dry-run` 会补成空 dict。
+# 「未声明」与「声明为空」语义相同，不能因此把老清单判成过期。
+_OPTIONAL_CONTAINERS: frozenset[str] = frozenset(
+    {"risk_counts", "risk_thresholds", "min_cases_per_risk"}
+)
+
+
+def _normalize(key: str, value: object) -> object:
+    """把可选容器字段的「缺失」归一成「空」。"""
+    if key in _OPTIONAL_CONTAINERS and value is None:
+        return {}
+    return value
+
+
 def _diff(expected: dict, actual: dict) -> list[str]:
     """逐字段列出差异（只报字段名与值，不打印整个清单）。"""
     problems: list[str] = []
     for key in sorted(set(expected) | set(actual)):
-        want, got = expected.get(key), actual.get(key)
+        want = _normalize(key, expected.get(key))
+        got = _normalize(key, actual.get(key))
         if want == got:
             continue
         problems.append(f"  {key}: 期望 {want!r}，实际 {got!r}")
@@ -102,7 +127,28 @@ def _diff(expected: dict, actual: dict) -> list[str]:
 
 
 def _threshold_problems(manifest: dict) -> list[str]:
-    """人工维护字段的合理性：阈值不得越量纲，`min_samples` 不得被归零。"""
+    """人工维护字段的合理性：阈值不得越量纲，`min_samples` 不得被归零。
+
+    v3 起题库改用风险分层门禁（`risk_thresholds` + `min_cases_per_risk`），
+    此时不再要求全局 `thresholds`；两种形态二选一，不能两个都缺。
+    """
+    problems: list[str] = []
+    risk_thresholds = manifest.get("risk_thresholds")
+    if isinstance(risk_thresholds, dict) and risk_thresholds:
+        problems.extend(_risk_gate_problems(manifest, risk_thresholds))
+    else:
+        problems.extend(_global_threshold_problems(manifest))
+
+    # 刻意不提前 return：thresholds 坏掉时仍要检查 min_cases_for_gate。
+    # 否则最危险的组合（阈值整块缺失 + 门禁样本门槛归零）只有前半截被报出来。
+    gate = manifest.get("min_cases_for_gate")
+    if not isinstance(gate, int) or isinstance(gate, bool) or gate <= 0:
+        problems.append(f"  min_cases_for_gate={gate!r}: 必须是正整数")
+    return problems
+
+
+def _global_threshold_problems(manifest: dict) -> list[str]:
+    """全局门禁阈值（v2 形态）的合理性。"""
     problems: list[str] = []
     thresholds = manifest.get("thresholds")
     if isinstance(thresholds, dict) and thresholds:
@@ -114,12 +160,46 @@ def _threshold_problems(manifest: dict) -> list[str]:
             problems.extend(_gate_problems(key, spec))
     else:
         problems.append("  thresholds: 缺失或为空")
+    return problems
 
-    # 刻意不提前 return：thresholds 坏掉时仍要检查 min_cases_for_gate。
-    # 否则最危险的组合（阈值整块缺失 + 门禁样本门槛归零）只有前半截被报出来。
-    gate = manifest.get("min_cases_for_gate")
-    if not isinstance(gate, int) or isinstance(gate, bool) or gate <= 0:
-        problems.append(f"  min_cases_for_gate={gate!r}: 必须是正整数")
+
+def _risk_gate_problems(manifest: dict, thresholds: dict) -> list[str]:
+    """风险分层门禁（v3 形态）：每层都要有阈值与最小样本，且不得低于下界。"""
+    problems: list[str] = []
+    for layer in sorted(_RISK_LAYERS - thresholds.keys()):
+        problems.append(f"  risk_thresholds.{layer}: 缺少必需分层阈值")
+    for layer, minimum in thresholds.items():
+        problems.extend(_risk_min_problems(layer, minimum))
+    problems.extend(_min_cases_per_risk_problems(manifest.get("min_cases_per_risk")))
+    return problems
+
+
+def _risk_min_problems(layer: str, minimum: object) -> list[str]:
+    """单层阈值：未知分层、非数字、越量纲、低于项目下界。"""
+    if layer not in _RISK_LAYERS:
+        return [f"  risk_thresholds.{layer}: 未知分层（报告不会消费它）"]
+    if not isinstance(minimum, (int, float)) or isinstance(minimum, bool):
+        return [f"  risk_thresholds.{layer}: 不是数字"]
+    if not 0.0 <= minimum <= 1.0:
+        return [f"  risk_thresholds.{layer}={minimum} 超出量纲 [0, 1]"]
+    floor = _RISK_GATE_FLOORS[layer]
+    if minimum < floor:
+        return [f"  risk_thresholds.{layer}={minimum} 低于项目下界 {floor}：调低阈值等于把门禁关掉"]
+    return []
+
+
+def _min_cases_per_risk_problems(raw: object) -> list[str]:
+    """各层最小样本：必须覆盖全部分层且为正整数。"""
+    if not isinstance(raw, dict) or not raw:
+        return ["  min_cases_per_risk: 缺失或为空"]
+    problems: list[str] = []
+    for layer in sorted(_RISK_LAYERS - raw.keys()):
+        problems.append(f"  min_cases_per_risk.{layer}: 缺少该层最小样本")
+    for layer, value in raw.items():
+        if layer not in _RISK_LAYERS:
+            problems.append(f"  min_cases_per_risk.{layer}: 未知分层")
+        elif not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            problems.append(f"  min_cases_per_risk.{layer}={value!r}: 必须是正整数")
     return problems
 
 

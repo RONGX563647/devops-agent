@@ -1,7 +1,9 @@
-"""密钥 API —— 只读元信息与删除，永不返回密文或明文。
+"""密钥 API —— 元信息、删除，以及一条受控的明文读回通道。
 
-「能不能看到明文」是一个刻意的取舍：接口层不给读回通道，
-即使前端被 XSS 也拿不到已入库的凭据；要用明文只有工具执行那一条路。
+读回的取舍：工具输出里捕获的凭据（source=output）若只进不回，用户就永远
+看不到工具到底读到了什么。因此提供 `GET /api/secrets/{name}/value` 返回明文，
+但每次读回都走 `get()` 记一次 uses 留痕。本服务默认只绑 127.0.0.1、无认证，
+这条通道与「删除」同级——部署到非本机时必须先加认证/网络边界。
 """
 
 from __future__ import annotations
@@ -29,6 +31,14 @@ class DeleteSecretOut(BaseModel):
     deleted: bool
 
 
+class SecretValueOut(BaseModel):
+    """一次明文读回：值 + 是否命中。未命中时 value 为空。"""
+
+    name: str
+    value: str
+    found: bool
+
+
 def _to_out(meta: SecretMeta) -> SecretOut:
     return SecretOut(
         name=meta.name,
@@ -44,6 +54,16 @@ def _to_out(meta: SecretMeta) -> SecretOut:
 def list_secrets() -> list[SecretOut]:
     """列出保险箱里的凭据（不含值）。"""
     return [_to_out(meta) for meta in get_vault().list()]
+
+
+@router.get("/secrets/{name}/value", response_model=SecretValueOut)
+def read_secret_value(name: str) -> SecretValueOut:
+    """受控读回明文：每次都经 get() 记一次使用，便于事后审计谁看过。
+
+    解不开/不存在返回 found=false（不区分原因，避免探测库里有哪些名字）。
+    """
+    value = get_vault().get(name)
+    return SecretValueOut(name=name, value=value or "", found=value is not None)
 
 
 @router.delete("/secrets/{name}", response_model=DeleteSecretOut)

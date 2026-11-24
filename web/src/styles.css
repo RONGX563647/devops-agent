@@ -3428,12 +3428,16 @@ a:hover {
   max-width: var(--reading-max);
 }
 .secrets-table td:last-child {
-  width: 72px;
+  width: 112px;
   text-align: right;
 }
 .secrets-table .mono {
   font-size: 11.5px;
   color: var(--ink-soft);
+}
+.secret-value {
+  color: var(--danger-ink);
+  word-break: break-all;
 }
 .ghost-btn {
   padding: 2px var(--sp-3);

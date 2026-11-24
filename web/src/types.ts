@@ -794,6 +794,13 @@ export interface SecretMeta {
   uses: number;
 }
 
+/** 一次受控明文读回的结果；found=false 表示解不开或不存在。 */
+export interface SecretValue {
+  name: string;
+  value: string;
+  found: boolean;
+}
+
 /** 服务端运行时的自述（GET /health）。echo = 没配模型凭据，回复只是回显。 */
 export interface RuntimeStatus {
   kind: 'echo' | 'agentscope';

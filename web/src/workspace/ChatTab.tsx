@@ -146,7 +146,7 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
-/** 助手消息：过程行在上，Markdown 正文在下，操作条在末尾。确认卡片不在这里。 */
+/** 助手消息：已完成的过程在正文上方，仍在进行的步骤在正文下方；确认卡片不在这里。 */
 function AssistantMessage({
   message,
   live,
@@ -157,8 +157,14 @@ function AssistantMessage({
   onRetry: (message: ChatMessage) => void;
 }) {
   const hasAnswer = Boolean(message.text) || Boolean(message.error);
-  // 正在生成的最新一轮：正文先出、过程收在下方；跑完就回到正文上方。
-  const steps = message.steps.length > 0 ? <StepList steps={message.steps} live={live} /> : null;
+  // 按每条步骤自己的状态分栏，而不是整段跟着 live 一起搬：
+  // 已完成的思考/调用归档到正文上方，仍在进行中的留在正文下方贴着输入区。
+  // 运行结束时 finishRunningSteps 会把 running 收尾，整段自然回到上方。
+  const settled = message.steps.filter((step) => step.state !== 'running');
+  const active = message.steps.filter((step) => step.state === 'running');
+  const settledSteps = settled.length > 0 ? <StepList steps={settled} label="已完成过程" /> : null;
+  const activeSteps =
+    active.length > 0 ? <StepList steps={active} label="进行中" live /> : null;
   const body = message.text && (
     <div className="chat-bubble assistant-body">
       <Markdown content={message.text} />
@@ -172,19 +178,10 @@ function AssistantMessage({
   );
   return (
     <div className={`chat-msg assistant${message.error ? ' has-error' : ''}`}>
-      {live ? (
-        <>
-          {body}
-          {error}
-          {steps}
-        </>
-      ) : (
-        <>
-          {steps}
-          {body}
-          {error}
-        </>
-      )}
+      {settledSteps}
+      {body}
+      {error}
+      {activeSteps}
       {message.pending && !message.text && message.steps.length === 0 && (
         <div className="chat-pending mono" aria-live="polite">
           正在处理…

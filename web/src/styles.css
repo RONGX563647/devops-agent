@@ -1092,6 +1092,9 @@ a:hover {
 .chat-steps-fold {
   margin-bottom: var(--sp-3);
 }
+.chat-steps-fold[data-live] > .chat-steps-summary {
+  color: var(--ink);
+}
 .chat-steps-summary {
   display: flex;
   gap: 5px;

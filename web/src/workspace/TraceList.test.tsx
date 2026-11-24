@@ -114,11 +114,18 @@ describe('TraceList', () => {
     expect(container.querySelector('mark')?.textContent).toBe('FAIL');
   });
 
-  it('点轮次标题把折叠意图交给上层（受控组件）', () => {
+  it('点轮次标题是选中这一轮，点箭头才是折叠', () => {
     const { props } = renderList({ mode: 'turn' });
     expect(screen.getByText(/command: ls -la/)).toBeTruthy();
+
+    // 标题 = 选中：右侧要跟着换成这一轮，所以不能同时把整轮收起来
     fireEvent.click(screen.getByRole('button', { name: /第 1 轮/ }));
-    // 折叠态由 TraceTab 持有：这里只验证回调带对了轮次
+    expect(props.onSelectTurn).toHaveBeenCalledTimes(1);
+    expect(props.onSelectTurn).toHaveBeenCalledWith(expect.objectContaining({ id: 'u0', index: 1 }));
+    expect(props.onToggleTurn).not.toHaveBeenCalled();
+
+    // 折叠交给左侧箭头，两个动作互不覆盖（每轮各有一个箭头，取第一轮）
+    fireEvent.click(screen.getAllByRole('button', { name: '折叠本轮' })[0]);
     expect(props.onToggleTurn).toHaveBeenCalledWith('u0');
   });
 
@@ -376,3 +383,4 @@ describe('TraceList', () => {
     expect(container.textContent).toContain('250 tok');
   });
 });
+

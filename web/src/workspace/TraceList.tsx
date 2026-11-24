@@ -149,14 +149,17 @@ function cacheRate(step: TraceStep): number | null {
 }
 
 /** 令牌数按人眼习惯缩写；只用于估算值，精确值一律来自模型回的 input_tokens。 */
-function fmtTok(value: number): string {
+export function fmtTok(value: number): string {
   if (value >= 10_000) return `${Math.round(value / 1000)}k`;
   if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
   return String(value);
 }
 
-/** 上下文构成条：哪一段占了多少，一眼看出「工具 schema 才是大头」。 */
-function Composition({
+/** 上下文构成条：哪一段占了多少，一眼看出「工具 schema 才是大头」。
+ *
+ * 列表里的第 00 步与右侧「上下文」页签共用这一份，口径不能分叉。
+ */
+export function Composition({
   system,
   tools,
   history,
@@ -466,10 +469,29 @@ function TurnHeader({
   const slowest = turnSlowest(turn);
   return (
     <div className={`trace-turn-head${active ? ' active' : ''}`}>
-      <button type="button" className="trace-turn-toggle" aria-expanded={!collapsed} onClick={onToggle}>
+      {/* 折叠是独立动作：点标题是「选中这一轮」，点箭头才是收起，两件事不抢一次点击 */}
+      <button
+        type="button"
+        className="trace-caret-btn"
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? '展开本轮' : '折叠本轮'}
+        onClick={onToggle}
+      >
         <span className="trace-caret" aria-hidden="true">
           {collapsed ? '›' : '⌄'}
         </span>
+      </button>
+      <button
+        type="button"
+        className="trace-turn-toggle"
+        aria-pressed={active}
+        title="选中这一轮：右侧显示本轮概要、完整上下文与计时"
+        onClick={() => {
+          onSelect();
+          // 收起的轮次点标题就顺手展开，否则右侧有内容、左边看不到步骤
+          if (collapsed) onToggle();
+        }}
+      >
         <span className="trace-turn-no mono">第 {turn.index} 轮</span>
         <span className="trace-turn-question">
           用户：<Highlight text={turn.question || '（空问题）'} query="" />

@@ -1,12 +1,16 @@
-/** 轨迹详情检查面板：概述 / 参数 / 结果 / Schema / 计时。
+/** 轨迹详情检查面板：概述 / 上下文 / 参数 / 结果 / Schema / 计时。
  *
  * 与列表并排常驻，点哪条看哪条，不需要来回展开——这是排查工具调用失败时
  * 最常用的一段路径（看参数形状 → 看返回原文 → 看计时来源）。
+ *
+ * 两种粒度：选中步骤看这一步；只选中轮次（点轮次标题）时看整轮概要 + 完整上下文。
  */
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import type { AgentContext } from '../api/client';
 import { fetchToolSchemas } from '../api/client';
 import type { TraceStep, TraceTurn } from '../types';
+import { ContextTab } from './TraceContext';
 import { stageMetric } from './StepRow';
 import { formatDateTime, formatDuration } from './time';
 
@@ -16,9 +20,13 @@ interface Props {
   totalMs: number;
   /** 当前会话档位：Schema 页签要按同一档位的工具集查，否则会答「没有这个工具」。 */
   profile?: string;
+  /** 本轮装配的上下文：上下文页签与列表第 00 步同源。 */
+  context?: AgentContext | null;
+  /** 全部轮次：上下文页签要用它列出本轮之前的历史。 */
+  turns?: TraceTurn[];
 }
 
-type Tab = 'summary' | 'args' | 'result' | 'text' | 'schema' | 'timing';
+type Tab = 'summary' | 'context' | 'args' | 'result' | 'text' | 'schema' | 'timing';
 
 interface TabSpec {
   key: Tab;
@@ -30,9 +38,15 @@ function isThinking(step: TraceStep): boolean {
   return step.kind === 'text' && step.title === '思考';
 }
 
-/** 面板按这一步「真的有什么」出页签：思考没有入参，输出没有 Schema，工具没有正文。 */
+/** 面板按这一步「真的有什么」出页签：思考没有入参，输出没有 Schema，工具没有正文。
+ *
+ * 「上下文」常驻在概述之后：它说的是模型这一轮手里有什么，与选中哪一步无关。
+ */
 function tabsFor(step: TraceStep): TabSpec[] {
-  const tabs: TabSpec[] = [{ key: 'summary', label: '概述' }];
+  const tabs: TabSpec[] = [
+    { key: 'summary', label: '概述' },
+    { key: 'context', label: '上下文' },
+  ];
   if (step.args) tabs.push({ key: 'args', label: '参数' });
   if (step.result || step.diff || (step.stages?.length ?? 0) > 0) {
     const label = step.diff ? '改动' : (step.stages?.length ?? 0) > 0 ? '阶段' : '结果';
@@ -43,6 +57,13 @@ function tabsFor(step: TraceStep): TabSpec[] {
   tabs.push({ key: 'timing', label: '计时' });
   return tabs;
 }
+
+/** 轮次粒度只有三个页签：概要说这一轮干了什么，上下文说它手里有什么。 */
+const TURN_TABS: TabSpec[] = [
+  { key: 'summary', label: '概述' },
+  { key: 'context', label: '上下文' },
+  { key: 'timing', label: '计时' },
+];
 
 const LAYER_TEXT: Record<TraceStep['layer'], string> = {
   model: '模型',
@@ -201,6 +222,87 @@ function Summary({ step, turn }: { step: TraceStep; turn: TraceTurn | null }) {
   );
 }
 
+/** 轮次概览：这一轮问了什么、花了多久、跑了几步、吐了多少 token。 */
+function TurnSummary({ turn }: { turn: TraceTurn }) {
+  const slowest = turn.items
+    .filter((item) => !item.synthetic && item.timing.source !== 'estimated')
+    .reduce<TraceStep | null>(
+      (best, item) => (!best || item.durationMs > best.durationMs ? item : best),
+      null,
+    );
+  return (
+    <div className="inspect-summary">
+      <div className="inspect-grid">
+        <span className="inspect-key">轮次</span>
+        <span className="mono">
+          第 {turn.index} 轮
+          {turn.repeatOf ? ` · 同第 ${turn.repeatOf} 轮` : ''}
+        </span>
+        <span className="inspect-key">问题</span>
+        <span>{turn.question || '（空问题）'}</span>
+        <span className="inspect-key">开始</span>
+        <span className="mono">{formatDateTime(turn.startedAt)}</span>
+        <span className="inspect-key">实测</span>
+        <span className="mono">
+          {formatDuration(turn.measuredMs)} · 墙钟 {formatDuration(turn.wallMs)}
+        </span>
+        <span className="inspect-key">规模</span>
+        <span className="mono">
+          {turn.steps} 步 · {turn.tools} 次工具
+        </span>
+        <span className="inspect-key">Token</span>
+        <span className="mono">
+          入 {turn.tokens.in} / 出 {turn.tokens.out}
+          {turn.tokens.cache ? ` · 缓存 ${turn.tokens.cache}` : ''}
+        </span>
+        <span className="inspect-key">异常</span>
+        <span className={turn.errorCount > 0 ? 'inspect-status error' : ''}>
+          {turn.errorCount} 个
+        </span>
+        {slowest && (
+          <>
+            <span className="inspect-key">最慢</span>
+            <span className="mono">
+              {slowest.toolName || slowest.title} {formatDuration(slowest.durationMs)}
+            </span>
+          </>
+        )}
+      </div>
+      {turn.userText && (
+        <div className="inspect-line">
+          <span className="inspect-key">输入</span>
+          <span>{turn.userText.length > 200 ? `${turn.userText.slice(0, 200)}…` : turn.userText}</span>
+        </div>
+      )}
+      <p className="inspect-note">
+        想看模型这一轮手里有什么（系统提示、工具 schema、此前各轮原文），切到「上下文」。
+      </p>
+    </div>
+  );
+}
+
+/** 轮次计时：实测与墙钟分开列，别把用户读消息的空闲算进模型耗时。 */
+function TurnTiming({ turn, totalMs }: { turn: TraceTurn; totalMs: number }) {
+  return (
+    <div className="inspect-timing">
+      <div className="inspect-grid">
+        <span className="inspect-key">开始</span>
+        <span className="mono">{formatDateTime(turn.startedAt)}</span>
+        <span className="inspect-key">结束</span>
+        <span className="mono">{formatDateTime(turn.endedAt)}</span>
+        <span className="inspect-key">实测</span>
+        <span className="mono">{formatDuration(turn.measuredMs)}</span>
+        <span className="inspect-key">墙钟</span>
+        <span className="mono">{formatDuration(turn.wallMs)}</span>
+      </div>
+      <Ratio label="占全会话实测" value={turn.measuredMs} total={totalMs} />
+      <p className="inspect-note">
+        实测 = 本轮所有步骤占用区间的并集；墙钟含你读上一条回复的空闲，两者不等是正常的。
+      </p>
+    </div>
+  );
+}
+
 function SchemaTab({ step, profile }: { step: TraceStep; profile?: string }) {
   const enabled = Boolean(step.toolName);
   const schemas = useQuery({
@@ -230,14 +332,46 @@ function SchemaTab({ step, profile }: { step: TraceStep; profile?: string }) {
   );
 }
 
-export function TraceInspector({ step, turn, totalMs, profile }: Props) {
+export function TraceInspector({ step, turn, totalMs, profile, context, turns }: Props) {
   const [tab, setTab] = useState<Tab>('summary');
 
   if (!step) {
+    if (!turn) {
+      return (
+        <aside className="inspector inspector-empty-state">
+          <strong>选中一轮或一条步骤</strong>
+          <p>左侧点轮次标题看整轮概要，点任一步骤看参数、返回原文、工具 Schema 与计时来源。</p>
+        </aside>
+      );
+    }
+    // 只选中轮次：没有「这一步的参数」，给整轮概要与完整上下文
+    const turnTab: Tab = TURN_TABS.some((item) => item.key === tab) ? tab : 'summary';
     return (
-      <aside className="inspector inspector-empty-state">
-        <strong>选中一条步骤</strong>
-        <p>左侧点任一条，这里给出参数、返回原文、工具 Schema 与计时来源。</p>
+      <aside className="inspector" aria-label="轮次详情">
+        <div className="inspector-head mono">
+          <span>第 {turn.index} 轮 · {turn.steps} 步</span>
+          <span className="inspector-kind" data-kind="context">整轮</span>
+        </div>
+        <div className="inspector-tabs" role="tablist">
+          {TURN_TABS.map((item) => (
+            <button
+              key={item.key}
+              role="tab"
+              aria-selected={turnTab === item.key}
+              className={turnTab === item.key ? 'active' : ''}
+              onClick={() => setTab(item.key)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <div className="inspector-body" role="tabpanel">
+          {turnTab === 'summary' && <TurnSummary turn={turn} />}
+          {turnTab === 'context' && (
+            <ContextTab context={context ?? null} turn={turn} turns={turns ?? [turn]} />
+          )}
+          {turnTab === 'timing' && <TurnTiming turn={turn} totalMs={totalMs} />}
+        </div>
       </aside>
     );
   }
@@ -273,6 +407,9 @@ export function TraceInspector({ step, turn, totalMs, profile }: Props) {
       </div>
       <div className="inspector-body" role="tabpanel">
         {current === 'summary' && <Summary step={step} turn={turn} />}
+        {current === 'context' && turn && (
+          <ContextTab context={context ?? null} turn={turn} turns={turns ?? [turn]} />
+        )}
         {current === 'args' && <Block label="入参原文" text={pretty(argsText)} />}
         {current === 'text' && (
           <Block label={isThinking(step) ? '思考原文' : '正文原文'} text={step.text ?? ''} />
@@ -319,3 +456,4 @@ export function TraceInspector({ step, turn, totalMs, profile }: Props) {
     </aside>
   );
 }
+

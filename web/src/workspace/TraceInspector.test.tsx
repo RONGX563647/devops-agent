@@ -102,7 +102,53 @@ describe('TraceInspector', () => {
 
   it('没有选中步骤时给出引导而不是空白面板', () => {
     wrap(<TraceInspector step={null} turn={null} totalMs={0} />);
-    expect(screen.getByText('选中一条步骤')).toBeTruthy();
+    expect(screen.getByText('选中一轮或一条步骤')).toBeTruthy();
+  });
+
+  it('只选中轮次时给整轮概要，并多一个上下文页签', () => {
+    wrap(<TraceInspector step={null} turn={TURN} totalMs={60_000} turns={[TURN]} />);
+    // 轮级头部：不再是「选中一条步骤」的空态
+    expect(screen.getByText('第 3 轮 · 7 步')).toBeTruthy();
+    expect(screen.getAllByText('构建一下').length).toBeGreaterThan(0);
+
+    const tab = screen.getByRole('tab', { name: '上下文' });
+    fireEvent.click(tab);
+    expect(screen.getByText('历史上下文')).toBeTruthy();
+    // 只有第一轮：应当说清没有历史，而不是留一片空白
+    expect(screen.getByText(/这是第一轮/)).toBeTruthy();
+  });
+
+  it('上下文页签按轮分开列出历史原文', () => {
+    const earlier = {
+      ...TURN,
+      id: 'u0',
+      index: 1,
+      question: '先看看目录',
+      userText: '先看看目录',
+      items: [
+        {
+          ...STEP,
+          id: 'u0:text',
+          kind: 'text' as const,
+          title: '模型输出',
+          synthetic: true,
+          text: '目录里有三个文件。',
+        },
+      ],
+    };
+    wrap(
+      <TraceInspector
+        step={null}
+        turn={TURN}
+        totalMs={60_000}
+        turns={[earlier, TURN]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: '上下文' }));
+    expect(screen.getByText('1 轮')).toBeTruthy();
+    // 历史那一轮的问题与助手原文都在（收起时也留在 DOM 里，展开即读）
+    expect(screen.getAllByText('先看看目录').length).toBeGreaterThan(0);
+    expect(screen.getByText('目录里有三个文件。')).toBeTruthy();
   });
 
   it('页签按步骤类型给：思考没有参数和 Schema，只留思考与计时', () => {
@@ -147,3 +193,4 @@ describe('TraceInspector', () => {
     expect(screen.getByText(/requestAnimationFrame/)).toBeTruthy();
   });
 });
+

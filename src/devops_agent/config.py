@@ -43,12 +43,17 @@ def _load_yaml(name: str) -> dict[str, Any]:
 
 
 class RuleSpec(BaseModel):
-    """一条权限规则的声明式描述。"""
+    """一条权限规则的声明式描述。
+
+    `scope` 是规则的生效下限（readonly / workspace / container）：在 workspace
+    批准的规则不该渗回只读档。默认 `readonly` 表示「任何档位都生效」。
+    """
 
     tool_name: str
     rule_content: str | None = None
     behavior: RuleBehaviorName = "deny"
     source: str = "policy"
+    scope: str = "readonly"
 
 
 class WorkingDirSpec(BaseModel):

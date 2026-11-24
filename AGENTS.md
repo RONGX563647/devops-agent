@@ -103,7 +103,10 @@ git fetch origin && git checkout main && git pull
    `memory/ledger.py`、`secrets/middleware.py`（以 `grep -rn 'agentscope' src/` 的实际结果为准）；
    这些模块构成对框架的隔离层，网关（`main.py`）、编排协议（`runtime/runtime.py`）、
    可观测性（`observability/`）等一律通过协议或工厂间接使用，不得散落 import。`runtime/events.py`
-   刻意靠 duck typing 不 import 框架，以保持事件转译可用假事件测试。`secrets/middleware.py` 是
+   刻意靠 duck typing 不 import 框架，以保持事件转译可用假事件测试。`governance/rules.py`
+   同理：规则是纯数据结构，`Rule → PermissionRule` 的转换留在 `governance/policy.py`，
+   这样「哪条命令会被拦」可以用结构体测试，不必先造一个 `Bash()` 再问引擎。
+   `secrets/middleware.py` 是
    工具中间件的装配点（`ToolMiddlewareBase` 只能在框架内实现），密钥解密的调用方只看到
    `Callable[[str], str | None]`。新增需要框架能力的装配点时，在此边界内集中并同步更新本清单。
 2. **编排与执行分离**：`runtime/` 只做编排，`executor/boundary.py` 管沙箱执行面。

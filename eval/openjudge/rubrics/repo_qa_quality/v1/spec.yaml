@@ -1,0 +1,6 @@
+language: ZH
+max_score: 5
+min_score: 1
+name: repo_qa_quality
+scenario: 仓库结构/函数/配置问答，回答直接用于排障。
+task_description: 基于真实文件回答，给出路径:行号，找不到就明说，不得编造。

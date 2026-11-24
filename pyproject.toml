@@ -23,6 +23,8 @@ dependencies = [
 [project.optional-dependencies]
 # PDF 附件抽正文：没装时上传 PDF 会明确报「缺少 pypdf」，不影响其他格式
 parse = ["pypdf>=4.0"]
+# OpenJudge 评测基准：第三方包只在 devops_agent/openjudge/ 内 import，保持可选依赖隔离
+openjudge = ["py-openjudge==0.2.5"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -52,6 +54,11 @@ select = ["E", "F", "W", "I", "UP", "B"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+# py-openjudge 未提供 py.typed，裁判模块只能当无类型依赖用；其余仍然严格检查。
+[[tool.mypy.overrides]]
+module = ["openjudge.*"]
+ignore_missing_imports = true
 
 [tool.coverage.run]
 source = ["devops_agent"]

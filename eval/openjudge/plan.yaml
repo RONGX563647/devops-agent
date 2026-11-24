@@ -1,0 +1,26 @@
+plan: devops-oj-v1
+judges:
+  correctness:
+    grader: CorrectnessGrader
+    weight: 0.35
+    scale: [1, 5]
+  relevance:
+    grader: RelevanceGrader
+    weight: 0.15
+    scale: [1, 5]
+  instruction:
+    grader: InstructionFollowingGrader
+    weight: 0.15
+    scale: [1, 5]
+  tool_select:
+    grader: ToolSelectionGrader
+    weight: 0.15
+    scale: [0, 1]
+  tool_param:
+    grader: ToolParameterCheckGrader
+    weight: 0.10
+    scale: [0, 1]
+  loop:
+    grader: ActionLoopDetectionGrader
+    weight: 0.10
+    scale: [0, 1]

@@ -16,6 +16,13 @@ import type {
   InputStage,
   ModelConfig,
   ModelPatch,
+  OjBatch,
+  OjCaseDetail,
+  OjCaseList,
+  OjCompare,
+  OjCoverage,
+  OjHealth,
+  OjRubric,
   PendingState,
   PermissionCatalog,
   Run,
@@ -351,4 +358,70 @@ export function clearSessionModelConfig(sessionId: string): Promise<SessionModel
     `/api/session/${encodeURIComponent(sessionId)}/model-config`,
     'DELETE',
   );
+}
+
+/** OpenJudge：最新批次健康度；无数据时 has_data=false。 */
+export function fetchOpenJudgeHealth(): Promise<OjHealth> {
+  return getJson<OjHealth>('/api/openjudge/health');
+}
+
+/** OpenJudge：批次列表（按时间倒序）。 */
+export function fetchOpenJudgeBatches(
+  limit = 20,
+): Promise<{ items: OjBatch[]; total: number }> {
+  return getJson<{ items: OjBatch[]; total: number }>(
+    `/api/openjudge/batches?limit=${limit}`,
+  );
+}
+
+/** OpenJudge：单批次详情（含 summary）。 */
+export function fetchOpenJudgeBatch(id: number): Promise<OjBatch> {
+  return getJson<OjBatch>(`/api/openjudge/batches/${id}`);
+}
+
+export interface OjCaseQuery {
+  track?: string;
+  status?: string;
+  subject?: string;
+  passed?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+/** OpenJudge：批次内用例分页。 */
+export function fetchOpenJudgeCases(
+  batchId: number,
+  params: OjCaseQuery = {},
+): Promise<OjCaseList> {
+  const query = new URLSearchParams();
+  if (params.track) query.set('track', params.track);
+  if (params.status) query.set('status', params.status);
+  if (params.subject) query.set('subject', params.subject);
+  if (params.passed !== undefined) query.set('passed', String(params.passed));
+  query.set('limit', String(params.limit ?? 100));
+  query.set('offset', String(params.offset ?? 0));
+  return getJson<OjCaseList>(
+    `/api/openjudge/batches/${batchId}/cases?${query.toString()}`,
+  );
+}
+
+/** OpenJudge：单条用例完整明细（规则检查、裁判意见、轨迹）。 */
+export function fetchOpenJudgeCase(rowId: number): Promise<OjCaseDetail> {
+  return getJson<OjCaseDetail>(`/api/openjudge/cases/${rowId}`);
+}
+
+/** OpenJudge：两批次对比。 */
+export function fetchOpenJudgeCompare(base: number, head: number): Promise<OjCompare> {
+  const params = new URLSearchParams({ base: String(base), head: String(head) });
+  return getJson<OjCompare>(`/api/openjudge/compare?${params.toString()}`);
+}
+
+/** OpenJudge：题库覆盖与校验问题。 */
+export function fetchOpenJudgeCoverage(): Promise<OjCoverage> {
+  return getJson<OjCoverage>('/api/openjudge/coverage');
+}
+
+/** OpenJudge：rubric 工件清单。 */
+export function fetchOpenJudgeRubrics(): Promise<{ items: OjRubric[]; total: number }> {
+  return getJson<{ items: OjRubric[]; total: number }>('/api/openjudge/rubrics');
 }

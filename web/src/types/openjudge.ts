@@ -1,0 +1,113 @@
+/** OpenJudge 评测 API 的响应类型（与 devops_agent.openjudge.api 对齐）。 */
+
+export interface OjKpi {
+  cases: number;
+  passed: number;
+  judge_n: number;
+  violations: number;
+}
+
+export interface OjTrackStat {
+  n: number;
+  passed: number;
+  pass_rate: number;
+  judge_avg: number | null;
+  violations: number;
+  verdict: 'pass' | 'fail' | 'insufficient';
+}
+
+export interface OjFailure {
+  case_id: string;
+  track: string;
+  status: string;
+  violations: number;
+  failed_checks: string[];
+  repro: string;
+}
+
+export interface OjBatchSummary {
+  verdict: 'pass' | 'fail' | 'insufficient';
+  kpi: OjKpi;
+  tracks: Record<string, OjTrackStat>;
+  subjects: Record<string, number>;
+  failures: OjFailure[];
+  pareto: { check: string; count: number }[];
+  meta?: Record<string, string>;
+}
+
+export interface OjBatch {
+  id: number;
+  verdict: string;
+  model: string;
+  suite_sha: string;
+  plan_sha: string;
+  started_at: string;
+  finished_at: string;
+  summary: OjBatchSummary;
+}
+
+export interface OjCaseRow {
+  id: number;
+  case_id: string;
+  track: string;
+  subject: string;
+  risk: string;
+  status: string;
+  passed: boolean;
+  latency_ms: number;
+  tokens: Record<string, number>;
+}
+
+export interface OjCaseDetail extends OjCaseRow {
+  checks: { name: string; kind: string; passed: boolean; detail?: string }[];
+  judge: Record<string, { score?: number; normalized?: number; weight?: number; reason?: string }>;
+  events: string[];
+  input_stages: unknown[];
+  workspace: Record<string, unknown>;
+  trace: Record<string, unknown>;
+}
+
+export interface OjCaseList {
+  items: OjCaseRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface OjCompare {
+  base: number;
+  head: number;
+  comparable: boolean;
+  suite_sha: [string, string];
+  tracks: Record<string, { base: number; head: number; delta: number }>;
+  flips: { case_id: string; base: boolean; head: boolean }[];
+}
+
+export interface OjCoverage {
+  cases: number;
+  suite_sha: string;
+  coverage: {
+    tracks?: Record<string, number>;
+    risks?: Record<string, number>;
+    subjects?: Record<string, number>;
+    permissions?: Record<string, number>;
+    tools?: Record<string, number>;
+  };
+  problems: string[];
+}
+
+export interface OjRubric {
+  name: string;
+  version: string;
+  sha: string;
+  status: string;
+  reviewer?: string;
+  created_at?: string;
+}
+
+export interface OjHealth {
+  has_data: boolean;
+  latest_batch: OjBatch | null;
+  calibration: Record<string, number> | null;
+  anchors: Record<string, number> | null;
+}

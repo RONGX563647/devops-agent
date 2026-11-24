@@ -26,7 +26,7 @@ _SLOT_RE: Final = re.compile(_SLOT_START + r"(\d+)" + _SLOT_END)
 # 密钥识别规则：命中后整段替换成 {{secret:name}}，指纹只留前 4 位与长度
 _SECRET_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}")),
+    ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_\-]{10,}")),
     ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}")),
     ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
@@ -35,10 +35,15 @@ _SECRET_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
         re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
     ),
 )
+# 前缀式 env 名（API_TOKEN / DB_PASSWORD）此前漏检：`\b` 在 `_` 前不成立，
+# 旧规则只认裸 token=；这里把 `FOO_` 前缀并入 group(1)，仍只替换等号后的值。
 _ASSIGNED_SECRET_RE: Final = re.compile(
-    r"(?i)\b(api[_-]?key|access[_-]?key|secret|token|password|passwd)\b(\s*[:=]\s*[\"']?)"
-    r"([A-Za-z0-9_\-.]{12,})"
+    r"(?i)\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|secret|token|password|passwd))"
+    r"(\s*[:=]\s*[\"']?)"
+    r"([A-Za-z0-9_\-.]{8,})"
 )
+# Bearer 不是赋值语法，单独保留前缀，避免把 "Bearer " 一起吞进占位符
+_BEARER_RE: Final = re.compile(r"(?i)\b(Bearer)(\s+)([A-Za-z0-9._\-]{10,})")
 
 # 凭据落库回调：网关传进来（接保险箱），管线本身不认识存储
 SecretSink = Callable[[str, str], None]
@@ -121,7 +126,7 @@ def _apply_typed_patterns(
 def _apply_assigned_pattern(
     text: str, namer: _SecretNamer, sink: SecretSink | None, notes: list[str]
 ) -> str:
-    """替换 `api_key=...` 这类显式赋值（保留键名，只换值）。"""
+    """替换 `api_key=...` / `Bearer ...` 这类显式凭据（保留键名，只换值）。"""
 
     def _replace(match: re.Match[str]) -> str:
         base = match.group(1).lower().replace("-", "_")
@@ -132,7 +137,7 @@ def _apply_assigned_pattern(
         notes.append(f"{name} · {_fingerprint(value)} → {{{{secret:{name}}}}}")
         return f"{match.group(1)}{match.group(2)}{{{{secret:{name}}}}}"
 
-    return _ASSIGNED_SECRET_RE.sub(_replace, text)
+    return _BEARER_RE.sub(_replace, _ASSIGNED_SECRET_RE.sub(_replace, text))
 
 
 def _redact_text(text: str, namer: _SecretNamer, sink: SecretSink | None) -> tuple[str, list[str]]:

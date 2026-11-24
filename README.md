@@ -29,17 +29,12 @@
 
 ### 框架隔离边界（实测 9 个文件）
 
-AGENTS.md §3.1 声称的清单是 8 个，实际 `grep -rn 'import agentscope' src/` 结果是 9 个 ——
-[profile_note.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/profile_note.py) 继承了 `MiddlewareBase` 却未列入清单：
-
-```
-executor/boundary.py     governance/policy.py      memory/ledger.py
-runtime/assembly.py      runtime/compression.py    runtime/profile_note.py
-runtime/supervisor.py    secrets/middleware.py     tools/catalog.py
-```
-
-这些模块构成隔离层；`gateway/`、`runtime/runtime.py`（协议）、`observability/`、`input/`、`eval/`
-一律不 import 框架。`runtime/events.py` 刻意靠 duck typing 转译事件，因此可以用假事件测试。
+框架使用已放开（见 AGENTS.md §3.1）：允许直接使用 AgentScope / OpenJudge 的类型与 API，不再维护
+`import agentscope` 白名单。第三方 pip 依赖 `openjudge`（`py-openjudge`）仍只在
+`src/devops_agent/openjudge/` 内 import，保持可选依赖隔离 —— 没装 `[openjudge]` extra 时其余功能不受影响。
+分层依赖仍由 `.importlinter` + `lint-imports` 强制：`eval/`、`input/`、`observability/` 不直接 import
+`agentscope`，网关不反向依赖 runtime/observability。`runtime/events.py` 仍靠 duck typing 转译事件，
+因此可以用假事件测试。
 
 ---
 
@@ -56,6 +51,7 @@ devops-agent/
 ├── eval/
 │   ├── suites/               # devops-core.v1.jsonl / v2.jsonl + manifest（sha256、阈值）
 │   ├── fixtures/             # 5 个本地仓库样本（bare-repo / dirty-repo / docs-only / node-service / python-basic）
+│   ├── openjudge/            # 5 赛道 90 例题库、plan 权重、fixtures、rubric 工件
 │   ├── rubrics/peem.v1.md    # 六维裁判评分锚点
 │   └── lint-baseline.json    # 已接受的存量 lint 违规清单
 ├── scripts/
@@ -117,6 +113,7 @@ devops-agent/
 │   │   ├── lint.py           #   S1–S8 静态契约检查
 │   │   ├── scorer.py         #   EvalDimension 常量
 │   │   └── cli.py            #   validate / prompt-lint / manifest / run / compare
+│   ├── openjudge/            # 5 赛道基准：Question schema、harness、裁判、store、只读 API、CLI
 │   ├── executor/boundary.py  #   LocalWorkspace / DockerWorkspace 工厂
 │   └── memory/ledger.py      #   Mem0Middleware 工厂（未接线）
 ├── web/                      # React 18 + TS + Vite 前端
@@ -372,6 +369,7 @@ SSE 帧约定：
 | 模型参数 | `GET|PATCH /api/model-config`、`POST /api/model-config/reset`、`GET|PATCH|DELETE /api/session/{id}/model-config` |
 | 观测 | `GET /api/runs`、`/api/runs/{id}`、`/spans`、`/input-stages`、`/health`、`/api/metrics/{summary,health,breakdown,timeseries}`、`POST /api/feedback/{run_id}`、`GET /api/eval/trends` |
 | 评测批次 | `GET /api/eval/{suites,series,matrix,batches,batches/{id},batches/{id}/cases,compare}` |
+| OpenJudge 基准 | `GET /api/openjudge/{health,batches,batches/{id},batches/{id}/cases,cases/{id},compare,coverage,rubrics}` |
 
 `/api/tools/schema` 与 `/api/context` 都**按档位返回**：放开档实际挂了 Write/Edit，写死只读四件套会让界面上的表是错的。`/api/context` 还会给出系统提示、工具 schema 的体积与指纹 —— 工具 schema 的 JSON 有一万字符，是系统提示的二十多倍，只说「工具 4 个」等于把大头藏起来。
 
@@ -422,7 +420,7 @@ SQLite 9 张表：`runs`、`spans`、`input_stages`、`eval_scores`、`session_s
 | `/` | Workspace：对话、权限选择、确认卡片、Trace 面板、密钥页签 |
 | `/dashboard` | 总览（含实时 SSE 运行） |
 | `/runs`、`/runs/:id` | 运行列表 / Trace 瀑布与健康拆解 |
-| `/quality` | 质量评估（页内页签切换概览 / 套件 / 批次，非独立路由） |
+| `/quality` | 质量评估（页内页签：概览 / 评测集 / 评测批次 / OpenJudge） |
 | `/cost` | 成本与性能 |
 
 ```bash
@@ -451,6 +449,29 @@ python -m devops_agent.eval compare     --report ... --baseline ...
 - `manifest` 重算 `sha256` / `counts`；`sha256` 是 `compare` 判断「同一套题」的依据。
 - `run --judge-scope` 默认 `all`：只在规则通过的用例上打分会让难用例退出分母，退化时裁判均值反而上升；`passed` 仅用于省额度。
 - `run` 退出码：`fail` 与 `warn` 都非零，`insufficient` 为 0（没测够和测砸了不是一回事）。
+
+### OpenJudge 基准（5 赛道 × 90 例）
+
+独立于 `eval/` 的另一套评测：题库放在 `eval/openjudge/cases/`（A 仓库问答 28 / B 权限边界 24 /
+C 改动能力 14 / D 输入管线 12 / E 多轮会话 12），用 `py-openjudge` 的语义 Grader 判分，
+写入独立 SQLite（默认 `workspace/evals/openjudge.db`），与生产库、旧 eval 库完全分离。
+
+```bash
+pip install -e ".[dev,openjudge]"          # 第三方 openjudge 为可选依赖
+python -m devops_agent.openjudge validate --strict
+python -m devops_agent.openjudge run --concurrency 6 --timeout 180 \
+    --db workspace/evals/openjudge.db --out-dir workspace/evals/openjudge
+python -m devops_agent.openjudge compare --base 1 --head 2
+python -m devops_agent.openjudge rubric generate --name repo_qa_quality --version v1
+```
+
+- 规则门禁（`rulegate`）先判安全/事实/入参，失败轨迹不进语义裁判；通过的再交 correctness /
+  relevance / instruction / tool_select / tool_param / loop 六类 Grader，量纲先归一化再加权
+  （权重见 `eval/openjudge/plan.yaml`），因此不做「1 分制与 5 分制直接相加」。
+- 单条用例语义门槛 `PASS_JUDGE=0.60`：同源裁判对「回答要点之外补充正确信息」偏严，0.6 是
+  经验门槛，低于它说明终答确有缺陷，而不是格式噪声。
+- `{{OUTSIDE}}` 在采集时替换为工作区外的临时绝对路径，避免模型把 `../outside` 解析到别处。
+- 只读 API 挂在 `/api/openjudge/*`，质量页「OpenJudge」页签直接读它；写库只由 CLI 完成。
 
 ### 判卷与判决
 

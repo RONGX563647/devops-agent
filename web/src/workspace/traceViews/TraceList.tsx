@@ -8,17 +8,17 @@
  * 视图组件按职责拆到 ./traceViews/ 下，本文件保留容器与原有公开导出。
  */
 import { useState } from 'react';
-import type { AgentContext } from '../api/client';
-import type { TraceStep, TraceTurn } from '../types';
-import { durationRows, topShare } from './traceData/stats';
-import { CallRows } from './traceViews/CallRows';
-import { ContextRow } from './traceViews/ContextRow';
-import { matchesStep } from './traceViews/Highlight';
-import { StepRow } from './traceViews/StepRow';
-import { TurnHeader } from './traceViews/TurnHeader';
+import type { AgentContext } from '../../api/client';
+import type { TraceStep, TraceTurn } from '../../types';
+import { durationRows, topShare } from '../traceData/stats';
+import { CallRows } from './CallRows';
+import { ContextRow } from './ContextRow';
+import { matchesStep } from './Highlight';
+import { StepRow } from './StepRow';
+import { TurnHeader } from './TurnHeader';
 
-export { Composition, fmtTok } from './traceViews/Composition';
-export { matchesStep } from './traceViews/Highlight';
+export { Composition, fmtTok } from './Composition';
+export { matchesStep } from './Highlight';
 
 export type TraceMode = 'time' | 'turn' | 'call';
 

@@ -11,7 +11,7 @@ import type {
   PendingCall,
   PermissionKey,
 } from '../types';
-import { attachMeta, ChatTab, formatClock, formatSize, shouldStickToBottom } from './ChatTab';
+import { attachMeta, ChatTab, formatClock, formatSize, shouldStickToBottom } from './chat/ChatTab';
 
 const send = vi.fn();
 const stop = vi.fn();

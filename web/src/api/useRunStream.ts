@@ -801,8 +801,9 @@ export async function streamRun(
       user_input: userInput,
       attachments: attachmentIds,
       ...(permission ? { permission } : {}),
-      // 默认关闭：不选就不带这个字段，避免误触发供应商检索计费
-      ...(webSearch ? { web_search: true } : {}),
+      // 每次都显式表态：省略会被服务端理解为「按部署默认」，
+      // 部署开了 DEVOPS_AGENT_ENABLE_SEARCH 时，界面上的「关」就关不掉了。
+      web_search: webSearch,
     }),
     signal,
   });

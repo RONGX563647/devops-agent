@@ -11,6 +11,7 @@ from agentscope.pipeline import GoalPipeline, TeamMember, TeamPipeline
 from devops_agent.governance.profiles import PROFILES, default_profile
 from devops_agent.runtime.agent import (
     PROFILE_KEY,
+    SEARCH_MODE_ENV,
     WORKDIR_ENV,
     _state_for,
     build_agent,
@@ -92,12 +93,41 @@ def test_build_chat_model_search_disabled_by_default(monkeypatch: pytest.MonkeyP
 
 
 def test_build_chat_model_search_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """显式开启时注入 enable_search=true，由供应商侧执行联网检索。"""
+    """显式开启时必须连同 forced_search 一起下发。
+
+    只发 enable_search 是不够的：它只是授权模型可以搜，搜不搜由模型裁量。
+    实测同一份请求体（含 system prompt 与工具定义）开与不开的 prompt_tokens
+    完全一致（3150 vs 3150），补上 forced_search 才变成 4436 —— 也就是说
+    少了这一项，「联网」按钮点下去对模型输入毫无影响。
+    """
     monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
     monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
     monkeypatch.setenv("DEVOPS_AGENT_ENABLE_SEARCH", "1")
-    assert build_chat_model().extra_body == {"enable_search": True}
+    monkeypatch.delenv(SEARCH_MODE_ENV, raising=False)
+    assert build_chat_model().extra_body == {
+        "enable_search": True,
+        "search_options": {"forced_search": True, "search_strategy": "standard"},
+    }
+
+
+def test_search_mode_auto_drops_forced_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """auto 模式把裁量权交回模型，但不吞掉 enable_search 本身。"""
+    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
+    monkeypatch.setenv(SEARCH_MODE_ENV, "auto")
+    assert build_chat_model(enable_search=True).extra_body == {"enable_search": True}
+
+
+def test_search_mode_typo_falls_back_to_forced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """拼错的环境变量不能把「联网」悄悄退化成空开关。"""
+    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
+    monkeypatch.setenv(SEARCH_MODE_ENV, "forceed")
+    body = build_chat_model(enable_search=True).extra_body
+    assert body is not None and body["search_options"]["forced_search"] is True
 
 
 def test_build_chat_model_request_flag_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,8 +136,9 @@ def test_build_chat_model_request_flag_overrides_env(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
     monkeypatch.delenv("DEVOPS_AGENT_ENABLE_SEARCH", raising=False)
+    monkeypatch.delenv(SEARCH_MODE_ENV, raising=False)
 
-    assert build_chat_model(enable_search=True).extra_body == {"enable_search": True}
+    assert build_chat_model(enable_search=True).extra_body is not None
     assert build_chat_model(enable_search=False).extra_body is None
 
 
@@ -146,6 +177,16 @@ def test_build_system_prompt_declares_tools(tmp_path: Path) -> None:
     for token in ("Bash", "Read", "Glob", "Grep", str(tmp_path.resolve())):
         assert token in prompt
     assert "必须真的发起工具调用" in prompt
+
+
+def test_system_prompt_tells_agent_when_to_stop_retrying(tmp_path: Path) -> None:
+    """只有「换手段」没有「停下来」时，模型会一直换写法重试同一个失败目标。
+
+    真实会话里它换了 curl / PowerShell / python 脚本 / 代理设置六种才承认失败。
+    """
+    prompt = build_system_prompt(tmp_path)
+    assert "换过两种手段仍然失败就停止尝试" in prompt
+    assert "本轮未能取到的材料" in prompt
 
 
 def test_prompt_fingerprint_ignores_workdir(
@@ -274,18 +315,110 @@ def test_apply_profile_hot_swaps_context_toolkit_and_note(
 def test_apply_profile_can_hot_swap_web_search(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """联网开关在模型请求体里，切档端点也要能原地换模型实例。"""
+    """联网开关在模型请求体里，切档端点也要能原地换模型实例与末尾说明。"""
     monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
     monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
     monkeypatch.delenv("DEVOPS_AGENT_ENABLE_SEARCH", raising=False)
+    monkeypatch.delenv(SEARCH_MODE_ENV, raising=False)
 
     runtime = build_agentscope_runtime(workdir=tmp_path)
     assert runtime._agent.model.extra_body is None
     runtime.apply_profile(PROFILES["execute"], web_search=True)
-    assert runtime._agent.model.extra_body == {"enable_search": True}
+    body = runtime._agent.model.extra_body
+    assert body is not None and body["search_options"]["forced_search"] is True
     runtime.apply_profile(PROFILES["execute"], web_search=False)
     assert runtime._agent.model.extra_body is None
+
+
+def _tail_messages(mw: object, history: list[object]) -> list[str]:
+    """跑一遍中间件，取出实际发给模型的 messages 文本。"""
+    seen: dict[str, object] = {}
+
+    async def nxt(**kwargs: object) -> str:
+        seen.update(kwargs)
+        return "ok"
+
+    asyncio.run(mw.on_model_call(None, {"messages": history}, nxt))  # type: ignore[attr-defined,arg-type]
+    return [m.get_text_content() for m in seen["messages"]]  # type: ignore[union-attr]
+
+
+def test_search_note_only_appended_when_enabled() -> None:
+    """联网说明必须与开关同源：关了还留着，模型会声称「检索结果已附」并编来源。"""
+    from agentscope.message import UserMsg
+
+    from devops_agent.governance.profiles import resolve
+    from devops_agent.runtime.profile_note import ProfileNoteMiddleware, search_note
+
+    assert search_note(False) == ""
+    history = [UserMsg(name="user", content="今天北京天气怎么样？")]
+
+    off = _tail_messages(ProfileNoteMiddleware(resolve("readonly")), history)
+    assert len(off) == 2  # 用户消息 + 档位说明，没有第三条
+    assert "联网" not in off[-1]
+
+    on = _tail_messages(ProfileNoteMiddleware(resolve("readonly"), web_search=True), history)
+    assert len(on) == 3
+    assert "已开启联网检索" in on[-1]
+
+
+def test_search_note_does_not_assert_results_arrived() -> None:
+    """说明只能写「若存在」，不能断言「已附带」。
+
+    应用侧没有证据：框架不透出 `search_info`，事件流也没有检索 span。
+    写死「已附带搜索结果」时，模型会去核对一段无法辨认的内容，进而自己抓网页核实——
+    一次真实会话因此跑了 21 步工具调用，最后仍回答「我没收到检索结果」。
+    """
+    from devops_agent.runtime.profile_note import search_note
+
+    note = search_note(True)
+    assert "若检索结果存在" in note
+    assert "没看到就直说" in note
+    assert "已附带搜索结果" not in note
+    # 并且要明确劝阻「自己抓一遍」：本环境抓取常因网络策略失败
+    assert "不需要你再用工具去抓网页" in note
+    assert "失败两次就停止" in note
+
+
+def test_search_note_hot_swaps_with_toggle() -> None:
+    """运行中开关变化：下一轮请求末尾立即跟着变，不必重建中间件（保住前缀缓存）。"""
+    from agentscope.message import UserMsg
+
+    from devops_agent.governance.profiles import resolve
+    from devops_agent.runtime.profile_note import ProfileNoteMiddleware
+
+    mw = ProfileNoteMiddleware(resolve("readonly"))
+    history = [UserMsg(name="user", content="hi")]
+    assert not any("已开启联网检索" in text for text in _tail_messages(mw, history))
+
+    mw.set_web_search(True)
+    assert "已开启联网检索" in _tail_messages(mw, history)[-1]
+
+    mw.set_web_search(False)
+    assert not any("已开启联网检索" in text for text in _tail_messages(mw, history))
+
+
+def test_runtime_keeps_request_body_and_note_in_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """装配点必须同源：请求体带了检索结果，末尾就得说「结果已在上下文里」。
+
+    这两处一旦分叉，模型会一边拿着检索结果、一边回答「我没有联网能力」，
+    正是修复前用户看到的现象。
+    """
+    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
+    monkeypatch.delenv("DEVOPS_AGENT_ENABLE_SEARCH", raising=False)
+    monkeypatch.delenv(SEARCH_MODE_ENV, raising=False)
+
+    on = build_agentscope_runtime(workdir=tmp_path, web_search=True)
+    assert on._agent.model.extra_body is not None
+    assert "已开启联网检索" in _tail_messages(on._note_middleware, [])[-1]
+
+    off = build_agentscope_runtime(workdir=tmp_path, web_search=False)
+    assert off._agent.model.extra_body is None
+    assert not any("已开启联网检索" in text for text in _tail_messages(off._note_middleware, []))
 
 
 def test_state_rebuilds_on_profile_switch_even_with_same_mode() -> None:

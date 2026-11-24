@@ -63,7 +63,7 @@ devops-agent/
 │   └── check_manifest_sync.py# 题库清单与 JSONL 是否同步
 ├── docs/
 │   ├── adr/                  # 0001 可观测前端 / 0002 权限模型 / 0003 模型参数
-│   ├── specs/                # 0001 模型参数配置
+│   ├── specs/                # 0001 模型参数配置 / 0002 评测 UI 控制台
 │   └── wiki/                 # 分层讲解（Home / Architecture / Permissions / …）
 ├── .github/workflows/        # ci.yml（quality + frontend）、eval-nightly.yml
 ├── src/devops_agent/
@@ -76,7 +76,7 @@ devops-agent/
 │   │   ├── agent.py          #   build_agent / AgentScopeRuntime（系统提示、工具、中间件）
 │   │   ├── sessions.py       #   SessionRegistry：LRU + DB 快照重建 + 参数热替换
 │   │   ├── confirm.py        #   确认协议：风险分级、作用域、前缀沉淀规则
-│   │   ├── profile_note.py   #   档位说明追加在消息末尾（保前缀缓存）
+│   │   ├── profile_note.py   #   档位说明 + 联网说明追加在消息末尾（保前缀缓存）
 │   │   ├── compression.py    #   压缩中间件 → SSE 帧
 │   │   ├── events.py         #   框架事件 → 普通 dict
 │   │   ├── supervisor.py     #   TeamPipeline / GoalPipeline 装配（仅单测引用）
@@ -176,12 +176,49 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 | `DEVOPS_AGENT_SECRET_KEY` | Fernet 主密钥（base64，优先级最高） |
 | `DEVOPS_AGENT_SECRET_KEY_FILE` | Fernet 主密钥文件，缺省库同目录 `.secret.key` |
 | `DEVOPS_AGENT_ENABLE_SEARCH` | 设为 1 时请求体附 `enable_search=true`（默认关闭） |
+| `DEVOPS_AGENT_SEARCH_MODE` | `forced`（默认，连同 `search_options` 下发）/ `auto`（只授权不强制） |
 | `DEVOPS_AGENT_PERMISSION_PROFILES` | 覆盖开放档位（逗号分隔） |
 | `DEVOPS_AGENT_DEFAULT_PROFILE` | 覆盖默认档位 |
 | `DEVOPS_AGENT_JUDGE_MODEL` | 评测裁判模型（nightly 使用） |
 | `DEVOPS_AGENT_EVAL_DB_PATH` | 评测库路径 |
 
 ---
+
+| 环境变量 | 作用 |
+|---|---|
+| `DEVOPS_AGENT_API_KEY` / `_BASE_URL` / `_MODEL` | 模型接入（key 为空即 Echo） |
+| `DEVOPS_AGENT_CONFIG_DIR` | 覆盖 `config/` 位置（测试/部署用） |
+| `DEVOPS_AGENT_DOMAIN` | 运行域标记，写入 `runs.domain`，缺省 `debug` |
+| `DEVOPS_AGENT_WORKDIR` | Agent 工具的工作目录（shell cwd + 文件工具路径基准） |
+| `DEVOPS_AGENT_WORKSPACE` | 输入管线解析本地引用的根目录，缺省进程 cwd |
+| `DEVOPS_AGENT_ALLOW_REMOTE_FETCH` | 设为 1 才允许输入管线抓取远程 URL（默认关闭） |
+| `DEVOPS_AGENT_DB_PATH` | 观测库路径，缺省 `workspace/observability.db` |
+| `DEVOPS_AGENT_ATTACHMENT_DIR` | 附件目录，缺省 `workspace/attachments` |
+| `DEVOPS_AGENT_SECRET_KEY` | Fernet 主密钥（base64，优先级最高） |
+| `DEVOPS_AGENT_SECRET_KEY_FILE` | Fernet 主密钥文件，缺省库同目录 `.secret.key` |
+| `DEVOPS_AGENT_ENABLE_SEARCH` | 设为 1 时请求体附 `enable_search=true`（默认关闭） |
+| `DEVOPS_AGENT_PERMISSION_PROFILES` | 覆盖开放档位（逗号分隔） |
+| `DEVOPS_AGENT_DEFAULT_PROFILE` | 覆盖默认档位 |
+| `DEVOPS_AGENT_JUDGE_MODEL` | 评测裁判模型（nightly 使用） |
+| `DEVOPS_AGENT_EVAL_DB_PATH` | 评测库路径 |
+
+---
+
+只有 `enable_search` 是不够的：它只是**授权**模型可以搜，搜不搜由模型自由裁量。实测同一份请求体（system prompt + 4 个工具定义 + 只读提示），带与不带 `enable_search` 的 `prompt_tokens` 完全一致（3150 vs 3150）——模型一次都没检索，用户看到的就是一个按下去没反应的按钮。因此默认还会下发 `search_options = {"forced_search": true, "search_strategy": "standard"}`，由供应商无条件检索并把结果注入上下文（同一请求体升到 4436 tokens）。
+
+- `DEVOPS_AGENT_SEARCH_MODE=forced`（默认）：如上，点了就一定搜。
+- `DEVOPS_AGENT_SEARCH_MODE=auto`：只发 `enable_search`，把裁量权交回模型（省 token，但多数情况下不会搜）。写成其他值一律按 `forced` 处理，避免拼错一个环境变量就把联网退化成空开关。
+
+开关实现在 [agent.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/agent.py) 的 `_search_extra_body()`。
+
+开启联网的那一轮，末条消息会追加一段说明：检索结果**若存在**，会以带来源的引用块出现在上下文里，看到就用、看不到就直说没有检索到；并明确「不需要再用工具抓网页，同一地址失败两次就停」。这句话与档位说明一样放在消息末尾而不是系统提示里——系统提示在请求最前面，改一个字后面的工具 schema 与整段历史全部缓存失效。
+
+之所以写成「若存在」而不是「已附带」：应用侧拿不到供应商到底有没有检索的证据（框架不透出 `search_info`，事件流里也没有检索 span），写死「已附带」会让模型去核对一段它无法辨认的内容，反而触发「我得自己抓一遍」的验证循环。
+
+前端输入框下方另有「联网」开关：网页端**每次都显式表态**（开 → 带 `web_search: true`，关 → `false`），所以界面上的「关」在开了环境变量的部署里也真的关得掉。只有直接调 API 时省略该字段才表示「按部署默认」。这样不必为了偶尔查资料把整个部署的检索打开。
+
+档位不是直接暴露 `PermissionMode` —— 只切 mode 而工具集不动，会出现「切了档什么都没变」。
+所以一个档位 = **mode + 工具集 + 越界兜底动作**，三者一起换（[profiles.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/governance/profiles.py#L50-L99)）：
 
 ## 权限：5 个档位
 
@@ -249,9 +286,26 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 | `attach` | 附件读取 | 按 id 取回附件正文 |
 | `redact` | 密钥脱敏 | 识别 aws/openai/github/slack/jwt/私钥等，替换为 `{{secret:NAME}}` 并交给 `on_secret` 落库 |
 | `budget` | 预算裁剪 | 总字符上限 `MAX_TOTAL_CHARS=24000`，超出按优先级丢弃 |
-| `compose` | 组装 | 正文 + 材料拼成最终文本 |
+| `compose` | 组装 | 正文 + 已取到的材料 + **未取到的材料清单**，拼成最终文本 |
 
 **任何阶段都不抛异常**：解析失败只影响该阶段状态与材料完整性，对话照常进行（`main._prepare_input` 再兜一层，异常即退回原始输入）。
+
+### 为什么「取不到」也要写进上下文
+
+引用抓取失败时，把原因只写进阶段详情（前端能看、模型看不到）会引发非常昂贵的行为：
+模型不知道自己手里缺了什么，于是自己去 `curl` 同一个地址，被 shell 拆参数、被网络重置，
+再换 PowerShell、换 python 脚本、换代理设置——实测一次会话烧掉 **21 步工具调用**
+才承认拿不到。
+
+所以 `_expand` / `_attach` 除了材料块还返回 `misses`，由 `_render_misses()` 渲染成
+「本轮未能取到的材料」清单 + 停止规则（同一目标失败两次就停、基于已有材料回答并
+说明缺什么）。两个细节：
+
+- **`远程抓取未开启` 不进 `misses`**：这只是服务端没代为抓取，不是内容不可得。
+  写进去等于替模型宣布放弃，反而劝退它用 shell 自己取。
+- **`misses` 也要过一遍脱敏**：失败说明里会带原始 URL，URL 里可能含 token。
+
+补充：
 
 - 只有 `prepared.text` 进模型上下文，密钥明文与裁剪细节不外泄。
 - token 估算用 `len(text) // 4`（`CHARS_PER_TOKEN`），用于与模型回报的 `input_tokens` 对账。
@@ -314,7 +368,8 @@ model:
 | GET | `/run/{run_id}/pending` | 刷新后恢复挂起卡片（必须带 `session_id` 校验归属） |
 | POST | `/run/{run_id}/confirm` | 带决策续跑；用条件更新保证只执行一次 |
 
-`POST /run/stream` 请求体：`{"session_id", "user_input", "attachments": [], "permission": null, "web_search": false}`。
+`POST /run/stream` 请求体：`{"session_id", "user_input", "attachments": [], "permission": null, "web_search": null}`。
+`web_search` 省略或传 `null` = 按部署默认（`DEVOPS_AGENT_ENABLE_SEARCH`）；显式 `true`/`false` = 这一轮就按它来。默认值不能写 `False` —— 那样「没带字段」会被当成「关」，环境变量永远不生效。
 
 SSE 帧约定：
 

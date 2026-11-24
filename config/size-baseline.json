@@ -1,0 +1,21 @@
+{
+  "src/devops_agent/observability/repository.py": 1088,
+  "src/devops_agent/input/pipeline.py": 871,
+  "src/devops_agent/eval/report.py": 780,
+  "src/devops_agent/runtime/agent.py": 684,
+  "src/devops_agent/main.py": 642,
+  "src/devops_agent/observability/health.py": 601,
+  "src/devops_agent/eval/lint.py": 577,
+  "src/devops_agent/observability/recorder.py": 545,
+  "src/devops_agent/eval/cli.py": 542,
+  "src/devops_agent/model_settings.py": 517,
+  "src/devops_agent/eval/graders.py": 517,
+  "web/src/types.ts": 899,
+  "web/src/api/useRunStream.ts": 857,
+  "web/src/pages/EvalBatches.tsx": 821,
+  "web/src/workspace/TraceList.tsx": 797,
+  "web/src/workspace/ChatTab.tsx": 647,
+  "web/src/workspace/store.ts": 614,
+  "web/src/workspace/trace.ts": 590,
+  "web/src/workspace/ModelConfigPopover.tsx": 567
+}

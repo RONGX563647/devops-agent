@@ -203,7 +203,9 @@ describe('EvalBatches', () => {
     fireEvent.click(await screen.findByText('#1'));
     expect(await screen.findByText('全部硬失败分类均为 0')).toBeTruthy();
 
-    expect(screen.getAllByText('样本不足')).toHaveLength(5);
+    // 5 个原有指标（通过率/正确性/轨迹/P95/tokens）+ v3 两张能力卡
+    // （能力通过率 / 有效样本通过率）都因样本不足而不给结论。
+    expect(screen.getAllByText('样本不足')).toHaveLength(7);
     expect(document.querySelector('.eval-metrics .tone-good')).toBeNull();
     expect(document.querySelector('.eval-metrics .tone-bad')).toBeNull();
   });

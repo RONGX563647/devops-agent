@@ -56,7 +56,15 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_current_suite_is_in_sync() -> None:
+    """服役题库（v3）默认就要在同步状态。"""
     proc = _run()
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout
+
+
+def test_v2_suite_is_in_sync() -> None:
+    """v2 作为历史基线仍被静态校验，避免清单悄悄腐化。"""
+    proc = _run("--suite", "eval/suites/devops-core.v2.jsonl")
     assert proc.returncode == 0, proc.stderr
     assert "OK" in proc.stdout
 
@@ -193,6 +201,56 @@ class TestDrift:
 
         proc = _run("--suite", self._relative(suite_copy))
         assert proc.returncode == 0, proc.stderr
+
+
+def test_v3_suite_is_in_sync() -> None:
+    """v3 用风险分层门禁，不该被「全局 thresholds 为空」判成过期。"""
+    proc = _run("--suite", "eval/suites/devops-core.v3.jsonl")
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout
+
+
+class TestRiskGate:
+    """v3 分层门禁的人工维护字段：缺层、调低下界、样本归零都要拦住。"""
+
+    @pytest.fixture()
+    def manifest_path(self, tmp_path: Path) -> Path:
+        target = tmp_path / "suites"
+        target.mkdir()
+        src = ROOT / "eval" / "suites"
+        for suffix in (".jsonl", ".manifest.json"):
+            name = f"devops-core.v3{suffix}"
+            (target / name).write_text((src / name).read_text(encoding="utf-8"), encoding="utf-8")
+        return target / "devops-core.v3.manifest.json"
+
+    def _write(self, path: Path, data: dict) -> str:
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        suite = path.with_name("devops-core.v3.jsonl")
+        try:
+            return str(suite.relative_to(ROOT))
+        except ValueError:
+            return str(suite)
+
+    def test_lowered_layer_threshold_fails(self, manifest_path: Path) -> None:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        data["risk_thresholds"]["high_risk"] = 0.5
+        proc = _run("--suite", self._write(manifest_path, data))
+        assert proc.returncode == 1
+        assert "低于项目下界" in proc.stderr
+
+    def test_missing_layer_threshold_fails(self, manifest_path: Path) -> None:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        del data["risk_thresholds"]["regression"]
+        proc = _run("--suite", self._write(manifest_path, data))
+        assert proc.returncode == 1
+        assert "缺少必需分层阈值" in proc.stderr
+
+    def test_zeroed_min_cases_fails(self, manifest_path: Path) -> None:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        data["min_cases_per_risk"]["core"] = 0
+        proc = _run("--suite", self._write(manifest_path, data))
+        assert proc.returncode == 1
+        assert "必须是正整数" in proc.stderr
 
 
 def test_failure_message_tells_how_to_fix() -> None:

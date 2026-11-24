@@ -32,7 +32,7 @@ from devops_agent.eval.dataset import (
     validate_suite,
 )
 from devops_agent.eval.judge import JudgeError, OpenAIJudge, resolve_judge_model
-from devops_agent.eval.lint import Finding, run_lint, split_findings
+from devops_agent.eval.lint import Finding, run_lint, run_preflight, split_findings
 from devops_agent.eval.runner import DEFAULT_FIXTURE_ROOT, CaseRun, case_run_payload, run_suite
 from devops_agent.observability import repository as repo
 from devops_agent.runtime.agent import PROMPT_ID, prompt_factors, prompt_fingerprint
@@ -63,6 +63,14 @@ def cmd_validate(args: argparse.Namespace) -> int:
     messages = validate_suite(suite)
     _print_errors(messages)
     errors, warnings = split_warnings(messages)
+    if args.solvable:
+        problems = run_preflight(suite.cases, _fixture_root_for(args.suite))
+        for problem in problems:
+            print(f"[preflight] {problem}", file=sys.stderr)
+        if problems:
+            print(f"错误: {len(problems)} 条用例不可解，先修题再跑模型", file=sys.stderr)
+            return 1
+        print(f"preflight ok: {len(suite.cases)} cases 可解")
     if errors:
         return 1
     if args.strict and warnings:
@@ -183,6 +191,13 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         update={
             "sha256": suite_sha256(suite.cases),
             "counts": dict(sorted(counts.items())),
+            "risk_counts": dict(
+                sorted(
+                    Counter(
+                        case.risk for case in suite.cases if case.risk is not None
+                    ).items()
+                )
+            ),
             "grader_version": GRADER_VERSION,
         }
     )
@@ -279,6 +294,22 @@ def _print_summary(summary: dict[str, Any], batch_id: int) -> None:
         f"batch={batch_id} n={summary['n']} passed={summary['passed']} "
         f"pass_rate={summary['pass_rate']:.2%} verdict={summary['verdict']}"
     )
+    print(
+        f"capability={summary.get('capability_passed')} "
+        f"({summary.get('capability_pass_rate')}) "
+        f"attributed={summary.get('attributed_pass_rate')} "
+        f"tokens/solved={summary.get('tokens_per_solved_case')}"
+    )
+    funnel = summary.get("funnel")
+    if isinstance(funnel, list):
+        print("funnel=" + " → ".join(f"{row['stage']}:{row['n']}" for row in funnel))
+    risk = summary.get("risk")
+    if isinstance(risk, dict):
+        for layer, bucket in risk.items():
+            print(
+                f"risk={layer} n={bucket['n']} capability={bucket['capability']} "
+                f"rate={bucket['capability_rate']} red_line={bucket['safety_failures']}"
+            )
     hard = summary.get("hard_failures", {})
     print(f"hard_failures={hard}")
     gates = summary.get("gates")
@@ -387,10 +418,26 @@ def _exit_code(summary: dict[str, Any], allow_warn: bool) -> int:
     return 0
 
 
+def _has_credentials() -> bool:
+    """运行真实模型评测的必要条件（key 本身不打印）。"""
+    return bool(os.environ.get("DEVOPS_AGENT_API_KEY"))
+
+
+def _preflight_blocked(suite: Suite, args: argparse.Namespace) -> bool:
+    """可解性预检：用例在当前档位/资产下不可能通过时，整批判 invalid。"""
+    blocking = run_preflight(suite.cases, _fixture_root_for(args.suite))
+    if not blocking:
+        return False
+    print("错误: 批次预检未通过，判定 invalid（不计入模型质量）:", file=sys.stderr)
+    for item in blocking[:20]:
+        print(f"  - {item}", file=sys.stderr)
+    return True
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """真实运行一套用例并落库、写报告。"""
     load_env()
-    if not os.environ.get("DEVOPS_AGENT_API_KEY"):
+    if not _has_credentials():
         print(
             "错误: 缺少 DEVOPS_AGENT_API_KEY，无法运行真实模型评测。"
             "请先在 .env 或环境变量中配置模型凭据。",
@@ -399,6 +446,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
 
     suite = load_suite(args.suite)
+    # 先做可解性预检：用例引用了不存在的文件、用了档位里没有的工具，
+    # 跑再多次也只会得到 0 分，而且会把「题坏了」记成「模型差」。
+    if _preflight_blocked(suite, args):
+        return 2
     judge, judge_error = _init_judge(args.judge)
     if judge_error:
         print(judge_error, file=sys.stderr)
@@ -424,6 +475,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         runs,
         suite.manifest.min_cases_for_gate,
         thresholds=_thresholds(suite),
+        risk_thresholds=suite.manifest.risk_thresholds or None,
+        min_cases_per_risk=suite.manifest.min_cases_per_risk,
     )
     summary.update(_factors(suite, profile, args.judge, args.judge_scope))
     if args.baseline:
@@ -487,6 +540,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--strict",
         action="store_true",
         help="warning 也视为阻断（题库达门禁量后 CI 应开启）",
+    )
+    validate.add_argument(
+        "--solvable",
+        action="store_true",
+        help="同时做可解性预检（fixture/引用文件/工具档位）",
     )
     validate.set_defaults(func=cmd_validate)
 

@@ -46,12 +46,17 @@ jobs:
       - name: eval suite validate
         # --strict：题库已达门禁量，「样本不足」这类 warning 也该阻断 ——
         # 否则题库会安静地停在 insufficient，评测一直跑但从不给结论。
-        run: python -m devops_agent.eval validate --suite eval/suites/devops-core.v2.jsonl --strict
+        # v3 是服役题库（150 例、风险分层门禁）；v2 作为历史基线一并静态校验。
+        run: |
+          python -m devops_agent.eval validate --suite eval/suites/devops-core.v3.jsonl --strict
+          python -m devops_agent.eval validate --suite eval/suites/devops-core.v2.jsonl --strict
       # 清单必须与题库同步：`sha256` 是 `compare` 判断「同一套题」的依据，
       # 改了 JSONL 却忘了跑 `eval manifest` 会让新旧批次的 delta 无声失效。
       # 比对 JSON 语义而非字节，避免 CRLF/缩进差异造成假红。
       - name: eval manifest in sync
-        run: python scripts/check_manifest_sync.py
+        run: |
+          python scripts/check_manifest_sync.py
+          python scripts/check_manifest_sync.py --suite eval/suites/devops-core.v2.jsonl
       # 静态契约检查：工具名闭包 / 占位符机器无关 / 文案承诺=能力矩阵 / 题库自洽 /
       # 断言有效性 / 判卷口径版本 / 断言撞车（S7）/ 档位可达性（S8）。
       # 不跑模型，纯静态，几毫秒；S8 会真跑一次权限引擎。
@@ -60,6 +65,9 @@ jobs:
       # 清单项若已修好却未删除，命令会以 stale 失败，避免豁免长期滞留。
       - name: prompt contract lint
         run: |
+          python -m devops_agent.eval prompt-lint \
+            --suite eval/suites/devops-core.v3.jsonl \
+            --known-issues eval/lint-baseline.json
           python -m devops_agent.eval prompt-lint \
             --suite eval/suites/devops-core.v2.jsonl \
             --known-issues eval/lint-baseline.json

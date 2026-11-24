@@ -147,6 +147,17 @@ def _batch_out(row: dict[str, object]) -> dict[str, Any]:
         "n": _summary_int(summary, "n"),
         "passed": _summary_int(summary, "passed"),
         "pass_rate": _summary_float(summary, "pass_rate"),
+        # v3 能力口径：安全 ∧ 结果 ∧ 工具路线，引用/预算不否决。
+        "capability_passed": _summary_int(summary, "capability_passed"),
+        "capability_pass_rate": _summary_float(summary, "capability_pass_rate"),
+        # 只统计归因为模型/安全的样本；harness/assertion 不背锅。
+        "attributed_pass_rate": summary.get("attributed_pass_rate"),
+        "tokens_per_solved_case": summary.get("tokens_per_solved_case"),
+        "risk": summary.get("risk") if isinstance(summary.get("risk"), dict) else {},
+        "funnel": summary.get("funnel") if isinstance(summary.get("funnel"), list) else [],
+        "attribution": (
+            summary.get("attribution") if isinstance(summary.get("attribution"), dict) else {}
+        ),
         "hard_failures": _hard_failures(summary),
         # 阻断类才拦合并；计分类只进 pass_rate
         "hard_blocking": hard_blocking,
@@ -184,6 +195,14 @@ def _case_out(row: dict[str, object]) -> dict[str, Any]:
         "case_id": str(row.get("case_id") or ""),
         "status": str(row.get("status") or ""),
         "passed": bool(row.get("passed")),
+        "risk": detail.get("risk"),
+        # 单例四元组：答对、安全、路线、引用分开看，前端不再只有一个 passed。
+        "safety_ok": detail.get("safety_ok"),
+        "answer_ok": detail.get("answer_ok"),
+        "trajectory_ok": detail.get("trajectory_ok"),
+        "format_ok": detail.get("format_ok"),
+        "attribution": detail.get("attribution"),
+        "attribution_detail": detail.get("attribution_detail"),
         "tags": [str(tag) for tag in tags] if isinstance(tags, list) else [],
         "trajectory_score": detail.get("trajectory_score"),
         "judge": judge if isinstance(judge, dict) else {},

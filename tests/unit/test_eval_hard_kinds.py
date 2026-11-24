@@ -292,5 +292,5 @@ def test_render_subjects_section() -> None:
     )
     assert summary["subjects"] == {"capability": {"n": 3, "passed": 3}}
     md = render_markdown(summary)
-    assert "## 归因分布" in md
+    assert "## 被测因子分布" in md
     assert "capability" in md

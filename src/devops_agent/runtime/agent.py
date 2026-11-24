@@ -330,7 +330,12 @@ def build_chat_model(
     return OpenAIChatModel(
         credential=credential,
         model=model_name,
-        parameters=OpenAIChatModel.Parameters(**active.sampling()),
+        # None 表示「交给框架默认」，不能原样传给 Parameters：agentscope 2.0
+        # 的 thinking_enable 是 bool 且不可空，传 None 会在构造时就抛校验错误，
+        # 表现为整批用例 status=error，看起来像模型挂了。
+        parameters=OpenAIChatModel.Parameters(
+            **{key: value for key, value in active.sampling().items() if value is not None}
+        ),
         stream=True,
         max_retries=active.model_max_retries,
         context_size=active.context_size,
@@ -577,9 +582,11 @@ class AgentScopeRuntime:
         ]
         if not results:
             raise ValueError("没有匹配的待确认调用")
-        reply = self._agent.state.get_reply_message(self._agent.name)
+        # agentscope 2.0 的 AgentState 只暴露 `reply_id` 字段，
+        # 旧 API `get_reply_message()` 已移除；这里按字段读取并兼容空值。
+        reply_id = getattr(self._agent.state, "reply_id", "") or ""
         return UserConfirmResultEvent(
-            reply_id=reply.id if reply is not None else "",
+            reply_id=reply_id,
             confirm_results=results,
         )
 

@@ -39,6 +39,19 @@ RATIO_TARGETS: dict[str, tuple[float, float]] = {
 }
 RATIO_TOLERANCE = 0.05
 
+# 风险分层：门禁按层判定，不再用一根全局通过率。
+# core / boundary / high_risk / regression = 40% / 30% / 20% / 10%。
+RISK_LAYERS: tuple[str, ...] = ("core", "boundary", "high_risk", "regression")
+RISK_TARGETS: dict[str, tuple[float, float]] = {
+    "core": (0.35, 0.45),
+    "boundary": (0.25, 0.35),
+    "high_risk": (0.15, 0.25),
+    "regression": (0.05, 0.15),
+}
+
+# 评测范围：端到端结果、轨迹、单组件。
+SCOPES: tuple[str, ...] = ("e2e", "trajectory", "component")
+
 # judge 维度白名单：与 judge.py 的 JUDGE_DIMENSIONS 同源，但这里刻意不 import，
 # 避免数据集校验反向依赖网络模块。
 ALLOWED_JUDGE_DIMENSIONS = frozenset(
@@ -104,6 +117,18 @@ class JudgeSpec(_StrictModel):
     dimensions: list[str] = Field(default_factory=list)
 
 
+class OracleSpec(_StrictModel):
+    """确定性 oracle：不依赖裁判即可判定的关键事实。
+
+    `critical_facts` 必须出现在最终回答里；`forbidden_facts` 一个都不许出现
+    （密钥、canary、注入串）。这两类断言进入 answer / safety 维度，
+    与 LLM 裁判完全解耦，也是门禁在裁判未校准时唯一可信的部分。
+    """
+
+    critical_facts: list[str] = Field(default_factory=list)
+    forbidden_facts: list[str] = Field(default_factory=list)
+
+
 class EvalCase(_StrictModel):
     """一条评测用例。"""
 
@@ -118,6 +143,12 @@ class EvalCase(_StrictModel):
     subject: str = "capability"
     expected: Expected
     judge: JudgeSpec | None = None
+    # 风险分层：决定门禁用哪条阈值，也决定高危用例是否 n=1 也阻断。
+    risk: str | None = None
+    # 这条用例覆盖哪些评测范围；缺省按 e2e 处理。
+    scopes: list[str] = Field(default_factory=list)
+    # 确定性 oracle：关键事实与禁止出现的内容。
+    oracle: OracleSpec | None = None
     # `tool_calls.must` 里的工具是否必须**真正执行**（被权限拒绝不算命中）。
     #
     # 默认 True：`must: ["Bash"]` 的意图几乎总是「跑起来」，而 readonly 档下
@@ -154,6 +185,10 @@ class Manifest(_StrictModel):
     # 旧版写的是裸数字（`{"pass_rate": 0.8}`），加载时归一成 ThresholdSpec。
     thresholds: dict[str, ThresholdSpec] = Field(default_factory=dict)
     grader_version: str = ""
+    # v3 风险分层：计数、各层通过率下限、各层最小样本。
+    risk_counts: dict[str, int] = Field(default_factory=dict)
+    risk_thresholds: dict[str, float] = Field(default_factory=dict)
+    min_cases_per_risk: dict[str, int] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -209,9 +244,21 @@ def load_suite(path: str | Path) -> Suite:
 
 
 def _canonical(case: EvalCase) -> str:
-    """单条用例的规范化 JSON：字段排序、紧凑分隔符、保留中文。"""
+    """单条用例的规范化 JSON：字段排序、紧凑分隔符、保留中文。
+
+    v3 新增的 `risk / scopes / oracle` 在取默认值时不参与指纹：
+    否则给模型加几个可选字段就会改写全部 v2 用例的 sha，
+    历史批次会集体变成「不可比」。
+    """
+    data = case.model_dump(mode="json")
+    if not case.risk:
+        data.pop("risk", None)
+    if not case.scopes:
+        data.pop("scopes", None)
+    if case.oracle is None:
+        data.pop("oracle", None)
     return json.dumps(
-        case.model_dump(mode="json"),
+        data,
         sort_keys=True,
         ensure_ascii=False,
         separators=(",", ":"),
@@ -270,6 +317,11 @@ def _case_errors(case: EvalCase) -> list[str]:
         unknown = sorted(set(case.judge.dimensions) - ALLOWED_JUDGE_DIMENSIONS)
         if unknown:
             errors.append(f"{case.id}: 未知 judge 维度: {', '.join(unknown)}")
+    if case.risk is not None and case.risk not in RISK_LAYERS:
+        errors.append(f"{case.id}: 未知 risk: {case.risk}（可选 {', '.join(RISK_LAYERS)}）")
+    unknown_scopes = sorted(set(case.scopes) - set(SCOPES))
+    if unknown_scopes:
+        errors.append(f"{case.id}: 未知 scope: {', '.join(unknown_scopes)}")
     errors.extend(_assertion_errors(case))
     return errors
 
@@ -346,12 +398,88 @@ def _threshold_errors(thresholds: dict[str, ThresholdSpec]) -> list[str]:
     return errors
 
 
+def _risk_errors(suite: Suite, n: int, actual: Counter[str]) -> list[str]:
+    """风险分层的计数、配比与阈值校验。
+
+    只有在 manifest 声明了 `risk_counts` 时才启用：v2 题库没有 risk 字段，
+    不能因为新增校验就把老题库判成非法。
+    """
+    manifest = suite.manifest
+    if not manifest.risk_counts:
+        return []
+    return [
+        *_risk_count_errors(suite, n, actual),
+        *_risk_layer_errors(manifest.risk_thresholds, manifest.min_cases_per_risk),
+    ]
+
+
+def _risk_count_errors(suite: Suite, n: int, actual: Counter[str]) -> list[str]:
+    """用例缺分层、计数不一致、配比越界。"""
+    manifest = suite.manifest
+    errors: list[str] = []
+    missing = [case.id for case in suite.cases if case.risk is None]
+    if missing:
+        preview = ", ".join(missing[:5])
+        errors.append(f"{len(missing)} 条用例缺少 risk 分层: {preview}")
+    if dict(actual) != dict(manifest.risk_counts):
+        errors.append(
+            f"manifest.risk_counts 与实际不一致: 期望 {manifest.risk_counts}, 实际 {dict(actual)}"
+        )
+    if n < manifest.min_cases_for_gate:
+        return errors
+    for layer, (low, high) in RISK_TARGETS.items():
+        share = actual.get(layer, 0) / n
+        if not (low - RATIO_TOLERANCE <= share <= high + RATIO_TOLERANCE):
+            errors.append(
+                f"risk:{layer} 占比 {share:.1%} 超出 "
+                f"[{low:.0%}, {high:.0%}] ±{RATIO_TOLERANCE:.0%}"
+            )
+    return errors
+
+
+def _risk_layer_errors(
+    thresholds: dict[str, float], min_cases: dict[str, int]
+) -> list[str]:
+    """分层阈值/最小样本里的未知分层与越界值。"""
+    errors: list[str] = []
+    for layer, value in thresholds.items():
+        if layer not in RISK_LAYERS:
+            errors.append(f"warning: risk_thresholds 含未知分层 {layer}，报告不会消费它")
+        elif not 0.0 <= value <= 1.0:
+            errors.append(f"risk_thresholds.{layer} {value} 超出量纲 [0, 1]")
+    for layer, value in min_cases.items():
+        if layer not in RISK_LAYERS:
+            errors.append(f"min_cases_per_risk 含未知分层 {layer}")
+        elif value < 0:
+            errors.append(f"min_cases_per_risk.{layer} 不能为负")
+    return errors
+
+
 def validate_suite(suite: Suite) -> list[str]:
     """返回语义校验错误；`warning:` 开头的条目只提示、不阻断。
 
     少于 `min_cases_for_gate` 时只给 warning，且跳过配比硬校验 ——
     小样本下百分比抖动没有意义，强行要求配比只会逼人凑数。
     """
+    errors = _identity_errors(suite)
+    actual_counts = Counter(
+        scenario for case in suite.cases if (scenario := scenario_of(case)) is not None
+    )
+    errors.extend(_counts_errors(suite, actual_counts))
+
+    n = len(suite.cases)
+    risk_actual = Counter(case.risk for case in suite.cases if case.risk is not None)
+    errors.extend(_risk_errors(suite, n, risk_actual))
+    # 顺序保持：既有 warning 的先后次序（样本量、配比）不变，
+    # 依赖 `warnings[0]` 的调用方不会被「清单元数据」类提示挤掉。
+    errors.extend(_size_errors(suite, n, actual_counts))
+    errors.extend(_grader_errors(suite.manifest))
+    errors.extend(_threshold_errors(suite.manifest.thresholds))
+    return errors
+
+
+def _identity_errors(suite: Suite) -> list[str]:
+    """重复 id、逐用例错误、sha 不匹配。"""
     errors: list[str] = []
     seen: set[str] = set()
     for case in suite.cases:
@@ -359,37 +487,36 @@ def validate_suite(suite: Suite) -> list[str]:
             errors.append(f"duplicate case id: {case.id}")
         seen.add(case.id)
         errors.extend(_case_errors(case))
-
     actual_sha = suite_sha256(suite.cases)
     if suite.manifest.sha256 != actual_sha:
         errors.append(f"manifest.sha256 不匹配: 期望 {suite.manifest.sha256}, 实际 {actual_sha}")
+    return errors
 
-    actual_counts = Counter(
-        scenario for case in suite.cases if (scenario := scenario_of(case)) is not None
-    )
-    errors.extend(_counts_errors(suite, actual_counts))
 
-    n = len(suite.cases)
+def _size_errors(suite: Suite, n: int, actual_counts: Counter[str]) -> list[str]:
+    """样本量与配比：未达门禁量只警告，达到后按题库形态校验配比。"""
     if n < suite.manifest.min_cases_for_gate:
-        errors.append(
+        return [
             f"warning: 用例数 {n} < min_cases_for_gate "
             f"{suite.manifest.min_cases_for_gate}，不参与发布门禁"
-        )
-    else:
-        errors.extend(_ratio_errors(n, actual_counts))
+        ]
+    if not suite.manifest.risk_counts:
+        # v3 用风险分层配比；v2 继续用 scenario 配比，二者不叠加。
+        return _ratio_errors(n, actual_counts)
+    return []
 
-    # 放在最后：既有 warning 的先后顺序（样本量、配比）保持不变，
-    # 依赖 `warnings[0]` 的调用方不会被「清单元数据」类提示挤掉。
-    declared = suite.manifest.grader_version
+
+def _grader_errors(manifest: Manifest) -> list[str]:
+    """判卷口径必须可追溯：缺失或漂移都提示。"""
+    declared = manifest.grader_version
     if not declared:
-        errors.append("warning: manifest 未记录 grader_version，判卷口径变更无法追溯")
-    elif declared != GRADER_VERSION:
-        errors.append(
+        return ["warning: manifest 未记录 grader_version，判卷口径变更无法追溯"]
+    if declared != GRADER_VERSION:
+        return [
             f"manifest.grader_version {declared} != 当前判卷口径 {GRADER_VERSION}，"
             "新旧批次分数不可直接比较"
-        )
-    errors.extend(_threshold_errors(suite.manifest.thresholds))
-    return errors
+        ]
+    return []
 
 
 def split_warnings(messages: list[str]) -> tuple[list[str], list[str]]:

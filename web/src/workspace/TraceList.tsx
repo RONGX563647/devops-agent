@@ -148,41 +148,33 @@ function cacheRate(step: TraceStep): number | null {
   return Math.round((step.cacheTokens / step.tokensIn) * 100);
 }
 
-/** 令牌数按人眼习惯缩写；只用于估算值，精确值一律来自模型回的 input_tokens。 */
+/** 令牌数按人眼习惯缩写；数值本身都是模型回传的精确 token。 */
 export function fmtTok(value: number): string {
   if (value >= 10_000) return `${Math.round(value / 1000)}k`;
   if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
   return String(value);
 }
 
-/** 上下文构成条：哪一段占了多少，一眼看出「工具 schema 才是大头」。
+/** 上下文构成条：首枪输入里多少命中缓存、多少是本次实算，两段都来自模型回传。
  *
  * 列表里的第 00 步与右侧「上下文」页签共用这一份，口径不能分叉。
  */
-export function Composition({
-  system,
-  tools,
-  history,
-  input,
-  policy,
-}: {
-  system: number;
-  tools: number;
-  history: number;
-  input: number;
-  policy: number;
-}) {
-  const total = Math.max(1, system + tools + history + input + policy);
+export function Composition({ input, cache }: { input: number; cache: number }) {
+  // 两段都来自模型回传：命中缓存 = cache_input_tokens，本次计算 = input − cache。
+  // 不再倒推「历史/系统提示各占多少」——那是估算，误差全堆在历史那一段。
+  const hit = Math.max(0, Math.min(cache, input));
+  const fresh = Math.max(0, input - hit);
   const parts = [
-    { key: 'system', label: '系统提示', value: system },
-    { key: 'tools', label: '工具 schema', value: tools },
-    { key: 'history', label: '历史', value: history },
-    { key: 'input', label: '本轮输入', value: input },
-    { key: 'policy', label: '档位约束', value: policy },
+    { key: 'cache', label: '命中缓存', value: hit },
+    { key: 'fresh', label: '本次计算', value: fresh },
   ];
   return (
     <div className="ctx-comp">
-      <div className="ctx-comp-bar" role="img" aria-label={`上下文构成 ${total} token`}>
+      <div
+        className="ctx-comp-bar"
+        role="img"
+        aria-label={`首枪输入 ${input} token，其中命中缓存 ${hit}`}
+      >
         {parts.map((part) =>
           part.value > 0 ? (
             <span
@@ -213,15 +205,10 @@ function ContextRow({ turn, context }: { turn: TraceTurn; context: AgentContext 
   const files = turn.attachments ?? turn.parse?.attachments ?? 0;
   const tools = context?.tools ?? [];
   const prompt = context?.system_prompt ?? '';
-  const prefix = context?.prefix_tokens ?? 0;
-  // 首枪的输入就是「前缀 + 历史 + 这条输入」，命中量也只有这一枪能证明缓存是否可用
+  // token 只用模型回传的精确值：首枪输入与其中命中的缓存量。历史/各段占比不再估算。
   const firstIn = turn.firstCall?.in ?? 0;
   const hit = turn.firstCall?.cache ?? 0;
   const inputChars = (turn.userText ?? '').length;
-  const inputTok = Math.ceil(inputChars / 1.5);
-  const policyTok = context?.policy_note_tokens ?? 0;
-  const history =
-    firstIn > prefix ? Math.max(0, firstIn - prefix - inputTok - policyTok) : 0;
   const hitPct = firstIn > 0 && hit > 0 ? Math.round((hit / firstIn) * 100) : null;
   return (
     <>
@@ -237,8 +224,8 @@ function ContextRow({ turn, context }: { turn: TraceTurn; context: AgentContext 
           <span className="trace-badge" data-kind="context">上下文</span>
           <span className="trace-main">
             <span className="trace-summary mono">
-              前缀 {fmtTok(prefix)} tok · 工具 {tools.length || turn.tools} 个 · 历史 ≈
-              {fmtTok(history)} · 输入 {inputChars} 字
+              首枪 {fmtTok(firstIn)} tok · 工具 {tools.length || turn.tools} 个 · 输入{' '}
+              {inputChars} 字
               {hitPct !== null ? ` · 命中 ${hitPct}%` : ''}
               {files ? ` · 附件 ${files}` : ''}
             </span>
@@ -264,13 +251,7 @@ function ContextRow({ turn, context }: { turn: TraceTurn; context: AgentContext 
                   </span>
                 )}
               </div>
-              <Composition
-                system={context.system_prompt_tokens}
-                tools={context.tools_tokens}
-                history={history}
-                input={inputTok}
-                policy={policyTok}
-              />
+              <Composition input={firstIn} cache={hit} />
             </>
           ) : (
             <p className="trace-detail-empty">上下文接口不可用，读不到这一轮装配了什么。</p>
@@ -296,7 +277,7 @@ function ContextRow({ turn, context }: { turn: TraceTurn; context: AgentContext 
           )}
           <div className="trace-detail-block">
             <span className="trace-detail-label">
-              工具{context ? ` · ${context.tools.length} 个 · ${fmtTok(context.tools_tokens)} tok` : ''}
+              工具{context ? ` · ${context.tools.length} 个 · ${context.tools_chars} 字` : ''}
             </span>
             {tools.length > 0 ? (
               <div className="ctx-tools">
@@ -304,9 +285,7 @@ function ContextRow({ turn, context }: { turn: TraceTurn; context: AgentContext 
                   <details className="ctx-tool" key={tool.name}>
                     <summary>
                       <code>{tool.name}</code>
-                      <span className="ctx-tool-meta mono">
-                        {tool.tokens} tok · {tool.schema_chars} 字
-                      </span>
+                      <span className="ctx-tool-meta mono">{tool.schema_chars} 字</span>
                     </summary>
                     <p className="ctx-tool-desc">{tool.description}</p>
                     <pre className="trace-detail-code mono">

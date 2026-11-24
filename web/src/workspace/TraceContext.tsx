@@ -5,8 +5,9 @@
  * - 历史上下文：本轮之前每一轮的「用户说了什么、助手回了什么」，按轮分开
  * - 本轮输入、系统提示词、工具清单、档位约束：原文照录
  *
- * 历史正文直接从 messages 派生的 TraceTurn 里取，不另外请求接口：
- * 历史 token 数是按首枪输入倒推的估算，标注「约」以区别于模型回传的精确值。
+ * token 只用模型回传的精确值：首枪 input_tokens 与其中命中的 cache_input_tokens。
+ * 历史/各段的 token 拆分一律不估算——那会把误差全堆到「历史」那一段。
+ * 历史正文直接从 messages 派生的 TraceTurn 里取，不另外请求接口。
  */
 import type { AgentContext } from '../api/client';
 import type { TraceTurn } from '../types';
@@ -26,13 +27,10 @@ function assistantText(turn: TraceTurn): string {
 
 export function ContextTab({ context, turn, turns }: Props) {
   const tools = context?.tools ?? [];
-  const prefix = context?.prefix_tokens ?? 0;
+  // token 只用模型回传的精确值：首枪输入与其中命中的缓存量。
   const firstIn = turn.firstCall?.in ?? 0;
+  const hit = turn.firstCall?.cache ?? 0;
   const inputChars = (turn.userText ?? '').length;
-  const inputTok = Math.ceil(inputChars / 1.5);
-  const policyTok = context?.policy_note_tokens ?? 0;
-  // 首枪输入 = 前缀 + 历史 + 本轮输入 + 档位约束；减出来才是历史那一段
-  const historyTok = firstIn > prefix ? Math.max(0, firstIn - prefix - inputTok - policyTok) : 0;
   const history = turns.filter((item) => item.index < turn.index);
   const files = turn.attachments ?? turn.parse?.attachments ?? 0;
 
@@ -43,22 +41,13 @@ export function ContextTab({ context, turn, turns }: Props) {
           <div className="ctx-meta mono">
             <span>{context.profile_label}</span>
             <span>指纹 {context.prefix_fingerprint}</span>
-            <span>前缀 {fmtTok(context.prefix_tokens)} tok</span>
           </div>
-          <Composition
-            system={context.system_prompt_tokens}
-            tools={context.tools_tokens}
-            history={historyTok}
-            input={inputTok}
-            policy={policyTok}
-          />
+          <Composition input={firstIn} cache={hit} />
           {firstIn > 0 && (
             <p className="inspect-note mono">
-              首枪输入 {firstIn.toLocaleString()} tok
-              {turn.firstCall?.cache
-                ? ` · 命中 ${Math.round((turn.firstCall.cache / firstIn) * 100)}%`
-                : ''}
-              ；除下列原文外还含装配时的档位约束与工具 schema 序列化开销。
+              首枪输入 {firstIn.toLocaleString()} tok · 命中缓存 {hit.toLocaleString()} tok
+              {hit > 0 ? ` (${Math.round((hit / firstIn) * 100)}%)` : ''}
+              ；两项均为模型回传的精确值，原文见下列。
             </p>
           )}
         </>
@@ -70,9 +59,7 @@ export function ContextTab({ context, turn, turns }: Props) {
       <section className="ctx-section">
         <div className="ctx-section-head">
           <span>历史上下文</span>
-          <span className="mono">
-            {history.length} 轮{historyTok > 0 ? ` · 约 ${fmtTok(historyTok)} tok` : ''}
-          </span>
+          <span className="mono">{history.length} 轮</span>
         </div>
         {history.length === 0 ? (
           <p className="inspect-note">这是第一轮，模型手里只有系统提示与工具清单。</p>
@@ -105,9 +92,7 @@ export function ContextTab({ context, turn, turns }: Props) {
       <section className="ctx-section">
         <div className="ctx-section-head">
           <span>本轮输入</span>
-          <span className="mono">
-            {inputChars} 字 · 约 {fmtTok(inputTok)} tok
-          </span>
+          <span className="mono">{inputChars} 字</span>
         </div>
         <pre className="trace-detail-code mono">
           {turn.userText || '（空输入）'}
@@ -118,9 +103,7 @@ export function ContextTab({ context, turn, turns }: Props) {
       <section className="ctx-section">
         <div className="ctx-section-head">
           <span>系统提示词</span>
-          <span className="mono">
-            {context ? `${context.system_prompt_chars} 字 · ${fmtTok(context.system_prompt_tokens)} tok` : '—'}
-          </span>
+          <span className="mono">{context ? `${context.system_prompt_chars} 字` : '—'}</span>
         </div>
         <pre className="trace-detail-code mono">{context?.system_prompt || '读不到系统提示词。'}</pre>
       </section>
@@ -129,9 +112,7 @@ export function ContextTab({ context, turn, turns }: Props) {
         <div className="ctx-section-head">
           <span>工具清单</span>
           <span className="mono">
-            {tools.length > 0
-              ? `${tools.length} 个 · ${fmtTok(context?.tools_tokens ?? 0)} tok`
-              : '—'}
+            {tools.length > 0 ? `${tools.length} 个 · ${context?.tools_chars ?? 0} 字` : '—'}
           </span>
         </div>
         {tools.length > 0 ? (
@@ -140,9 +121,7 @@ export function ContextTab({ context, turn, turns }: Props) {
               <details className="ctx-tool" key={tool.name}>
                 <summary>
                   <code>{tool.name}</code>
-                  <span className="ctx-tool-meta mono">
-                    {tool.tokens} tok · {tool.schema_chars} 字
-                  </span>
+                  <span className="ctx-tool-meta mono">{tool.schema_chars} 字</span>
                 </summary>
                 <p className="ctx-tool-desc">{tool.description}</p>
                 <pre className="trace-detail-code mono">
@@ -160,7 +139,7 @@ export function ContextTab({ context, turn, turns }: Props) {
         <section className="ctx-section">
           <div className="ctx-section-head">
             <span>档位约束</span>
-            <span className="mono">{fmtTok(policyTok)} tok · 追加在消息末尾</span>
+            <span className="mono">追加在消息末尾</span>
           </div>
           <pre className="trace-detail-code mono">{context.policy_note || '（无附加约束）'}</pre>
         </section>

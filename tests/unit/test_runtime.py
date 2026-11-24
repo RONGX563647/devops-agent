@@ -6,18 +6,12 @@ from unittest.mock import MagicMock
 
 import pytest
 from agentscope.agent import Agent
-from agentscope.message import Msg, TextBlock, ToolCallBlock
 from agentscope.pipeline import GoalPipeline, TeamMember, TeamPipeline
-from agentscope.state import AgentState
 
 from devops_agent.config import ModelPolicy, ReactPolicy, RuntimePolicy
-from devops_agent.governance import store
-from devops_agent.governance.policy import build_permission_context
-from devops_agent.governance.profiles import PROFILES, default_profile
+from devops_agent.governance.profiles import default_profile
 from devops_agent.runtime.agent import (
-    PROFILE_KEY,
     WORKDIR_ENV,
-    _state_for,
     build_agent,
     build_agentscope_runtime,
     build_chat_model,
@@ -25,7 +19,6 @@ from devops_agent.runtime.agent import (
     prompt_fingerprint,
     resolve_workdir,
 )
-from devops_agent.runtime.confirm import ConfirmDecision
 from devops_agent.runtime.supervisor import (
     as_member,
     build_goal_pipeline,
@@ -220,15 +213,10 @@ def test_resolve_workdir_reads_env(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert resolve_workdir() == tmp_path.resolve()
 
 
-def test_build_agentscope_runtime_wires_tools_per_scope(
+def test_build_agentscope_runtime_wires_readonly_toolkit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """默认档（workspace）下发写工具；只读档只有四件套。
-
-    之前 workspace 的 `tools` 写死只读四件套，而 mode 又是 `accept_edits` 的
-    「工作区内编辑自动放行」—— 没有写工具，这个卖点没有作用对象，档位名与
-    实际能力对不上。
-    """
+    """默认档（workspace）必须挂只读四件套，且权限 mode 与该档位一致。"""
     monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
     monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
@@ -236,98 +224,6 @@ def test_build_agentscope_runtime_wires_tools_per_scope(
     runtime = build_agentscope_runtime(workdir=tmp_path)
     agent = runtime._agent
     names = {schema["function"]["name"] for schema in asyncio.run(agent.toolkit.get_tool_schemas())}
-    assert {"Bash", "Read", "Glob", "Grep", "Write", "Edit"} <= names
+    assert {"Bash", "Read", "Glob", "Grep"} <= names
+    assert "Write" not in names
     assert agent.state.permission_context.mode.value == default_profile().mode
-
-    readonly = build_agentscope_runtime(workdir=tmp_path, profile=PROFILES["readonly"])
-    tools = {
-        schema["function"]["name"]
-        for schema in asyncio.run(readonly._agent.toolkit.get_tool_schemas())
-    }
-    assert tools == {"Bash", "Read", "Glob", "Grep"}
-    assert readonly._agent.state.permission_context.mode.value == "explore"
-
-
-def test_state_for_rebuilds_only_when_profile_key_changes(tmp_path: Path) -> None:
-    """同档反复调用不重建（对象 id 不变）；换档必须重建，规则不能串档。"""
-    profile = PROFILES["workspace"]
-    state = _state_for(profile, None)
-    assert state.middle_context[PROFILE_KEY] == profile.key
-
-    context_id = id(state.permission_context)
-    assert id(_state_for(profile, state).permission_context) == context_id
-
-    # 同 mode、不同档：cautious 与 container 的 mode 都是 default，
-    # 只比 mode 会漏掉这次切换 —— 这正是修复前的缺陷
-    switched = _state_for(PROFILES["cautious"], state)
-    assert id(switched.permission_context) != context_id
-    assert switched.middle_context[PROFILE_KEY] == PROFILES["cautious"].key
-
-
-def test_state_for_rebuilds_legacy_snapshot_without_key() -> None:
-    """老快照里没有 perm_key：视为档位不同，重建一次即可继续用。"""
-    legacy = AgentState(permission_context=build_permission_context(profile=PROFILES["readonly"]))
-    assert PROFILE_KEY not in legacy.middle_context
-    fresh = _state_for(PROFILES["workspace"], legacy)
-    assert fresh.middle_context[PROFILE_KEY] == PROFILES["workspace"].key
-    assert fresh.permission_context.mode.value == "accept_edits"
-
-
-def test_state_for_keeps_conversation_history_on_switch() -> None:
-    """重建只换权限上下文，`context`（对话历史）不动 —— 用户无感。"""
-    state = _state_for(PROFILES["workspace"], None)
-    state.context.append(Msg(name="user", role="user", content=[TextBlock(type="text", text="hi")]))
-    switched = _state_for(PROFILES["readonly"], state)
-    assert switched.context == state.context
-
-
-def _runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, profile=None):
-    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
-    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
-    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
-    monkeypatch.setenv(store.FILE_ENV, str(tmp_path / "perm.yaml"))
-    return build_agentscope_runtime(workdir=tmp_path, profile=profile)
-
-
-def test_persist_writes_rule_to_local_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """「以后都这样」必须落盘：只写会话态的话换会话就归零。"""
-    runtime = _runtime(tmp_path, monkeypatch)
-    block = ToolCallBlock(id="c1", name="Bash", input='{"command": "pytest -q"}')
-
-    rules = runtime._rules_for(ConfirmDecision("c1", True, "prefix", persist=True), block)
-
-    assert rules is not None and rules[0].rule_content == "pytest:*"
-    stored = store.local_rules(tmp_path / "perm.yaml")
-    assert [rule.pattern for rule in stored] == ["pytest:*"]
-    # 规则记住批准时的能力范围：不该渗回只读档
-    assert stored[0].scope == "workspace"
-    assert stored[0].origin == "pytest -q"
-
-
-def test_session_scope_does_not_touch_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """只点「本会话」不写文件：规则随会话快照生存，与部署级沉淀分开。"""
-    runtime = _runtime(tmp_path, monkeypatch)
-    block = ToolCallBlock(id="c1", name="Bash", input='{"command": "pytest -q"}')
-
-    rules = runtime._rules_for(ConfirmDecision("c1", True, "prefix"), block)
-
-    assert rules is not None
-    assert store.local_rules(tmp_path / "perm.yaml") == []
-
-
-def test_danger_command_is_never_persisted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """一秒钟的勾选不该变成永久放行 rm -rf。"""
-    runtime = _runtime(tmp_path, monkeypatch)
-    block = ToolCallBlock(id="c1", name="Bash", input='{"command": "rm -rf build"}')
-
-    assert runtime._rules_for(ConfirmDecision("c1", True, "prefix", persist=True), block) is None
-    assert store.local_rules(tmp_path / "perm.yaml") == []
-
-
-def test_readonly_scope_never_persists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """只读档的 allow 规则在 explore 模式下也不生效，写进文件只会积累垃圾。"""
-    runtime = _runtime(tmp_path, monkeypatch, PROFILES["readonly"])
-    block = ToolCallBlock(id="c1", name="Bash", input='{"command": "pytest -q"}')
-
-    assert runtime._rules_for(ConfirmDecision("c1", True, "prefix", persist=True), block)
-    assert store.local_rules(tmp_path / "perm.yaml") == []

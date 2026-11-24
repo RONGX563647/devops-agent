@@ -14,18 +14,13 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from devops_agent.env import load_env
-from devops_agent.governance import fatigue, store
-from devops_agent.governance.policy import describe
 from devops_agent.governance.profiles import (
-    APPROVALS,
-    PROFILES,
     PermissionProfile,
     UnknownProfile,
-    available_names,
+    available,
     default_profile,
     resolve,
 )
-from devops_agent.governance.rules import BEHAVIORS, SCOPES, Rule
 from devops_agent.input.api import router as attachments_router
 from devops_agent.input.attachments import Attachment, AttachmentStore
 from devops_agent.input.events import events as parse_events
@@ -120,8 +115,6 @@ class ConfirmItem(BaseModel):
     confirmed: bool
     # once / exact / prefix，非法值在 parse_decisions 里降级为 once
     scope: str = "once"
-    # 「以后都这样」：为真时把规则写进 permissions.local.yaml（跨会话保留）
-    persist: bool = False
 
 
 class ConfirmRequest(BaseModel):
@@ -245,9 +238,6 @@ def _park(runtime: AgentRuntime, recorder: RunRecorder, pending: list[dict[str, 
     expires = _expires_at()
     payload = {"tool_calls": pending, "expires_at": expires}
     recorder.park(json.dumps(payload, ensure_ascii=False), expires)
-    # 疲劳统计：同一前缀被问得越多，越该建议「以后都这样」而不是让人一直点
-    for call in pending:
-        fatigue.record(str(call.get("name") or ""), str(call.get("input") or ""))
     return _named_frame(
         "parked",
         {
@@ -303,114 +293,21 @@ async def _stream_entry(
 
 
 @app.get("/api/permissions")
-async def list_permissions() -> dict[str, Any]:
-    """本部署开放的档位、生效规则与信任状态。
-
-    `auto_allow` / `will_ask` / `will_deny` 不是手写文案，而是拿真实引擎把
-    `PREVIEW_COMMANDS` 跑一遍得出的结果 —— 手写的「越界才问」正是上一版与实际
-    判定对不上的原因。前端直接列这三行，用户不必试一次才知道。
-    """
-    presets = []
-    for name in available_names():
-        profile = PROFILES[name]
-        preview = await describe(profile)
-        presets.append(
+def list_permissions() -> dict[str, Any]:
+    """本部署开放的档位。默认档可能不在可用集里（配置写错），此时回落到首项。"""
+    return {
+        "default": default_profile().key,
+        "available": [
             {
-                "key": name,
-                "label": profile.label,
-                "note": profile.note,
-                "scope": profile.scope,
-                "approvals": profile.approvals,
-                "combo": profile.key,
-                "tools": list(profile.tools),
-                "write": "write" in profile.tools,
-                "auto_allow": preview["allow"],
-                "will_ask": preview["ask"],
-                "will_deny": preview["deny"],
+                "key": item.key,
+                "label": item.label,
+                "note": item.note,
+                "fallback": item.fallback,
+                "write": "write" in item.tools,
             }
-        )
-    trust = store.trust_config()
-    return {
-        "default": default_profile().preset,
-        "available": presets,
-        "scopes": list(SCOPES),
-        "approvals": list(APPROVALS),
-        "rules": [_rule_row(rule) for rule in store.local_rules()],
-        "rules_file": str(store.rules_path()),
-        "trust": {"mode": trust.mode, "workdirs": list(trust.workdirs)},
-        "fatigue": fatigue.snapshot(),
+            for item in available()
+        ],
     }
-
-
-def _rule_row(rule: Rule) -> dict[str, Any]:
-    return {
-        "tool": rule.tool,
-        "pattern": rule.pattern,
-        "behavior": rule.behavior,
-        "source": rule.source,
-        "scope": rule.scope,
-        "origin": rule.origin,
-        "created_at": rule.created_at,
-    }
-
-
-class RulePayload(BaseModel):
-    """沉淀一条规则。`scope` 省略时取当前默认档的能力范围。"""
-
-    tool: str
-    pattern: str | None = None
-    behavior: str = "allow"
-    scope: str | None = None
-    origin: str = ""
-
-
-class RuleRef(BaseModel):
-    """按 (tool, pattern) 精确删除一条规则。"""
-
-    tool: str
-    pattern: str | None = None
-
-
-class TrustPayload(BaseModel):
-    """把一个 workdir 加入信任列表（strict 模式下才有效果）。"""
-
-    path: str
-
-
-@app.post("/api/permissions/rules")
-def create_rule(payload: RulePayload) -> dict[str, Any]:
-    """写进 `config/permissions.local.yaml`：跨会话、跨进程、跨重启都还在。"""
-    if payload.behavior not in BEHAVIORS:
-        raise HTTPException(status_code=400, detail="bad_behavior")
-    scope = payload.scope or default_profile().scope
-    if scope not in SCOPES:
-        raise HTTPException(status_code=400, detail="bad_scope")
-    rules = store.add_rule(
-        Rule(
-            tool=payload.tool,
-            pattern=payload.pattern,
-            behavior=payload.behavior,
-            source="user",
-            scope=scope,
-            origin=payload.origin,
-        )
-    )
-    return {"rules": [_rule_row(rule) for rule in rules]}
-
-
-@app.delete("/api/permissions/rules")
-def delete_rule(payload: RuleRef) -> dict[str, Any]:
-    """撤销一条规则。之前点错了只能清会话，现在可以逐条删。"""
-    if not store.remove_rule(payload.tool, payload.pattern):
-        raise HTTPException(status_code=404, detail="rule_not_found")
-    return {"rules": [_rule_row(rule) for rule in store.local_rules()]}
-
-
-@app.post("/api/permissions/trust")
-def trust_workdir(payload: TrustPayload) -> dict[str, Any]:
-    """信任一个工作目录。未信任 + strict 模式下，会话会被强制降到只读档。"""
-    config = store.trust_workdir(payload.path)
-    return {"mode": config.mode, "workdirs": list(config.workdirs)}
 
 
 @app.post("/run/stream")
@@ -439,7 +336,7 @@ async def run_stream(
         domain=domain,
         model=model,
         request_id=x_request_id or "",
-        permission=profile.preset or profile.key,
+        permission=profile.key,
     )
     await entry.lock.acquire()
 
@@ -553,7 +450,7 @@ async def confirm_run(run_id: int, req: ConfirmRequest, request: Request) -> Str
     recorder = RunRecorder(
         domain=os.environ.get("DEVOPS_AGENT_DOMAIN", "debug"),
         model=os.environ.get("DEVOPS_AGENT_MODEL", ""),
-        permission=profile.preset or profile.key,
+        permission=profile.key,
     )
     recorder.attach(run_id, req.session_id)
     await entry.lock.acquire()

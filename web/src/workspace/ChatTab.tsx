@@ -4,8 +4,7 @@ import { deleteAttachment, uploadAttachment } from '../api/client';
 import type {
   Attachment,
   ChatMessage,
-  ConfirmChoice,
-  ConfirmDecision,
+  ConfirmScope,
   PendingAttachment,
   PermissionKey,
 } from '../types';
@@ -24,9 +23,9 @@ import { turnsFromMessages } from './trace';
 const PERMISSION_TAG: Record<PermissionKey, string> = {
   readonly: '只读',
   workspace: '工作区',
-  cautious: '逐个确认',
-  unattended: '无人值守',
-  container: '放开',
+  execute: '可执行',
+  unrestricted: '放开',
+  auto: '无人值守',
 };
 
 interface Props {
@@ -160,7 +159,7 @@ function AssistantMessage({
   message: ChatMessage;
   live: boolean;
   onRetry: (message: ChatMessage) => void;
-  onDecide: (choice: ConfirmChoice) => void;
+  onDecide: (scope: ConfirmScope | 'reject') => void;
 }) {
   const hasAnswer = Boolean(message.text) || Boolean(message.error);
   return (
@@ -288,22 +287,16 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
     send(session, value, attachments, view.permission, webSearch);
   }
 
-  /** 确认卡片的四选一：全部待确认调用一起答复。 */
-  function decide(choice: ConfirmChoice) {
+  /** 确认卡片的三选一：全部待确认调用一起答复。 */
+  function decide(scope: ConfirmScope | 'reject') {
     const awaiting = view.awaiting;
     if (!awaiting || awaiting.calls.length === 0) return;
-    const decision: Pick<ConfirmDecision, 'scope' | 'persist'> =
-      choice === 'session'
-        ? { scope: 'prefix' }
-        : choice === 'forever'
-          ? { scope: 'prefix', persist: true }
-          : { scope: 'once' };
     confirm(
       session,
       awaiting.calls.map((call) => ({
         tool_call_id: call.tool_call_id,
-        confirmed: choice !== 'reject',
-        ...decision,
+        confirmed: scope !== 'reject',
+        scope: scope === 'reject' ? 'once' : scope,
       })),
     );
   }

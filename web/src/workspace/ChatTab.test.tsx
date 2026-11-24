@@ -20,39 +20,15 @@ vi.mock('../api/client', () => ({
   uploadAttachment: (file: File) => uploadAttachment(file),
   deleteAttachment: (id: string) => deleteAttachment(id),
   fetchPermissions: () => fetchPermissions(),
-  // 选择器里的规则增删在 ChatTab 这层不参与断言，但必须存在（否则渲染即报错）
-  createPermissionRule: () => Promise.resolve([]),
-  deletePermissionRule: () => Promise.resolve([]),
 }));
 
-/** 服务端开放的档位：不含 container，和后端默认一致。 */
+/** 服务端开放的档位：不含 unrestricted，和后端默认一致。 */
 const AVAILABLE = [
-  meta('readonly', '只读', 'readonly', 'never'),
-  meta('workspace', '工作区可写', 'workspace', 'on-risk'),
-  meta('cautious', '逐个确认', 'workspace', 'always'),
-  meta('unattended', '无人值守', 'workspace', 'never'),
+  { key: 'readonly', label: '只读', note: '只能读', fallback: 'deny', write: false },
+  { key: 'workspace', label: '工作区可写', note: '可写工作区', fallback: 'ask', write: false },
+  { key: 'execute', label: '可执行', note: '可跑命令', fallback: 'ask', write: false },
+  { key: 'auto', label: '无人值守', note: '定时任务用', fallback: 'deny', write: false },
 ];
-
-function meta(
-  key: string,
-  label: string,
-  scope: 'readonly' | 'workspace' | 'container',
-  approvals: 'always' | 'on-risk' | 'never',
-) {
-  return {
-    key,
-    label,
-    note: `${label}的说明`,
-    scope,
-    approvals,
-    combo: `${scope}+${approvals}`,
-    tools: ['bash', 'read', 'glob', 'grep'],
-    write: scope !== 'readonly',
-    auto_allow: ['ls -la'],
-    will_ask: ['git commit -m x'],
-    will_deny: ['cat .env'],
-  };
-}
 
 /** 一条待确认调用；input 是服务端给的展示文本。 */
 const CALLS: PendingCall[] = [
@@ -145,16 +121,7 @@ function reset() {
   deleteAttachment.mockReset();
   deleteAttachment.mockResolvedValue(undefined);
   fetchPermissions.mockReset();
-  fetchPermissions.mockResolvedValue({
-    default: 'workspace',
-    available: AVAILABLE,
-    scopes: ['readonly', 'workspace', 'container'],
-    approvals: ['always', 'on-risk', 'never'],
-    rules: [],
-    rules_file: 'config/permissions.local.yaml',
-    trust: { mode: 'permissive', workdirs: [] },
-    fatigue: [],
-  });
+  fetchPermissions.mockResolvedValue({ default: 'workspace', available: AVAILABLE });
   queryClient.clear();
   snapshot.messages = [];
   snapshot.running = false;
@@ -401,33 +368,15 @@ describe('ChatTab 权限', () => {
     expect(screen.getByRole('group', { name: '等待确认的操作' })).toBeTruthy();
   });
 
-  it('点「这一次」把这一批调用一起答复，且不落盘', () => {
+  it('点「允许一次」把这一批调用一起答复', () => {
     const { rerender } = render(tab());
     submit('hi');
     park();
     rerender(tab());
 
-    fireEvent.click(screen.getByRole('button', { name: '这一次' }));
+    fireEvent.click(screen.getByRole('button', { name: '允许一次' }));
     expect(confirmByChoice).toHaveBeenCalledWith('s-1', [
       { tool_call_id: 't1', confirmed: true, scope: 'once' },
-    ]);
-  });
-
-  it('「本会话」只写会话规则，「以后都这样」额外带 persist 落盘', () => {
-    const { rerender } = render(tab());
-    submit('hi');
-    park([{ tool_call_id: 't1', name: 'Bash', input: 'pytest -q', risk: 'exec' }]);
-    rerender(tab());
-
-    fireEvent.click(screen.getByRole('button', { name: '本会话' }));
-    expect(confirmByChoice).toHaveBeenLastCalledWith('s-1', [
-      { tool_call_id: 't1', confirmed: true, scope: 'prefix' },
-    ]);
-
-    rerender(tab());
-    fireEvent.click(screen.getByRole('button', { name: '以后都这样' }));
-    expect(confirmByChoice).toHaveBeenLastCalledWith('s-1', [
-      { tool_call_id: 't1', confirmed: true, scope: 'prefix', persist: true },
     ]);
   });
 
@@ -446,8 +395,8 @@ describe('ChatTab 权限', () => {
   it('选档位交给 store，而不是直接改本地快照', async () => {
     render(tab());
     fireEvent.click(screen.getByRole('button', { name: '选择权限档位' }));
-    fireEvent.click(await screen.findByRole('menuitemradio', { name: '逐个确认' }));
-    expect(setPermission).toHaveBeenCalledWith('s-1', 'cautious');
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: /可执行/ }));
+    expect(setPermission).toHaveBeenCalledWith('s-1', 'execute');
   });
 
   it('用户气泡标出这一轮用的档位，默认档不标', () => {

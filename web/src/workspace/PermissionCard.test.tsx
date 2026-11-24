@@ -56,36 +56,33 @@ describe('PermissionCard', () => {
     expect(screen.queryByText(/有效至/)).toBeNull();
   });
 
-  it('四个按钮各自回传对应的选择，默认不含落盘', () => {
+  it('三个按钮各自回传对应作用域', () => {
     const onDecide = vi.fn();
     render(<PermissionCard calls={[call()]} expiresAt={null} onDecide={onDecide} />);
 
-    fireEvent.click(screen.getByRole('button', { name: '这一次' }));
-    fireEvent.click(screen.getByRole('button', { name: '本会话' }));
-    fireEvent.click(screen.getByRole('button', { name: '以后都这样' }));
+    fireEvent.click(screen.getByRole('button', { name: '允许一次' }));
+    fireEvent.click(screen.getByRole('button', { name: '本会话允许这类' }));
     fireEvent.click(screen.getByRole('button', { name: '拒绝' }));
 
-    expect(onDecide.mock.calls).toEqual([['once'], ['session'], ['forever'], ['reject']]);
+    expect(onDecide.mock.calls).toEqual([['once'], ['prefix'], ['reject']]);
   });
 
-  it('高危命令只允许这一次，「本会话」「以后都这样」都禁用', () => {
+  it('高危命令只允许这一次，「本会话允许」禁用', () => {
     render(
       <PermissionCard calls={[call({ input: 'rm -rf /', risk: 'danger' })]} expiresAt={null} onDecide={() => {}} />,
     );
     // 头部提示与条目风险标签各一处
     expect(screen.getAllByText('高危')).toHaveLength(2);
-    for (const name of ['本会话', '以后都这样']) {
-      const longLived = screen.getByRole('button', { name }) as HTMLButtonElement;
-      expect(longLived.disabled).toBe(true);
-      expect(longLived.title).toBe('高危命令只允许放行一次');
-    }
+    const longLived = screen.getByRole('button', { name: '本会话允许这类' }) as HTMLButtonElement;
+    expect(longLived.disabled).toBe(true);
+    expect(longLived.title).toBe('高危命令只允许放行一次');
     // 另两个仍然可用：拒绝/放行一次不能一起被锁死
-    expect((screen.getByRole('button', { name: '这一次' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: '允许一次' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('执行中所有按钮都禁用，避免重复提交', () => {
+  it('执行中三个按钮都禁用，避免重复提交', () => {
     render(<PermissionCard calls={[call()]} expiresAt={null} busy onDecide={() => {}} />);
-    for (const name of ['拒绝', '这一次', '本会话', '以后都这样']) {
+    for (const name of ['拒绝', '允许一次', '本会话允许这类']) {
       expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true);
     }
   });

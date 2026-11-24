@@ -30,8 +30,12 @@ import {
 import { newId } from './id';
 import { toSessionTitle } from './sidebar-utils';
 
-/** 超过该时长没有任何事件即判定连接假死。 */
-const WATCHDOG_MS = 60_000;
+/** 首包宽限：模型排队首 token 常需几十秒，这段给足容错。 */
+const FIRST_EVENT_MS = 90_000;
+/** 有事件后的静默窗：收到任意字节即重置，超过才判假死。 */
+const IDLE_MS = 45_000;
+/** 看门狗扫描周期；误判只会晚一个周期，换来更低的定时器开销。 */
+const WATCHDOG_TICK_MS = 5_000;
 /** 流式过程中写盘节流，避免逐 token 打满 localStorage。 */
 const PERSIST_MS = 500;
 /** 新会话的默认档位；服务端会用 /api/permissions 的真实默认覆盖它。 */
@@ -258,6 +262,61 @@ function settle(entry: Entry, mode: FinalizeMode): void {
   else finalize(entry, mode);
 }
 
+/** 看门狗句柄：touch() 在任意字节到达时调用；dispose() 在流收尾时清理。 */
+interface Watchdog {
+  touch: () => void;
+  dispose: () => void;
+}
+
+/** 建立流看门狗：字节层保活 + 首包/静默双阈值 + 回前台重校准。
+ *
+ * - 首包前用 FIRST_EVENT_MS（模型排队慢），收到任意字节后改用 IDLE_MS。
+ * - touch 由 consumeStream 的 onActivity 驱动，注释帧/未闭合 chunk 也算活动。
+ * - 隐藏标签页的 setInterval 会被节流，回前台时若本没超时就重置计时，
+ *   避免节流期的假死补判把一条仍在收字节的流砍掉。
+ */
+function startWatchdog(
+  entry: Entry,
+  generation: number,
+  controller: AbortController,
+): Watchdog {
+  let lastEventAt = Date.now();
+  let firstByteSeen = false;
+
+  const expire = () => {
+    if (generation !== entry.generation || !entry.running) return;
+    const limit = firstByteSeen ? IDLE_MS : FIRST_EVENT_MS;
+    if (Date.now() - lastEventAt < limit) return;
+    entry.stream = {
+      ...entry.stream,
+      error: `服务端 ${Math.round(limit / 1000)} 秒无响应，已断开`,
+      running: false,
+    };
+    controller.abort();
+    finalize(entry, 'error');
+  };
+
+  const timer = setInterval(expire, WATCHDOG_TICK_MS);
+  const onVisible = () => {
+    if (document.visibilityState !== 'visible') return;
+    if (generation !== entry.generation || !entry.running) return;
+    // 只重置「本来还没超时」的流；真断流的计时不因切回前台而清零。
+    if (Date.now() - lastEventAt < IDLE_MS) lastEventAt = Date.now();
+  };
+  document.addEventListener('visibilitychange', onVisible);
+
+  return {
+    touch: () => {
+      lastEventAt = Date.now();
+      firstByteSeen = true;
+    },
+    dispose: () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    },
+  };
+}
+
 /** 发起一轮对话：追加 user + assistant 占位消息，并在后台消费 SSE。 */
 export function send(
   sessionId: string,
@@ -305,25 +364,13 @@ export function send(
   persistNow(entry);
   emit(entry);
 
-  let lastEventAt = Date.now();
-  const watchdog = setInterval(() => {
-    if (generation !== entry.generation || !entry.running) return;
-    if (Date.now() - lastEventAt < WATCHDOG_MS) return;
-    entry.stream = {
-      ...entry.stream,
-      error: `服务端 ${WATCHDOG_MS / 1000} 秒无响应，已断开`,
-      running: false,
-    };
-    controller.abort();
-    finalize(entry, 'error');
-  }, 5000);
+  const watchdog = startWatchdog(entry, generation, controller);
 
   void streamRun(
     sessionId,
     text,
     (event) => {
       if (generation !== entry.generation) return;
-      lastEventAt = Date.now();
       entry.stream = applyEvent(entry.stream, event);
       syncAssistant(entry);
       schedulePersist(entry);
@@ -334,6 +381,7 @@ export function send(
     files.map((item) => item.id),
     entry.permission,
     webSearch,
+    watchdog.touch,
   )
     .then(() => {
       if (generation !== entry.generation) return;
@@ -350,7 +398,7 @@ export function send(
       syncAssistant(entry);
       finalize(entry, 'error');
     })
-    .finally(() => clearInterval(watchdog));
+    .finally(() => watchdog.dispose());
 }
 
 /** 主动停止：推进代次，旧流回调全部失效。 */
@@ -389,6 +437,7 @@ export function confirm(sessionId: string, decisions: ConfirmDecision[]): void {
   const generation = entry.generation;
   const controller = new AbortController();
   entry.abort = controller;
+  const watchdog = startWatchdog(entry, generation, controller);
   emit(entry);
 
   void streamConfirm(
@@ -404,6 +453,7 @@ export function confirm(sessionId: string, decisions: ConfirmDecision[]): void {
     },
     controller.signal,
     entry.permission,
+    watchdog.touch,
   )
     .then(() => {
       if (generation !== entry.generation) return;
@@ -419,7 +469,8 @@ export function confirm(sessionId: string, decisions: ConfirmDecision[]): void {
       };
       syncAssistant(entry);
       finalize(entry, 'error');
-    });
+    })
+    .finally(() => watchdog.dispose());
 }
 
 /** 刷新后恢复挂起卡片：权威状态在服务端，前端只是把它取回来。 */

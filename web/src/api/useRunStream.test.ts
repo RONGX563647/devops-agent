@@ -623,4 +623,28 @@ describe('consumeStream', () => {
     await consumeStream(body, (event) => events.push(event));
     expect(events.map((event) => event.type)).toEqual(['RUN_DONE']);
   });
+
+  it('onActivity 在每个字节 chunk 触发，注释帧也算活动', async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        // 5 个 chunk：注释帧、半个 data 帧、补齐、未闭合尾帧、关闭
+        controller.enqueue(encoder.encode(': ping\n\n'));
+        controller.enqueue(encoder.encode('data: {"type":"TEXT_B'));
+        controller.enqueue(encoder.encode('LOCK_DELTA","delta":"a"}\n\n'));
+        controller.enqueue(encoder.encode('data: {"type":"RUN_DONE"}'));
+        controller.close();
+      },
+    });
+    let activity = 0;
+    await consumeStream(
+      body,
+      () => undefined,
+      () => {
+        activity += 1;
+      },
+    );
+    // 字节层保活：每个非空 chunk 都算一次活动，与帧能否解析无关
+    expect(activity).toBe(4);
+  });
 });

@@ -428,11 +428,17 @@ _FACTOR_FIELDS: tuple[str, ...] = (
     "judge_model",
     # 裁判覆盖范围变了，judge 均值就换了分母，两批的 judge 不可直接比
     "judge_scope",
+    # 信息性因子：同一语义提示词在不同平台上下发字节不同，前缀缓存不能跨机
+    # 复用，但这不代表提示词改过 —— 只报告，不阻断对比。
+    "prompt_bytes_sha",
+    "shell_platform",
 )
 # 这些因子变了就不是同一个实验，delta 不能归因。
 _BLOCKING_FACTORS: frozenset[str] = frozenset(
     {"suite_sha", "grader_version", "judge_model", "judge_scope"}
 )
+# 信息性因子：只报告差异，不阻断对比，也不作为「提示词变更」的证据。
+_INFORMATIONAL_FACTORS: frozenset[str] = frozenset({"prompt_bytes_sha", "shell_platform"})
 
 
 def _factor(summary: dict[str, Any], key: str) -> str:
@@ -449,14 +455,8 @@ def minimal_detectable_effect(base_n: int, head_n: int) -> float:
     return round(1 / denom, 4) if denom else 1.0
 
 
-def compatibility(report: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
-    """两份报告是否可比，以及可比到什么程度。
-
-    - `blocking`：题库/判卷口径/裁判换了 —— 结论是 `not_comparable`；
-    - `confounded`：提示词与模型（或档位）同时变了 —— 只报变化，不归因；
-    - `clean`：只有提示词变，或什么都没变（复测，可用来估噪声）；
-    - `unknown`：有一侧没记录因子，无法判断。
-    """
+def _factor_diff(report: dict[str, Any], baseline: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """逐因子比对：返回 (变化的因子, 两侧有一侧没记录的因子)。"""
     changed: list[str] = []
     missing: list[str] = []
     for key in _FACTOR_FIELDS:
@@ -467,25 +467,43 @@ def compatibility(report: dict[str, Any], baseline: dict[str, Any]) -> dict[str,
             continue
         if left != right:
             changed.append(key)
+    return changed, missing
 
+
+def _classify(changed: list[str], missing: list[str]) -> tuple[str, list[str]]:
+    """按变化的因子组合判定可比性等级与理由。
+
+    拆出来是为了把「一堆 elif」从 compatibility 里挪走（圈复杂度门禁 ≤10）。
+    """
     blocking = sorted(_BLOCKING_FACTORS.intersection(changed))
     if blocking:
-        level = "blocking"
-        reasons = [f"{', '.join(blocking)} 变了，两侧不是同一个实验，delta 不可归因"]
-    elif not changed:
-        level = "clean" if not missing else "unknown"
-        reasons = (
-            ["所有因子一致，可作为复测样本估计噪声"]
-            if not missing
-            else [f"缺少因子记录: {', '.join(missing)}，无法确认可比性"]
-        )
-    elif set(changed) <= {"prompt_sha"}:
-        level = "clean"
-        reasons = ["只有 prompt_sha 变化，delta 可归因到提示词"]
-    else:
-        level = "confounded"
-        reasons = [f"同时变化: {', '.join(changed)}，只能报变化不能归因到单一因子"]
+        return "blocking", [f"{', '.join(blocking)} 变了，两侧不是同一个实验，delta 不可归因"]
+    if not changed:
+        if missing:
+            return "unknown", [f"缺少因子记录: {', '.join(missing)}，无法确认可比性"]
+        return "clean", ["所有因子一致，可作为复测样本估计噪声"]
+    if set(changed) <= {"prompt_sha"}:
+        return "clean", ["只有 prompt_sha 变化，delta 可归因到提示词"]
+    if set(changed) <= _INFORMATIONAL_FACTORS:
+        # 只有平台/字节差异：提示词没改，但前缀缓存不可复用。
+        # 这不该拦住对比（不是提示词变更），也不该说成「可归因到提示词」。
+        return "clean", [
+            f"只有 {', '.join(sorted(changed))} 变化：同一语义提示词、不同机器/平台，"
+            "delta 可归因到环境差异而非提示词；前缀缓存不能跨机复用"
+        ]
+    return "confounded", [f"同时变化: {', '.join(changed)}，只能报变化不能归因到单一因子"]
 
+
+def compatibility(report: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+    """两份报告是否可比，以及可比到什么程度。
+
+    - `blocking`：题库/判卷口径/裁判换了 —— 结论是 `not_comparable`；
+    - `confounded`：提示词与模型（或档位）同时变了 —— 只报变化，不归因；
+    - `clean`：只有提示词变（或只有平台/字节差异，或什么都没变）；
+    - `unknown`：有一侧没记录因子，无法判断。
+    """
+    changed, missing = _factor_diff(report, baseline)
+    level, reasons = _classify(changed, missing)
     return {"level": level, "changed": changed, "missing": missing, "reasons": reasons}
 
 

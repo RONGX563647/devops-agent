@@ -35,7 +35,7 @@ from devops_agent.eval.judge import JudgeError, OpenAIJudge, resolve_judge_model
 from devops_agent.eval.lint import Finding, run_lint, split_findings
 from devops_agent.eval.runner import DEFAULT_FIXTURE_ROOT, CaseRun, case_run_payload, run_suite
 from devops_agent.observability import repository as repo
-from devops_agent.runtime.agent import PROMPT_ID, prompt_fingerprint
+from devops_agent.runtime.agent import PROMPT_ID, prompt_factors, prompt_fingerprint
 
 # 这些 verdict 必须让 CI 变红。`insufficient` 不在其中：题库没到门禁样本量是正常
 # 状态，天天报红只会让人习惯性忽略门禁。
@@ -311,12 +311,18 @@ def _factors(
 
     `judge_model` 必须与裁判实际使用的模型一致：它是可比性检查的阻断因子，
     记录错了会让「换了裁判模型」被判成同一实验（delta 被误当成结论）。
+
+    提示词相关因子分三层（见 `runtime/agent.prompt_factors`）：
+    - `prompt_sha` 语义指纹，**阻断性**；
+    - `prompt_bytes_sha` 真实字节，用于判断前缀缓存能否跨批复用；
+    - `shell_platform` 解释字节差异来源。
+    后两个是信息性因子：同一语义提示词在不同平台上字节不同，不该拦住对比。
     """
     model = os.environ.get("DEVOPS_AGENT_MODEL", "")
     return {
         "suite_sha": suite.manifest.sha256,
         "grader_version": GRADER_VERSION,
-        "prompt_sha": prompt_fingerprint(),
+        **prompt_factors(),
         "model": model,
         "profile": profile,
         "judge_model": resolve_judge_model() if judge_enabled else "",

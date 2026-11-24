@@ -10,6 +10,7 @@ from devops_agent.executor.boundary import build_docker_workspace, build_local_w
 from devops_agent.tools.catalog import (
     build_readonly_toolkit,
     build_toolkit,
+    build_toolkit_for,
     readonly_group,
     shell_name,
     write_group,
@@ -50,6 +51,45 @@ def test_build_readonly_toolkit_anchors_shell_at_workdir(tmp_path: Path) -> None
     shell = asyncio.run(build_readonly_toolkit(tmp_path).get_tool("Bash"))
     assert shell is not None
     assert str(tmp_path.resolve()) == str(shell._cwd)
+
+
+def test_every_tool_backend_is_anchored_at_workdir(tmp_path: Path) -> None:
+    """六个工具的 backend.getcwd() 都必须等于 workdir，而不是进程 cwd。
+
+    只有 Bash 有独立的 `cwd` 参数；Read/Glob/Grep/Write/Edit 全靠
+    `backend.getcwd()` 解析相对路径。漏传 backend 时框架会新建
+    `LocalBackend(workdir=None)`，`getcwd()` 回落到部署目录 —— 表现是
+    「Grep 不传 path 就搜错地方」，而且和 bash 的 cd 各算各的。
+    """
+    toolkit = build_toolkit_for(["bash", "read", "glob", "grep", "write", "edit"], tmp_path)
+
+    async def cwds() -> dict[str, str]:
+        result: dict[str, str] = {}
+        for name in ("Bash", "Read", "Glob", "Grep", "Write", "Edit"):
+            tool = await toolkit.get_tool(name)
+            assert tool is not None
+            result[name] = await tool._backend.getcwd()
+        return result
+
+    got = asyncio.run(cwds())
+    expected = str(tmp_path.resolve())
+    assert set(got) == {"Bash", "Read", "Glob", "Grep", "Write", "Edit"}
+    for name, cwd in got.items():
+        assert cwd == expected, f"{name} 的 backend 没锁在 workdir: {cwd}"
+
+
+def test_backend_instances_are_not_shared(tmp_path: Path) -> None:
+    """每个工具独占一个 backend：将来 backend 带上状态时不会互相污染。"""
+    toolkit = build_toolkit_for(["grep", "glob"], tmp_path)
+
+    async def backends() -> tuple[object, object]:
+        grep = await toolkit.get_tool("Grep")
+        glob = await toolkit.get_tool("Glob")
+        assert grep is not None and glob is not None
+        return grep._backend, glob._backend
+
+    grep_backend, glob_backend = asyncio.run(backends())
+    assert grep_backend is not glob_backend
 
 
 def test_shell_name_is_non_empty() -> None:

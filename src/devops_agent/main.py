@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -36,6 +37,7 @@ from devops_agent.secrets.api import router as secrets_router
 from devops_agent.secrets.vault import get_vault
 from devops_agent.tools.api import router as tools_router
 from devops_agent.tools.context_api import router as context_router
+from devops_agent.tools.preflight import health_payload, missing_tools
 
 # 同一 run 内最多打扰用户几次。模型被拒后换个写法重试会产生新的 tool_call_id，
 # 按 id 去重挡不住，所以按 run 计数；超限后自动拒绝，不再占用用户注意力。
@@ -67,6 +69,26 @@ app.state.runtime = select_runtime()
 # 会话注册表懒建：单测替换 app.state.runtime 后，下一次请求自然用新实例做工厂
 app.state.sessions = None
 app.state.sessions_base = None
+
+logger = logging.getLogger(__name__)
+
+
+def _warn_missing_tools() -> None:
+    """启动时把缺失的外部依赖喊出来。
+
+    只在进程启动说一次，而不是等每次调用失败才说：模型看到的是工具报错，
+    运维看到的是这条日志，两边说的是同一件事，总得有人先把它讲清楚。
+    不要把这件事做成 fail-fast —— 缺 `rg` 只影响一个工具，没必要拒绝启动。
+    """
+    missing = missing_tools()
+    if missing:
+        logger.warning(
+            "外部依赖缺失，以下工具会持续失败：%s；安装方式见 GET /api/tools/preflight",
+            ", ".join(missing),
+        )
+
+
+_warn_missing_tools()
 app.include_router(observability_router)
 app.include_router(eval_router)
 app.include_router(attachments_router)
@@ -101,8 +123,14 @@ class ConfirmRequest(BaseModel):
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, Any]:
+    """存活 + 工具外部依赖就绪状态。
+
+    缺依赖**不返回 5xx**：探针看到 5xx 会重启容器，而重启治不好缺少的可执行
+    文件，只会把一次可诊断的降级放大成重启循环。所以状态放在 body 的
+    `tools` 里，由调用方判断要不要报警。
+    """
+    return {"status": "ok", **health_payload()}
 
 
 def _profile_or_403(name: str | None) -> PermissionProfile:

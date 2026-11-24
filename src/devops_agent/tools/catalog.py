@@ -4,6 +4,10 @@
 shell/read/glob/grep 四个只读工具，`Edit` / `Write` 属写入组，不得进入
 `build_readonly_toolkit` 的返回值。
 
+`Grep` 依赖外部可执行文件 `rg`（ripgrep）：它通过 backend 直接 spawn 进程，
+不走 shell，因此缺少 `rg` 时表现为 exit 127 而不是「命令不存在」。这份依赖
+由 `tools/preflight.py` 探测并在 `/health` 与 `/api/tools/preflight` 暴露。
+
 为什么 shell 一律用内置 `Bash`（而不是按平台切 `PowerShell`）：
 - `Bash` 会按命令判定只读（`ls` / `cat` / `git status` 直接放行），
   非只读命令才交给权限引擎；
@@ -26,6 +30,7 @@ from agentscope.tool import (
     FunctionTool,
     Glob,
     Grep,
+    LocalBackend,
     Read,
     ToolGroup,
     Toolkit,
@@ -47,15 +52,27 @@ def _factories(cwd: str, middlewares: Middlewares) -> dict[str, Callable[[], Too
 
     middlewares 必须逐工具挂 —— 框架把它挂在 ToolBase 上，
     密钥注入就靠这一层，漏一个就有一条绕过注入的路。
+
+    backend 也必须逐工具挂，而且**必须带 workdir**：只有 `Bash` 有独立的
+    `cwd` 参数，其余五个工具一律通过 `backend.getcwd()` 解析相对路径。
+    不给 backend 时框架会新建 `LocalBackend()`（workdir=None），`getcwd()`
+    回落到**服务进程的当前目录**——那是部署目录，不是档位要操作的 workdir。
+    表现是「Grep/Glob 不传 path 就搜错地方」，而且 bash 的 cd 与工具的
+    相对路径各算各的，人很难把两件事联系起来。
     """
+
+    def backend() -> LocalBackend:
+        """每个工具独占一个 backend 实例，避免将来有状态时互相污染。"""
+        return LocalBackend(workdir=cwd)
+
     mws = list(middlewares) if middlewares else None
     return {
-        "bash": lambda: Bash(cwd=cwd, middlewares=mws),
-        "read": lambda: Read(middlewares=mws),
-        "glob": lambda: Glob(middlewares=mws),
-        "grep": lambda: Grep(middlewares=mws),
-        "write": lambda: Write(middlewares=mws),
-        "edit": lambda: Edit(middlewares=mws),
+        "bash": lambda: Bash(cwd=cwd, middlewares=mws, backend=backend()),
+        "read": lambda: Read(middlewares=mws, backend=backend()),
+        "glob": lambda: Glob(middlewares=mws, backend=backend()),
+        "grep": lambda: Grep(middlewares=mws, backend=backend()),
+        "write": lambda: Write(middlewares=mws, backend=backend()),
+        "edit": lambda: Edit(middlewares=mws, backend=backend()),
     }
 
 

@@ -53,6 +53,8 @@ def park_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pa
     runtime = ParkRuntime()
     app.state.runtime = runtime
     monkeypatch.setenv("DEVOPS_AGENT_DB_PATH", str(tmp_path / "perm.db"))
+    # 测试断言的是「默认白名单」，不能继承本机 .env 里显式开放的档位
+    monkeypatch.delenv("DEVOPS_AGENT_PERMISSION_PROFILES", raising=False)
     try:
         yield runtime
     finally:
@@ -95,6 +97,88 @@ def test_requesting_unavailable_profile_is_403(park_runtime: ParkRuntime) -> Non
     )
     assert resp.status_code == 403
     assert resp.json()["detail"] == "permission_not_available"
+
+
+def test_switch_permission_applies_to_live_session(
+    park_runtime: ParkRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """运行中切档走热替换：实例不变，且能说明生效范围。"""
+    seen: list[str] = []
+    monkeypatch.setattr(
+        park_runtime,
+        "apply_profile",
+        lambda profile, *, web_search=None: seen.append(profile.key),
+        raising=False,
+    )
+    _post_stream({"session_id": "s1", "user_input": "hi", "permission": "workspace"})
+    resp = client.post(
+        "/api/session/s1/permission",
+        json={"session_id": "s1", "permission": "readonly"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["applied"] is True
+    assert resp.json()["effective_from"] == "下一次工具判定与下一次模型调用"
+    assert seen == ["readonly"]
+
+
+def test_switch_permission_validates_whitelist_and_session(
+    park_runtime: ParkRuntime,
+) -> None:
+    """切档不是提权后门：未开放档仍 403，路径与 body 的会话必须一致。"""
+    forbidden = client.post(
+        "/api/session/s1/permission",
+        json={"session_id": "s1", "permission": "unrestricted"},
+    )
+    assert forbidden.status_code == 403
+    assert forbidden.json()["detail"] == "permission_not_available"
+
+    mismatch = client.post(
+        "/api/session/s1/permission",
+        json={"session_id": "s2", "permission": "readonly"},
+    )
+    assert mismatch.status_code == 400
+    assert mismatch.json()["detail"] == "session_mismatch"
+
+
+def test_switch_permission_without_live_session_is_honest(
+    park_runtime: ParkRuntime,
+) -> None:
+    """没有正在跑的实例时不谎称立即生效：下一轮按新档装配。"""
+    resp = client.post(
+        "/api/session/nobody/permission",
+        json={"session_id": "nobody", "permission": "readonly"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["applied"] is False
+    assert resp.json()["effective_from"] == "下一轮"
+
+
+def test_confirm_honors_permission_switched_while_parked(
+    park_runtime: ParkRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """确认卡片上切档后点允许：按新档执行，不再锁死发起轮。"""
+    seen: list[str] = []
+    monkeypatch.setattr(
+        park_runtime,
+        "apply_profile",
+        lambda profile, *, web_search=None: seen.append(profile.key),
+        raising=False,
+    )
+    run_id = int(_park(_post_stream({"session_id": "s1", "user_input": "删掉 dist"}))["run_id"])
+    with client.stream(
+        "POST",
+        f"/run/{run_id}/confirm",
+        json={
+            "session_id": "s1",
+            "results": [{"tool_call_id": "c1", "confirmed": True}],
+            "permission": "readonly",
+        },
+    ) as resp:
+        assert resp.status_code == 200, resp.read()
+        body = "".join(resp.iter_text())
+
+    assert "event: done" in body
+    assert seen == ["readonly"]
 
 
 def test_stream_parks_instead_of_done(park_runtime: ParkRuntime) -> None:

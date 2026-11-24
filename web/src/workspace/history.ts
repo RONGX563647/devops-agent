@@ -51,10 +51,18 @@ function parseMessages(raw: string | null): ChatMessage[] | null {
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return null;
-    return parsed.filter(
-      (item): item is ChatMessage =>
-        Boolean(item) && typeof item === 'object' && 'role' in item && 'text' in item,
-    );
+    return parsed
+      .filter(
+        (item): item is ChatMessage =>
+          Boolean(item) && typeof item === 'object' && 'role' in item && 'text' in item,
+      )
+      // 老版本把档位写进了每条用户气泡；那是会话标记不是审计记录，读时丢掉，
+      // 历史消息本身照常保留（不清理用户已经存下来的对话）。
+      .map((item) => {
+        const clean = { ...item } as Record<string, unknown>;
+        delete clean.permission;
+        return clean as unknown as ChatMessage;
+      });
   } catch {
     return null;
   }

@@ -440,8 +440,6 @@ export interface ChatMessage {
   steps: ProcessEntry[];
   /** 该条用户消息附带的文件（仅 user 消息）。 */
   attachments?: Attachment[];
-  /** 这一轮用的权限档位（仅 user 消息），事后回看才知道当时放到了哪。 */
-  permission?: PermissionKey;
   /** 等待用户确认的挂起态（仅 assistant 消息）。 */
   awaiting?: AwaitingState;
   error?: string;

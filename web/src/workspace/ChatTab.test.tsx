@@ -3,7 +3,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Attachment, AwaitingState, ChatMessage, PendingCall } from '../types';
+import type {
+  Attachment,
+  AwaitingState,
+  ChatMessage,
+  PendingCall,
+  PermissionKey,
+} from '../types';
 import { attachMeta, ChatTab, formatClock, formatSize, shouldStickToBottom } from './ChatTab';
 
 const send = vi.fn();
@@ -16,6 +22,7 @@ const uploadAttachment = vi.fn();
 const deleteAttachment = vi.fn();
 const fetchPermissions = vi.fn();
 const fetchHealth = vi.fn();
+const switchPermission = vi.fn();
 
 vi.mock('../api/client', () => ({
   uploadAttachment: (file: File) => uploadAttachment(file),
@@ -23,6 +30,7 @@ vi.mock('../api/client', () => ({
   fetchPermissions: () => fetchPermissions(),
   // 运行时模式：默认按真实模型返回，专门测 Echo 的用例再覆盖
   fetchHealth: () => fetchHealth(),
+  switchSessionPermission: (...args: unknown[]) => switchPermission(...args),
 }));
 
 /** 服务端开放的档位：不含 unrestricted，和后端默认一致。 */
@@ -50,7 +58,7 @@ const snapshot = {
   runId: null as number | null,
   error: null as string | null,
   modelName: '',
-  permission: 'workspace' as ChatMessage['permission'] & string,
+  permission: 'workspace' as PermissionKey,
   awaiting: null as AwaitingState | null,
 };
 
@@ -74,7 +82,6 @@ vi.mock('./store', () => ({
         at: now,
         steps: [],
         attachments,
-        permission: snapshot.permission,
       },
       {
         id: `a-${snapshot.messages.length}`,
@@ -123,6 +130,13 @@ function reset() {
   uploadAttachment.mockReset();
   deleteAttachment.mockReset();
   deleteAttachment.mockResolvedValue(undefined);
+  switchPermission.mockReset();
+  switchPermission.mockResolvedValue({
+    session_id: 's-1',
+    permission: 'execute',
+    applied: true,
+    effective_from: '下一次工具判定与下一次模型调用',
+  });
   fetchHealth.mockReset();
   fetchHealth.mockResolvedValue({
     status: 'ok',
@@ -291,7 +305,7 @@ describe('ChatTab', () => {
     expect(document.querySelector('.md code')?.textContent).toBe('ruff');
   });
 
-  it('过程步骤显示在回答上方，工具行可点开返回', async () => {
+  it('过程默认折叠；运行中在正文下方，跑完回到上方', async () => {
     const { rerender } = render(tab());
     submit('hi');
     assistant().steps = [
@@ -307,12 +321,33 @@ describe('ChatTab', () => {
     assistant().text = '看完了';
     rerender(tab());
 
-    expect(await screen.findByText('开始回复')).toBeTruthy();
+    const fold = document.querySelector('.chat-steps-fold') as HTMLDetailsElement;
+    expect(fold.open).toBe(false); // 默认折叠，摘要仍能看到最新一步
+    expect(fold.querySelector('.chat-steps-summary')?.textContent).toContain('调用工具 · bash');
+    const liveOrder = Array.from(
+      (document.querySelector('.chat-msg.assistant') as HTMLElement).children,
+    ).map((el) => el.className);
+    expect(liveOrder.indexOf('chat-bubble assistant-body')).toBeLessThan(
+      liveOrder.findIndex((name) => name.includes('chat-steps-fold')),
+    );
+
+    // 展开后工具行可点开返回
+    fireEvent.click(fold.querySelector('.chat-steps-summary') as HTMLElement);
     const line = screen.getByRole('button', { name: /调用工具 · bash/ });
     expect(line.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(line);
     expect(document.querySelector('.step-result')?.textContent).toBe('ls -la');
-    expect(screen.getByText('看完了')).toBeTruthy();
+
+    // 跑完：过程回到正文上方
+    snapshot.running = false;
+    rerender(tab());
+    const doneOrder = Array.from(
+      (document.querySelector('.chat-msg.assistant') as HTMLElement).children,
+    ).map((el) => el.className);
+    expect(doneOrder.findIndex((name) => name.includes('chat-steps-fold'))).toBeLessThan(
+      doneOrder.indexOf('chat-bubble assistant-body'),
+    );
+    expect(await screen.findByText('看完了')).toBeTruthy();
   });
 
   it('运行失败时给出中断提示与重试入口', async () => {
@@ -372,7 +407,7 @@ describe('ChatTab 权限', () => {
     rerender(tab());
 
     expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText('等待你确认上面的操作')).toBeTruthy();
+    expect(screen.getByText('等待你确认下方卡片')).toBeTruthy();
     expect(screen.getByRole('group', { name: '等待确认的操作' })).toBeTruthy();
   });
 
@@ -407,15 +442,48 @@ describe('ChatTab 权限', () => {
     expect(setPermission).toHaveBeenCalledWith('s-1', 'execute');
   });
 
-  it('用户气泡标出这一轮用的档位，默认档不标', () => {
+  it('用户气泡不再带权限标记', () => {
     const { rerender } = render(tab());
     submit('hi');
     rerender(tab());
     expect(document.querySelector('.perm-tag')).toBeNull();
+    expect('permission' in snapshot.messages[0]).toBe(false);
+  });
 
-    snapshot.messages[0].permission = 'readonly';
+  it('切档调用服务端热替换端点，并把生效范围说清楚', async () => {
+    render(tab());
+    fireEvent.click(screen.getByRole('button', { name: '选择权限档位' }));
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: /可执行/ }));
+
+    expect(setPermission).toHaveBeenCalledWith('s-1', 'execute');
+    await waitFor(() =>
+      expect(switchPermission).toHaveBeenCalledWith('s-1', 'execute', false),
+    );
+    expect(screen.getByText(/已生效：本轮后续工具调用/)).toBeTruthy();
+  });
+
+  it('运行中也能点档位选择器', () => {
+    const { rerender } = render(tab());
+    submit('hi');
+    snapshot.running = true;
     rerender(tab());
-    expect(document.querySelector('.perm-tag')?.textContent).toBe('只读');
+    const button = screen.getByRole('button', { name: '选择权限档位' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+  });
+
+  it('确认卡片脱离消息流，常驻在输入框上方', () => {
+    const { rerender } = render(tab());
+    submit('hi');
+    park();
+    rerender(tab());
+
+    const wrap = document.querySelector('.chat-wrap') as HTMLElement;
+    const order = Array.from(wrap.children).map((el) => el.className);
+    const dock = order.findIndex((name) => name === 'confirm-dock');
+    expect(dock).toBeGreaterThan(order.indexOf('chat-scroll'));
+    expect(dock).toBeLessThan(order.indexOf('chat-composer'));
+    expect(document.querySelector('.chat-msg .confirm-card')).toBeNull();
+    expect(screen.getByRole('group', { name: '等待确认的操作' })).toBeTruthy();
   });
 });
 

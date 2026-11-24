@@ -184,14 +184,33 @@ export function StepRow({ step }: { step: ProcessEntry }) {
   return <ExpandableStep step={step} />;
 }
 
-/** 一次运行的全部过程行；空列表不占空间。 */
-export function StepList({ steps }: { steps: ProcessEntry[] }) {
+/** 一次运行的全部过程行：整段默认折叠，摘要行仍显示最新一步在干什么。
+
+单独的步骤本来就可点开，但一长串日志会把正文顶走；把整段收起来，
+想看的人点一下摘要即可，运行中的进度也不必展开才看得见。
+*/
+export function StepList({ steps, live = false }: { steps: ProcessEntry[]; live?: boolean }) {
   if (steps.length === 0) return null;
+  const last = steps[steps.length - 1];
+  const latest = last.detail ? `${last.label} · ${last.detail}` : last.label;
   return (
-    <div className="chat-steps">
-      {steps.map((step) => (
-        <StepRow key={step.id} step={step} />
-      ))}
-    </div>
+    <details className="chat-steps-fold" data-live={live || undefined}>
+      <summary className="chat-steps-summary">
+        <span className="step-chev" aria-hidden="true">
+          ›
+        </span>
+        <span className="step-kind">过程</span>
+        <span className="step-detail mono" title={latest}>
+          {summarize(latest, 72)}
+        </span>
+        <span className="step-count mono">{steps.length} 步</span>
+        {live && <span className="step-state mono">执行中</span>}
+      </summary>
+      <div className="chat-steps">
+        {steps.map((step) => (
+          <StepRow key={step.id} step={step} />
+        ))}
+      </div>
+    </details>
   );
 }

@@ -1089,6 +1089,38 @@ a:hover {
 }
 
 /* ---- 过程时间线：直接可见，一行一步 ---- */
+.chat-steps-fold {
+  margin-bottom: var(--sp-3);
+}
+.chat-steps-summary {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  padding: 2px 0;
+  color: var(--ink-muted);
+  cursor: pointer;
+  list-style: none;
+}
+.chat-steps-summary::-webkit-details-marker {
+  display: none;
+}
+.chat-steps-fold[open] > .chat-steps-summary .step-chev {
+  transform: rotate(90deg);
+}
+.chat-steps-summary .step-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-steps-summary .step-count {
+  color: var(--ink-faint);
+}
+.chat-steps-fold[open] .chat-steps {
+  margin-top: var(--sp-2);
+}
 .chat-steps {
   display: flex;
   flex-direction: column;
@@ -3277,17 +3309,7 @@ a:hover {
   gap: var(--sp-2);
   justify-content: flex-end;
 }
-.perm-tag {
-  display: inline-block;
-  margin-top: var(--sp-2);
-  padding: 0 var(--sp-2);
-  font-size: 10px;
-  color: var(--ink-soft);
-  background: var(--surface-muted);
-  border-radius: var(--radius-xs);
-}
-
-/* 风险色：点、标签、档位标签共用一套语义 */
+/* 风险色：权限点与确认标签共用一套语义 */
 .perm-dot.risk-deny,
 .risk-tag.risk-read {
   background: var(--ev-log);
@@ -3297,24 +3319,21 @@ a:hover {
 .risk-tag.risk-exec {
   background: var(--accent);
 }
-.risk-tag.risk-write,
-.perm-tag.risk-execute {
+.risk-tag.risk-write {
   background: var(--warn-soft);
   color: var(--warn-ink);
 }
 .perm-dot.risk-hard_deny,
-.risk-tag.risk-danger,
-.perm-tag.risk-unrestricted {
+.risk-tag.risk-danger {
   background: var(--danger-soft);
   color: var(--danger-ink);
 }
-.perm-tag.risk-readonly {
-  background: var(--surface-muted);
-  color: var(--ink-muted);
-}
-.perm-tag.risk-auto {
-  background: var(--warn-soft);
-  color: var(--warn-ink);
+.confirm-dock {
+  flex-shrink: 0;
+  width: 100%;
+  max-width: var(--reading-max);
+  padding: 0 var(--sp-6) var(--sp-3);
+  margin: 0 auto;
 }
 
 /* ---- 确认卡片 ---- */

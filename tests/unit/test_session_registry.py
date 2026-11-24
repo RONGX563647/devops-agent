@@ -21,6 +21,11 @@ class FakeRuntime:
 
     def __init__(self, state: str = "") -> None:
         self.state = state
+        self.profiles: list[str] = []
+
+    def apply_profile(self, profile: Any, *, web_search: bool | None = None) -> None:
+        """热替换能力：记录档位，供切档测试断言不重建。"""
+        self.profiles.append(profile.key)
 
     async def run(self, session_id: str, user_input: str) -> str:
         return user_input
@@ -120,6 +125,37 @@ def test_acquire_restores_snapshot_from_db(db: Path) -> None:
     _registry(calls).acquire("s1", PROFILES["workspace"])
 
     assert calls[0][2] == '{"state": "上次的对话"}'
+
+
+def test_switch_hot_replaces_without_rebuilding(db: Path) -> None:
+    """会话中切档：原地改现有实例的权限，工厂不能重建（会打断正在跑的流）。"""
+    calls: list[tuple[str, str, str | None]] = []
+    registry = _registry(calls)
+    entry = registry.acquire("s1", PROFILES["readonly"])
+
+    switched, applied = registry.switch("s1", PROFILES["execute"])
+
+    assert applied is True
+    assert switched is entry
+    assert registry.peek("s1") is entry
+    assert len(calls) == 1
+    assert entry.profile == "execute"
+    assert entry.runtime.profiles == ["execute"]
+    # 快照里的档位也换了：刷新重建仍按新档装配
+    with repo.connect(db) as conn:
+        saved = repo.load_session_state(conn, "s1")
+    assert saved is not None and saved[1] == "execute"
+
+
+def test_switch_without_live_entry_falls_back_to_build(db: Path) -> None:
+    """没有活跃实例时不能 404：之后发起的这一轮要按新档位装配。"""
+    calls: list[tuple[str, str, str | None]] = []
+    registry = _registry(calls)
+    entry, applied = registry.switch("s1", PROFILES["unrestricted"])
+
+    assert applied is False
+    assert entry.profile == "unrestricted"
+    assert calls[0][1] == "unrestricted"
 
 
 def test_save_writes_snapshot_with_permission(db: Path) -> None:

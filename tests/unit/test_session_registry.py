@@ -50,7 +50,11 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _registry(calls: list[tuple[str, str, str | None]], **kwargs: Any) -> SessionRegistry:
     def factory(
-        session_id: str, profile: Any, state_json: str | None, web_search: bool = False
+        session_id: str,
+        profile: Any,
+        state_json: str | None,
+        web_search: bool = False,
+        model_config: dict[str, Any] | None = None,
     ) -> FakeRuntime:
         calls.append((session_id, profile.key, state_json))
         saved = json.loads(state_json)["state"] if state_json else ""
@@ -93,7 +97,11 @@ def test_switching_web_search_rebuilds_but_confirm_reuses(db: Path) -> None:
     seen: list[bool] = []
 
     def factory(
-        session_id: str, profile: Any, state_json: str | None, web_search: bool = False
+        session_id: str,
+        profile: Any,
+        state_json: str | None,
+        web_search: bool = False,
+        model_config: dict[str, Any] | None = None,
     ) -> FakeRuntime:
         seen.append(web_search)
         return FakeRuntime("")
@@ -173,7 +181,7 @@ def test_save_writes_snapshot_with_permission(db: Path) -> None:
 
 def test_save_skips_runtime_without_snapshot(db: Path) -> None:
     """Echo 之类无状态运行时没有 snapshot，写库应静默跳过。"""
-    registry = SessionRegistry(lambda *_args: EchoRuntime(), db_path=db)
+    registry = SessionRegistry(lambda *_args, **_kw: EchoRuntime(), db_path=db)
     registry.acquire("s1", PROFILES["workspace"])
     registry.save("s1")
     with repo.connect(db) as conn:

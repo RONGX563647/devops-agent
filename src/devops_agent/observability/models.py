@@ -43,6 +43,9 @@ class RunRecord:
     # 失败原因原文。之前 status=failed 只是个标签：span 全绿、输出完整，
     # 却没有任何地方留下异常信息，刷新后连「为什么失败」都查不到。
     error: str = ""
+    # 本轮实际下发的模型参数（JSON，只含非默认值）。空串 = 老记录/未记录，
+    # 读取方要显示「参数未知」而不是按默认值解释 —— 那会造出假的归因。
+    model_params: str = ""
 
 
 @dataclass(frozen=True, slots=True)

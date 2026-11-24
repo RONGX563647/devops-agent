@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections import deque
 from datetime import UTC, datetime
@@ -98,12 +99,16 @@ class RunRecorder:
         model: str = "",
         request_id: str = "",
         permission: str = "",
+        model_params: dict[str, object] | None = None,
     ) -> None:
         self._db_path = db_path or repo.default_db_path()
         self._domain = domain
         self._model = model
         self._request_id = request_id
         self._permission = permission
+        # 本轮实际下发的模型参数（只含非默认值）。空 dict 表示「全是默认值」，
+        # 老记录读出来是空串，两者在界面上都显示为「未记录」。
+        self._model_params = json.dumps(model_params or {}, ensure_ascii=False, sort_keys=True)
         self._run_id: int | None = None
         self._started_at = ""
         self._started_monotonic_ms = 0
@@ -155,6 +160,7 @@ class RunRecorder:
             health_score=None,
             request_id=self._request_id,
             permission=self._permission,
+            model_params=self._model_params,
         )
         with repo.connect(self._db_path) as conn:
             repo.init_db(conn)

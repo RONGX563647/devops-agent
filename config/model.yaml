@@ -1,0 +1,45 @@
+# 模型参数（SPEC-0001 / ADR-0003）
+#
+# 优先级：会话覆盖 > 部署默认（DB settings 表） > 本文件 > 环境变量 > 框架默认
+#
+# 本文件只写「部署默认」。运行时在前端改出来的值存进 DB，不改这里 ——
+# 否则每次重新部署都会把界面上的调整覆盖掉。
+# 改本文件需要重启进程（config 层是 @cache 的，单进程单 worker 够用）。
+model:
+  # 模型名。留空 = 用环境变量 DEVOPS_AGENT_MODEL。
+  # 写死在这里会让「换模型」变成改代码，所以默认交给环境变量。
+  name: ""
+
+  # 上下文窗口（token）。它同时决定压缩阈值、前端圆环的分母、压缩后保留多少。
+  # 128000 是 agentscope 的框架默认值，qwen3.8-flash 的真实窗口尚未核实，
+  # 所以 context_calibrated 保持 false —— 前端显示「未校准」，让人知道这是猜的。
+  # 核实后把真实值填在这里，并把 context_calibrated 改成 true。
+  context_size: 128000
+  context_calibrated: false
+
+  # 两级重试必须分开记账：最坏尝试次数 = (1 + model_max_retries) × (1 + agent_max_retries)。
+  # 3 × 3 = 16 次，不是 4 次。合成一个键就把这个乘法关系藏起来了。
+  #   model_max_retries → 交给 OpenAIChatModel（HTTP 层重试）
+  #   agent_max_retries → 交给 ModelConfig（ReAct 层重试）
+  model_max_retries: 3
+  agent_max_retries: 3
+
+  # ReAct 迭代上限，按域取值：未声明的域回落 default。
+  # delivery 是长任务（改代码 → 跑测试 → 修），给到 16。
+  max_iters:
+    default: 12
+    delivery: 16
+
+  # 采样参数。null = 交给供应商默认，不猜 —— 猜一个温度比不传更糟：
+  # 同一份提示词在不同模型上的可用温度区间并不一致。
+  temperature: null
+  max_tokens: null        # null = 不限制；有值时必须 <= context_size
+  top_p: null
+  reasoning_effort: null  # none / minimal / low / medium / high / xhigh
+  thinking_enable: null
+  parallel_tool_calls: true
+
+  # 上下文压缩（框架 ContextConfig）。阈值 = trigger_ratio × context_size。
+  trigger_ratio: 0.8          # 框架硬约束 <= 0.9（要给压缩本身留空间）
+  reserve_ratio: 0.1          # 必须 < trigger_ratio，否则框架校验会抛异常
+  context_buffer_ratio: 0.2

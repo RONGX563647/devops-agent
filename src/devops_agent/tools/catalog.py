@@ -57,10 +57,12 @@ class _WorkdirBackend(LocalBackend):
     """
 
     def __init__(self, workdir: str) -> None:
-        self._workdir = workdir
+        # 用独立字段而不是 `_workdir`：基类把它声明成 `str | None`，
+        # 复用会让 mypy 认为 getcwd() 可能返回 None，也可能碰到基类内部实现。
+        self._cwd_root: str = workdir
 
     async def getcwd(self) -> str:
-        return self._workdir
+        return self._cwd_root
 
 
 def _factories(cwd: str, middlewares: Middlewares) -> dict[str, Callable[[], ToolBase]]:

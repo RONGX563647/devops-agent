@@ -368,8 +368,8 @@ describe('TraceList', () => {
     });
     const ctx = container.querySelector('.trace-step[data-kind="context"]');
     expect(ctx?.textContent).toContain('上下文');
-    // 行内就说清「前缀多少 token、工具几个、历史多少」，不再只报字数
-    expect(ctx?.textContent).toContain('前缀 257 tok');
+    // 行内只报模型回传的精确首枪 token 与工具数，不再估算历史/前缀
+    expect(ctx?.textContent).toContain('首枪 0 tok');
     expect(ctx?.textContent).toContain('工具 1 个');
     expect(ctx?.getAttribute('aria-expanded')).toBe('false');
 
@@ -380,7 +380,42 @@ describe('TraceList', () => {
     // 工具能点开看完整 schema，而不是只给一个名字
     expect(container.querySelector('.ctx-comp-bar')).toBeTruthy();
     expect(container.querySelector('.ctx-tool code')?.textContent).toBe('Bash');
-    expect(container.textContent).toContain('250 tok');
+    expect(container.textContent).toContain('900 字');
+  });
+
+  it('上下文构成只用回传的精确值：命中缓存 + 本次计算，不倒推历史', () => {
+    const { container } = renderList({
+      turns: MODEL_TURNS,
+      context: {
+        profile: 'workspace',
+        profile_label: '工作区可写',
+        system_prompt: '你是 DevOps 助手。',
+        system_prompt_chars: 10,
+        system_prompt_tokens: 7,
+        tools: [],
+        tools_chars: 0,
+        tools_tokens: 0,
+        prefix_tokens: 500,
+        prefix_fingerprint: 'a1b2c3d4',
+        policy_note: '工作区可写。',
+        policy_note_tokens: 9,
+        workdir: '/workspace',
+      },
+    });
+    const ctx = container.querySelector('.trace-step[data-kind="context"]');
+    // firstCall = 首枪 1000 tok，其中命中 800 tok
+    expect(ctx?.textContent).toContain('首枪 1.0k tok');
+    expect(ctx?.textContent).toContain('命中 80%');
+    // 不再出现「历史 ≈」这种残差估算
+    expect(ctx?.textContent).not.toContain('历史');
+    fireEvent.click(ctx!);
+    const bar = container.querySelector('.ctx-comp-bar');
+    expect(bar?.getAttribute('aria-label')).toBe('首枪输入 1000 token，其中命中缓存 800');
+    const legend = container.querySelector('.ctx-legend')?.textContent ?? '';
+    expect(legend).toContain('命中缓存 800');
+    expect(legend).toContain('本次计算 200');
+    expect(legend).not.toContain('系统提示');
+    expect(legend).not.toContain('档位约束');
   });
 });
 

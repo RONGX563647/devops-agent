@@ -2400,6 +2400,12 @@ a:hover {
   border-radius: 2px;
   background: var(--ink-faint);
 }
+.ctx-seg[data-kind='cache'] {
+  background: var(--accent);
+}
+.ctx-seg[data-kind='fresh'] {
+  background: var(--lane-model);
+}
 .ctx-seg[data-kind='tools'] {
   background: var(--lane-tool);
 }
@@ -2426,6 +2432,12 @@ a:hover {
   margin-right: 4px;
   border-radius: 2px;
   background: var(--ink-faint);
+}
+.ctx-legend i[data-kind='cache'] {
+  background: var(--accent);
+}
+.ctx-legend i[data-kind='fresh'] {
+  background: var(--lane-model);
 }
 .ctx-legend i[data-kind='tools'] {
   background: var(--lane-tool);

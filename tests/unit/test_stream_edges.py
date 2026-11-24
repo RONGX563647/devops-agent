@@ -12,8 +12,8 @@ from fastapi.testclient import TestClient
 from devops_agent.main import _sse_frame, app
 from devops_agent.observability import repository as repo
 from devops_agent.observability.recorder import RunRecorder, _as_int
-from devops_agent.runtime.agent import AgentScopeRuntime
 from devops_agent.runtime.events import event_to_dict
+from devops_agent.runtime.scope_runtime import AgentScopeRuntime
 
 client = TestClient(app)
 

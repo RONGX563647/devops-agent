@@ -4,7 +4,7 @@
 - 日期：2026-11-24
 - 相关：`config/model.yaml`（新增）、`config/policy.yaml`、`src/devops_agent/config.py`、
   `src/devops_agent/model_settings.py`（新增）、`src/devops_agent/model_api.py`（新增）、
-  `src/devops_agent/runtime/agent.py`、`src/devops_agent/runtime/sessions.py`、
+  `src/devops_agent/runtime/assembly.py`、`src/devops_agent/runtime/sessions.py`、
   `src/devops_agent/observability/repository.py`、`src/devops_agent/main.py`、
   ADR-0002（档位切换与「变了就重建」的判据先例）、ADR-0003（本 spec 的决策记录）、
   SPEC 前置分析（参数普查）
@@ -20,7 +20,7 @@
 |---|---|---|
 | 环境变量 | `.env` | `DEVOPS_AGENT_MODEL=qwen3.8-flash`、`BASE_URL`、`API_KEY`、`JUDGE_MODEL`（未设）、`ENABLE_SEARCH`（未设） |
 | yaml | `config/policy.yaml` | `react.max_iters.default=12`、`delivery=16`、`model.max_retries=3` |
-| 代码常量 | `runtime/agent.py:248`、`compression.py:37`、`supervisor.py:33`、`eval/judge.py:237` | `stream=True`；`_DEFAULT_TRIGGER_RATIO=0.8`；`_DEFAULT_CONTEXT_SIZE=128000`；`build_goal_pipeline(max_iters=10, max_retries=3)`；judge `temperature=0` |
+| 代码常量 | `runtime/chat_model.py:126`、`compression.py:37`、`supervisor.py:33`、`eval/judge.py:237` | `stream=True`；`_DEFAULT_TRIGGER_RATIO=0.8`；`_DEFAULT_CONTEXT_SIZE=128000`；`build_goal_pipeline(max_iters=10, max_retries=3)`；judge `temperature=0` |
 | 「没人设」 | `build_chat_model()` 未传 `parameters` / `context_size` | `temperature` / `max_tokens` / `top_p` / `reasoning_effort` **全部走供应商默认**；`context_size` **走框架默认 128000** |
 
 ### 1.2 三个已确认的缺陷（这是本 spec 的理由，不是"参数不好看"）
@@ -203,7 +203,7 @@ CREATE TABLE IF NOT EXISTS settings (
 | `max_iters` | `self._agent.react_config.max_iters = n` | 下一次 reply |
 | `agent_max_retries` | `self._agent.model_config.max_retries = n` | 下一次 reply |
 
-依据：`apply_profile()` 已经用同一手法热替换过模型对象（`agent.py:347`），说明
+依据：`apply_profile()` 已经用同一手法热替换过模型对象（`scope_runtime.py:87`），说明
 「重建模型对象 + 赋值」这条路是通的，不需要销毁 `Agent`、不需要丢对话历史。
 
 **替换模型时必须同步 `context_size`**：`build_chat_model` 要把 `context_size` 显式传给
@@ -520,7 +520,7 @@ Echo / 测试替身（没有 `apply_model_params` 方法）、以及会话尚未
 | 配置层 | `config/model.yaml`、`config.py`（`ModelSettings` + `load_model()`）、`config/policy.yaml`（删 `react:` / `model:` 两段） | `config.py` 里**没有**扩展 `ModelPolicy`，而是新建 `ModelSettings` 并删掉旧的 `ModelPolicy` / `ReactPolicy` —— 两个同名默认值会打架 |
 | 解析器 | `model_settings.py`（`resolve()` / `derived()` / `ModelParams` / `params_sha`） | 新增 `stored_defaults()` / `invalidate()`，带 5 秒 TTL 缓存（spec §10 要求，实现时集中在这一处） |
 | 持久化 | `repository.py`（`settings` 表 + `session_states.model_config` + `runs.model_params`）、`recorder.py`、`models.py`、`api.py` | `summary_rows()` 的显式 SELECT 也必须补新列，否则 `_run_from_row` 抛 `IndexError` |
-| 运行时 | `agent.py`（`build_chat_model` / `build_context_config` / `apply_model_params`）、`sessions.py`（`apply_model_params` / `broadcast_model_defaults` / `flush_pending`）、`compression.py`、`supervisor.py` | `apply_profile()` 与 `apply_model_params()` 共用"变了就重建"的判据思路；`registry_for()` 从 `main.py` 移到 `sessions.py` 以断开 `model_api → main` 的循环 import |
+| 运行时 | `chat_model.py`（`build_chat_model` / `build_context_config`）、`scope_runtime.py`（`apply_model_params`）、`sessions.py`（`apply_model_params` / `broadcast_model_defaults` / `flush_pending`）、`compression.py`、`supervisor.py` | `apply_profile()` 与 `apply_model_params()` 共用"变了就重建"的判据思路；`registry_for()` 从 `main.py` 移到 `sessions.py` 以断开 `model_api → main` 的循环 import |
 | API | `model_api.py`（6 端点 + 400/409 形状） | 未实现 §7.5 的可选 probe 端点（"保存不探测"已满足，探测按钮收益不抵一次计费调用） |
 | 评测 | `eval/report.py`（`_FACTOR_FIELDS` 加 `params_sha`，`_classify` 拆两支） | `{prompt_sha, params_sha}` 同时变化时归因为"多个因子"，不合并成一句 |
 | 前端 | `ModelConfigPopover.tsx`、`ChatTab.tsx`、`api/client.ts`、`types.ts`、`styles.css` | `ContextRing` 的 tooltip 补阈值来源未做（面板里已有阈值与「未校准」徽标，圆环改动留待下一轮） |

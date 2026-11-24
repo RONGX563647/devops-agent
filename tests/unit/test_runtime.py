@@ -11,18 +11,19 @@ from agentscope.pipeline import GoalPipeline, TeamMember, TeamPipeline
 
 from devops_agent.governance.profiles import PROFILES, default_profile
 from devops_agent.model_settings import effective_params
-from devops_agent.runtime.agent import (
-    PROFILE_KEY,
-    SEARCH_MODE_ENV,
-    WORKDIR_ENV,
+from devops_agent.runtime.assembly import (
     _state_for,
     build_agent,
     build_agentscope_runtime,
-    build_chat_model,
+)
+from devops_agent.runtime.chat_model import SEARCH_MODE_ENV, build_chat_model
+from devops_agent.runtime.prompt import (
+    WORKDIR_ENV,
     build_system_prompt,
     prompt_fingerprint,
     resolve_workdir,
 )
+from devops_agent.runtime.scope_runtime import PROFILE_KEY
 from devops_agent.runtime.supervisor import (
     as_member,
     build_goal_pipeline,

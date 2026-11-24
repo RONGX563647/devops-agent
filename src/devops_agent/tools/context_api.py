@@ -28,8 +28,8 @@ from devops_agent.governance.profiles import (
     resolve,
 )
 from devops_agent.observability import repository as repo
-from devops_agent.runtime.agent import build_system_prompt, resolve_workdir
 from devops_agent.runtime.profile_note import policy_note
+from devops_agent.runtime.prompt import build_system_prompt, resolve_workdir
 from devops_agent.tools.schema import tool_schemas
 
 router = APIRouter(prefix="/api", tags=["context"])

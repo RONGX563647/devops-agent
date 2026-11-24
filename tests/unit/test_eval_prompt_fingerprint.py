@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-import devops_agent.runtime.agent as agent_mod
 import devops_agent.runtime.profile_note as note_mod
+import devops_agent.runtime.prompt as prompt_mod
 from devops_agent.eval import report as report_mod
 from devops_agent.governance.profiles import PROFILES
-from devops_agent.runtime.agent import (
+from devops_agent.runtime.prompt import (
     PROMPT_VERSION,
     profile_note_sha,
     prompt_bytes_sha,
@@ -26,7 +26,7 @@ from devops_agent.runtime.agent import (
 
 @pytest.fixture()
 def linux_shell(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(agent_mod, "shell_name", lambda: "/bin/sh")
+    monkeypatch.setattr(prompt_mod, "shell_name", lambda: "/bin/sh")
 
 
 # ------------------------------------------------------------- 语义指纹
@@ -40,9 +40,9 @@ def test_semantic_fingerprint_is_platform_independent(monkeypatch: pytest.Monkey
     测试会变成恒真（CI 在 ubuntu 上跑就是这样挂的）。
     `_render_system_prompt` 用 `<shell>` 占位符，所以换 shell 不该改变语义指纹。
     """
-    monkeypatch.setattr(agent_mod, "shell_name", lambda: "cmd.exe (Windows)")
+    monkeypatch.setattr(prompt_mod, "shell_name", lambda: "cmd.exe (Windows)")
     one = prompt_fingerprint()
-    monkeypatch.setattr(agent_mod, "shell_name", lambda: "/bin/sh")
+    monkeypatch.setattr(prompt_mod, "shell_name", lambda: "/bin/sh")
     other = prompt_fingerprint()
     assert one == other
 
@@ -52,9 +52,9 @@ def test_bytes_fingerprint_differs_across_platforms(monkeypatch: pytest.MonkeyPa
 
     同样用两个明确的假值，避免在 Linux 上「真平台 == /bin/sh」导致恒真。
     """
-    monkeypatch.setattr(agent_mod, "shell_name", lambda: "cmd.exe (Windows)")
+    monkeypatch.setattr(prompt_mod, "shell_name", lambda: "cmd.exe (Windows)")
     one = prompt_bytes_sha("E:/repo")
-    monkeypatch.setattr(agent_mod, "shell_name", lambda: "/bin/sh")
+    monkeypatch.setattr(prompt_mod, "shell_name", lambda: "/bin/sh")
     other = prompt_bytes_sha("E:/repo")
     assert one != other
 
@@ -62,7 +62,7 @@ def test_bytes_fingerprint_differs_across_platforms(monkeypatch: pytest.MonkeyPa
 def test_semantic_fingerprint_ignores_real_workdir() -> None:
     """`prompt_fingerprint` 不含 workdir，所以不同机器同值。"""
     assert prompt_fingerprint() == prompt_fingerprint()
-    assert "<workdir>" in agent_mod._render_system_prompt("<workdir>", "<shell>")
+    assert "<workdir>" in prompt_mod._render_system_prompt("<workdir>", "<shell>")
 
 
 def test_version_bumped_to_v4() -> None:
@@ -82,7 +82,7 @@ def test_bytes_fingerprint_matches_actual_prompt() -> None:
     """字节指纹必须等于 build_system_prompt 的 sha256（它是同一份内容）。"""
     import hashlib
 
-    from devops_agent.runtime.agent import build_system_prompt
+    from devops_agent.runtime.prompt import build_system_prompt
 
     workdir = "E:/code/devops-agent"
     expected = hashlib.sha256(build_system_prompt(workdir).encode("utf-8")).hexdigest()

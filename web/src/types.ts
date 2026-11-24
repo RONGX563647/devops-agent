@@ -302,6 +302,11 @@ export interface EvalBatch {
   trajectory_score: number | null;
   p95_ms: number | null;
   tokens_total: number;
+  /** 前缀缓存命中量与写入量。 */
+  cache_input: number;
+  cache_creation: number;
+  /** 命中率 = 命中 / 总输入；无数据时 null。 */
+  cache_hit_rate: number | null;
   cost_total: number;
   baseline_id: number | null;
   verdict: EvalVerdict;
@@ -379,6 +384,8 @@ export interface EvalSeriesPoint {
   /** 阻断类与计分类分开：「阻断归零但计分上升」是完全不同的故事。 */
   hard_blocking: number;
   hard_scoring: number;
+  /** 前缀缓存命中率；提示词布局改坏时它会先掉。 */
+  cache_hit_rate: number | null;
   verdict: EvalVerdict;
   prompt_hash: string;
 }

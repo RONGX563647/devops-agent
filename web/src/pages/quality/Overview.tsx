@@ -90,6 +90,13 @@ export function Overview({ onShowBatches }: Props) {
     { label: 'judge 正确性', value: formatScore(judgeCorrectness), detail: '1–5 分' },
     { label: '轨迹分', value: formatScore(batch.trajectory_score), detail: '工具选择质量' },
     { label: 'p95 耗时', value: `${batch.p95_ms ?? 0} ms`, detail: '单条用例' },
+    {
+      // 前缀缓存命中率：提示词布局改动（例如把档位说明从系统提示挪到末尾）
+      // 会先让这个数字掉，而通过率可能完全不动。
+      label: '缓存命中',
+      value: formatPercent(batch.cache_hit_rate),
+      detail: '前缀复用',
+    },
   ];
 
   return (

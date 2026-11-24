@@ -69,6 +69,9 @@ class TraceResult:
     # 被权限拒绝的工具（TOOL_RESULT_END.state == denied）
     denied_tools: list[str] = field(default_factory=list)
     tokens: int = 0
+    # 前缀缓存：命中量与写入量。用来观察「提示词布局改动是否毁掉前缀缓存」。
+    cache_input_tokens: int = 0
+    cache_creation_tokens: int = 0
     latency_ms: int = 0
     workspace_dir: Path | None = None
     error: str | None = None

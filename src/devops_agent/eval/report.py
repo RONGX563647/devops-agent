@@ -262,6 +262,27 @@ def _count_by(items: Sequence[CaseRun], predicate: Callable[[CaseRun], bool]) ->
     return sum(1 for run in items if predicate(run))
 
 
+def _cache_stats(items: Sequence[CaseRun]) -> dict[str, float | int | None]:
+    """前缀缓存的命中情况。
+
+    命中率 = 命中量 / (命中量 + 未命中量)。未命中量用「总输入 − 命中」近似：
+    事件里没有单独的 miss 字段，但 `cache_input_tokens` 是 input 的子集。
+
+    这些数字此前完全不存在，于是「把档位说明从系统提示挪到消息末尾」
+    （前缀命中 21% → 96%）这个改动在报告里没有任何位置可以观察。
+    """
+    cached = sum(run.trace.cache_input_tokens for run in items)
+    created = sum(run.trace.cache_creation_tokens for run in items)
+    total = sum(run.tokens for run in items)
+    if total <= 0:
+        return {"cache_input": cached, "cache_creation": created, "cache_hit_rate": None}
+    return {
+        "cache_input": cached,
+        "cache_creation": created,
+        "cache_hit_rate": round(cached / total, 4),
+    }
+
+
 def _summary_payload(
     items: Sequence[CaseRun],
     *,
@@ -289,6 +310,7 @@ def _summary_payload(
         "trajectory_score": trajectory,
         "p95_ms": _p95([run.latency_ms for run in items]),
         "tokens_total": sum(run.tokens for run in items),
+        **_cache_stats(items),
         "tags": _tag_counts(items),
         "subjects": _subject_counts(items),
         "min_cases_for_gate": min_cases_for_gate,
@@ -735,9 +757,18 @@ def render_markdown(summary: dict[str, Any]) -> str:
     """把聚合报告（或对比报告）渲染成可提交到 PR 的 Markdown。"""
     lines = _render_header(summary)
     lines.extend(_render_sections(summary))
+    rate = summary.get("cache_hit_rate")
+    cache_text = (
+        f"；前缀缓存命中 {rate * 100:.1f}%"
+        f"（命中 {_fmt(summary.get('cache_input'))}"
+        f" / 写入 {_fmt(summary.get('cache_creation'))}）"
+        if isinstance(rate, (int, float))
+        else "；前缀缓存：无数据"
+    )
     lines.append(
         f"- 轨迹分：{_fmt(summary.get('trajectory_score'))}；"
         f"p95：{_fmt(summary.get('p95_ms'))} ms；"
         f"tokens：{_fmt(summary.get('tokens_total'))}"
+        f"{cache_text}"
     )
     return "\n".join(lines).rstrip() + "\n"

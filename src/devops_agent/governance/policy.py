@@ -132,6 +132,43 @@ def compile_context(
     )
 
 
+def _with_overrides(
+    context: PermissionContext,
+    mode: PermissionMode | None,
+    deny_rules: dict[str, list[PermissionRule]] | None,
+) -> PermissionContext:
+    """把调用方显式给的 mode / deny_rules 盖到已编译的上下文上。"""
+    updates: dict[str, object] = {}
+    if mode is not None:
+        updates["mode"] = mode
+    if deny_rules is not None:
+        updates["deny_rules"] = deny_rules
+    return context.model_copy(update=updates) if updates else context
+
+
+def _context_from_yaml(
+    mode: PermissionMode | None,
+    deny_rules: dict[str, list[PermissionRule]] | None,
+    policy: RuntimePolicy,
+) -> PermissionContext:
+    """没有档位时：policy.yaml 里写了什么就用什么（脚本 / 单测直接建引擎的路径）。
+
+    内置 deny 仍然并入 —— 它是底线，不随调用方式变化。
+    """
+    declared = collect_rules(policy)
+    return PermissionContext(
+        mode=mode if mode is not None else PermissionMode(policy.permission.mode),
+        working_directories=_working_dirs(policy),
+        allow_rules=_to_rule_map([r for r in declared if r.behavior == "allow"]),
+        deny_rules=(
+            deny_rules
+            if deny_rules is not None
+            else _to_rule_map([r for r in declared if r.behavior == "deny"])
+        ),
+        ask_rules=_to_rule_map([r for r in declared if r.behavior == "ask"]),
+    )
+
+
 def build_permission_context(
     mode: PermissionMode | None = None,
     deny_rules: dict[str, list[PermissionRule]] | None = None,
@@ -146,31 +183,8 @@ def build_permission_context(
     context 才能让 policy.yaml 真正生效，无需另建一套引擎。
     """
     if profile is not None:
-        context = compile_context(profile, policy=policy)
-        if deny_rules is None and mode is None:
-            return context
-        return context.model_copy(
-            update={
-                **({"mode": mode} if mode is not None else {}),
-                **({"deny_rules": deny_rules} if deny_rules is not None else {}),
-            }
-        )
-    resolved = policy if policy is not None else load_policy()
-    cfg = resolved.permission
-    # 没有档位时不做范围过滤：这是脚本 / 单测直接建引擎的路径，语义保持「
-    # policy.yaml 里写了什么就用什么」。内置 deny 仍然并入 —— 它是底线。
-    declared = collect_rules(resolved)
-    return PermissionContext(
-        mode=mode if mode is not None else PermissionMode(cfg.mode),
-        working_directories=_working_dirs(resolved),
-        allow_rules=_to_rule_map([r for r in declared if r.behavior == "allow"]),
-        deny_rules=(
-            deny_rules
-            if deny_rules is not None
-            else _to_rule_map([r for r in declared if r.behavior == "deny"])
-        ),
-        ask_rules=_to_rule_map([r for r in declared if r.behavior == "ask"]),
-    )
+        return _with_overrides(compile_context(profile, policy=policy), mode, deny_rules)
+    return _context_from_yaml(mode, deny_rules, policy if policy is not None else load_policy())
 
 
 def build_permission_engine(

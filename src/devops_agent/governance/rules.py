@@ -185,6 +185,32 @@ def merge_rules(*groups: Iterable[Rule]) -> list[Rule]:
     return list(merged.values())
 
 
+def _separator_at(command: str, index: int) -> str | None:
+    """当前位置是否是一个命令分隔符。"""
+    for sep in _SEPARATORS:
+        if command.startswith(sep, index):
+            return sep
+    return None
+
+
+def _closing_quote(command: str, start: int) -> int:
+    """返回闭合引号之后的下标；引号没有闭合就返回到末尾。
+
+    整段引号内容一次性吞掉，所以主循环里不需要维护引号状态 ——
+    `echo 'a && b'` 里的分隔符因此永远不会被当成命令边界。
+    """
+    quote = command[start]
+    index = start + 1
+    while index < len(command):
+        if command[index] == "\\":
+            index += 2
+            continue
+        if command[index] == quote:
+            return index + 1
+        index += 1
+    return len(command)
+
+
 def split_segments(command: str) -> list[str]:
     """按 `&&` / `||` / `;` / `|` / 换行切分，引号与转义内的分隔符不算。
 
@@ -193,33 +219,26 @@ def split_segments(command: str) -> list[str]:
     """
     segments: list[str] = []
     buf: list[str] = []
-    quote: str | None = None
     index = 0
     while index < len(command):
         char = command[index]
-        if char == "\\" and index + 1 < len(command):
+        if char in ("'", '"'):
+            end = _closing_quote(command, index)
+            buf.append(command[index:end])
+            index = end
+            continue
+        if char == "\\":
             buf.append(command[index : index + 2])
             index += 2
             continue
-        if quote is not None:
-            buf.append(char)
-            if char == quote:
-                quote = None
-            index += 1
+        matched = _separator_at(command, index)
+        if matched is not None:
+            segments.append("".join(buf).strip())
+            buf = []
+            index += len(matched)
             continue
-        if char in ("'", '"'):
-            quote = char
-            buf.append(char)
-            index += 1
-            continue
-        matched = next((sep for sep in _SEPARATORS if command.startswith(sep, index)), None)
-        if matched is None:
-            buf.append(char)
-            index += 1
-            continue
-        segments.append("".join(buf).strip())
-        buf = []
-        index += len(matched)
+        buf.append(char)
+        index += 1
     segments.append("".join(buf).strip())
     return [segment for segment in segments if segment]
 
@@ -240,6 +259,19 @@ def _strip_flags(args: Sequence[str], value_flags: frozenset[str] = frozenset())
     return out
 
 
+def _strip_one(program: str, rest: list[str]) -> list[str]:
+    """剥掉一层包装命令自己的参数，返回它真正要执行的部分。"""
+    if program == "timeout":
+        # timeout [-s SIG] DURATION cmd...
+        rest = _strip_flags(rest, frozenset({"-s", "--signal"}))
+        return rest[1:] if rest and re.fullmatch(r"[\d.]+[smhd]?", rest[0]) else rest
+    if program == "nice":
+        return _strip_flags(rest, frozenset({"-n", "--adjustment"}))
+    if program in ("env", "stdbuf"):
+        return [arg for arg in rest if not arg.startswith("-") and "=" not in arg]
+    return _strip_flags(rest)
+
+
 def strip_wrappers(argv: list[str]) -> list[str]:
     """剥掉 `timeout` / `time` / `nice` / `nohup` / `stdbuf` / `env` 等包装层。
 
@@ -248,23 +280,31 @@ def strip_wrappers(argv: list[str]) -> list[str]:
     """
     args = list(argv)
     while args:
-        program = args[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        program = _program_name(args[0])
         if program not in _WRAPPERS:
             return args
-        rest = args[1:]
-        if program == "timeout":
-            # timeout [-s SIG] DURATION cmd...
-            rest = _strip_flags(rest, frozenset({"-s", "--signal"}))
-            if rest and re.fullmatch(r"[\d.]+[smhd]?", rest[0]):
-                rest = rest[1:]
-        elif program == "nice":
-            rest = _strip_flags(rest, frozenset({"-n", "--adjustment"}))
-        elif program in ("env", "stdbuf"):
-            rest = [arg for arg in rest if not arg.startswith("-") and "=" not in arg]
-        else:
-            rest = _strip_flags(rest)
-        args = rest
+        args = _strip_one(program, args[1:])
     return args
+
+
+def _program_name(token: str) -> str:
+    """`/usr/bin/git` / `C:\\bin\\git.exe` → `git`（只用于比对包装器名单）。"""
+    return token.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+
+def _is_dangerous(argv: list[str]) -> bool:
+    joined = " ".join(argv)
+    return any(joined.startswith(prefix) for prefix in _DANGER_PREFIXES)
+
+
+def _program_prefix(program: str, argv: list[str]) -> str:
+    """程序 + 子命令（能取到的话）。"""
+    if program.startswith("python") and len(argv) > 2 and argv[1] in ("-m", "-c"):
+        return f"{program} {argv[1]} {argv[2]}"
+    if program in _SUBCOMMAND_PROGRAMS:
+        rest = _strip_flags(argv[1:])
+        return f"{program} {rest[0]}" if rest else program
+    return program
 
 
 def _prefix_of_segment(segment: str) -> str | None:
@@ -276,18 +316,10 @@ def _prefix_of_segment(segment: str) -> str | None:
     argv = strip_wrappers(argv)
     if not argv:
         return None
-    program = argv[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    if program in _NEVER_PERSIST:
+    program = _program_name(argv[0])
+    if program in _NEVER_PERSIST or _is_dangerous(argv):
         return None
-    joined = " ".join(argv)
-    if any(joined.startswith(prefix) for prefix in _DANGER_PREFIXES):
-        return None
-    if program.startswith("python") and len(argv) > 2 and argv[1] in ("-m", "-c"):
-        return f"{program} {argv[1]} {argv[2]}"
-    if program in _SUBCOMMAND_PROGRAMS:
-        rest = _strip_flags(argv[1:])
-        return f"{program} {rest[0]}" if rest else program
-    return program
+    return _program_prefix(program, argv)
 
 
 def rule_prefix(command: str) -> str | None:

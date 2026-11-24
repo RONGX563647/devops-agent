@@ -65,12 +65,18 @@ def read_document(path: Path | None = None) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _field(item: dict[str, Any], key: str, default: str) -> str:
+    """取一个字符串字段；缺省、空值一律回落默认值（不抛异常）。"""
+    value = item.get(key)
+    return str(value).strip() if value else default
+
+
 def _to_rule(item: dict[str, Any]) -> Rule | None:
     """一条 YAML 记录 → Rule；字段不合法返回 None（调用方跳过并记 warning）。"""
-    tool = str(item.get("tool") or "").strip()
-    behavior = str(item.get("behavior") or "ask").strip()
-    scope = str(item.get("scope") or "workspace").strip()
-    source = str(item.get("source") or "user").strip()
+    tool = _field(item, "tool", "")
+    behavior = _field(item, "behavior", "ask")
+    scope = _field(item, "scope", "workspace")
+    source = _field(item, "source", "user")
     if not tool or behavior not in BEHAVIORS or scope not in SCOPES or source not in SOURCES:
         logger.warning("跳过非法权限规则: %s", item)
         return None
@@ -81,8 +87,8 @@ def _to_rule(item: dict[str, Any]) -> Rule | None:
         behavior=behavior,
         source=source,
         scope=scope,
-        origin=str(item.get("origin") or ""),
-        created_at=str(item.get("created_at") or ""),
+        origin=_field(item, "origin", ""),
+        created_at=_field(item, "created_at", ""),
     )
 
 

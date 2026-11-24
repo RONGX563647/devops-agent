@@ -4,6 +4,7 @@ import type { EventHandler } from '../state';
 import { blockStepId, eventAt, finishRunningSteps, patchStep, upsertStep } from '../state';
 import { parseContextHint } from '../parse';
 
+/** 事件注册表：新增该族事件类型在此登记，键为 SSE 事件的 type。 */
 export const LIFECYCLE_HANDLERS: Record<string, EventHandler> = {
   REPLY_START: (s, e) => ({
     ...s,

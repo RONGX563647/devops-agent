@@ -17,6 +17,7 @@ function lastRunningToolId(steps: ProcessEntry[]): string | null {
   return null;
 }
 
+/** 事件注册表：新增该族事件类型在此登记，键为 SSE 事件的 type。 */
 export const TOOL_HANDLERS: Record<string, EventHandler> = {
   TOOL_CALL_START: (s, e) => ({
     ...s,

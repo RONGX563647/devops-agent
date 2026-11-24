@@ -49,6 +49,7 @@ function modelCallLabel(event: StreamEvent, callIndex: number): string {
   return `模型调用 · ${event.model_name ?? '模型'} · #${callIndex}`;
 }
 
+/** 事件注册表：新增该族事件类型在此登记，键为 SSE 事件的 type。 */
 export const MODEL_HANDLERS: Record<string, EventHandler> = {
   MODEL_CALL_START: (s, e) => {
     const replyId = e.reply_id ?? '';

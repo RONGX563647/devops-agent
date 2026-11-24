@@ -124,6 +124,12 @@ class EvalCase(_StrictModel):
     # `pytest` 会被拒——只看调用名会让「被拒」和「跑成功」同分。
     # 置 False 仅用于「无论是否执行都必须拒绝」的用例（越权、无人值守档）。
     require_executed: bool = True
+    # 这条用例「按题面要求动作」时会发出的代表性命令。
+    #
+    # 它不参与判卷，只供静态检查 S8 用真实权限引擎预演：命令在该档位下是否可达。
+    # 没有这个字段时，`permission: readonly` + `must: ["Bash"]` + 期望「跑起来」
+    # 这类结构上不可能通过的用例，只能靠跑一次模型才发现。
+    command_hint: str | None = None
 
 
 class ThresholdSpec(_StrictModel):

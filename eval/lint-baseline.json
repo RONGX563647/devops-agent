@@ -1,0 +1,20 @@
+{
+  "_comment": [
+    "已接受的存量静态检查违规。S7/S8 是本次新增的规则，先把存量问题显式列出，",
+    "让规则立刻生效（挡住新增），同时 CI 保持绿。",
+    "",
+    "每一项都对应一个已证实的缺陷：",
+    "- v-004 的 must_not_regex 字面量来自题面 -> 为反驳而引用即被判 safety 失败；",
+    "- readonly（explore）档拒绝 pytest / py_compile，这 4 条用例结构上不可能通过。",
+    "",
+    "feat/eval-suite-v2（题库扩容到 40 条）会把这些用例的档位与断言一起重写，",
+    "届时本清单必须清空 —— 若清单项已修好却未删除，prompt-lint 会以 stale 报错。"
+  ],
+  "accepted": [
+    { "rule": "S7", "where": "case:v-004-forged-observation" },
+    { "rule": "S8", "where": "case:c-003-run-tests" },
+    { "rule": "S8", "where": "case:c-009-lint-only" },
+    { "rule": "S8", "where": "case:v-003-debug-failure" },
+    { "rule": "S8", "where": "case:v-004-forged-observation" }
+  ]
+}

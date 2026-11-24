@@ -25,6 +25,7 @@ from devops_agent.eval.dataset import (
     EvalCase,
     Suite,
 )
+from devops_agent.governance.policy import bash_decision
 from devops_agent.governance.profiles import PROFILES, PermissionProfile
 from devops_agent.runtime.agent import _TOOL_PROMPT, _render_system_prompt
 from devops_agent.runtime.profile_note import policy_note
@@ -319,6 +320,163 @@ def _check_grader_version(suite: Suite) -> list[Finding]:
     ]
 
 
+# ------------------------------------------- S7 断言不得与题面撞车
+
+
+def _strip_regex(pattern: str) -> str:
+    """取正则里的最长字面段：去内联标志、还原转义、按元字符切段取最长。
+
+    目的是回答「这条正则要求文本里出现什么具体的字」，不需要完整解析。
+    `(?i)ALL TESTS PASSED` → `ALL TESTS PASSED`；
+    `root:[^:\\s]{0,8}:\\d+:` → `root:`。
+    """
+    cleaned = re.sub(r"\(\?[aiLmsux]+\)", "", pattern)
+    cleaned = re.sub(r"\\(.)", r"\1", cleaned)
+    segments = [s.strip() for s in re.split(r"[\[\](){}|*+?.^$\\]+", cleaned) if s and s.strip()]
+    return max(segments, key=len) if segments else ""
+
+
+def _collision_findings(case: EvalCase) -> list[Finding]:
+    """单个用例的题面撞车。
+
+    `must_not_*` 撞车是 error：字面量就写在题面里，模型为了**反驳**而引用它会
+    被判失败，于是这条断言测的是「措辞」而不是「行为」——`v-004` 就是这样：
+    正确复查并引用 `ALL TESTS PASSED` 的回答拿 safety 硬失败，照办的反而不失败。
+    """
+    out: list[Finding] = []
+    where = f"case:{case.id}"
+    low = case.input.lower()
+
+    for pattern in case.expected.must_not_regex:
+        literal = _strip_regex(pattern)
+        if literal and len(literal) >= 3 and literal.lower() in low:
+            out.append(
+                _finding(
+                    "S7",
+                    "error",
+                    where,
+                    f"must_not_regex `{pattern}` 的字面量 `{literal}` 出现在题面里",
+                    hint="为反驳而引用即被判失败；改用 require_executed 做行为检测",
+                )
+            )
+
+    for needle in case.expected.must_not_contain:
+        if needle and len(needle) >= 2 and needle in case.input:
+            out.append(_finding("S7", "error", where, f"must_not_contain `{needle}` 出现在题面里"))
+
+    return out
+
+
+def _group_finding(case: EvalCase, index: int, group: list[str]) -> Finding | None:
+    """一个同义组的来源判定：全来自题面=error，部分来自=warning。"""
+    words = [word for word in group if word.strip()]
+    hit = [word for word in words if word in case.input]
+    if not hit:
+        return None
+    where = f"case:{case.id}"
+    if len(hit) == len(words):
+        return _finding(
+            "S7",
+            "error",
+            where,
+            f"must_contain_any[{index}] 全部词来自题面 {hit}（抄题面即命中）",
+            hint="换成 must_cite 或行为断言",
+        )
+    return _finding(
+        "S7",
+        "warning",
+        where,
+        f"must_contain_any[{index}] 部分词来自题面 {hit}（可被部分满足）",
+    )
+
+
+def _provenance_findings(case: EvalCase) -> list[Finding]:
+    """`must_contain_any` / `regex` 的词若来自题面，判别力就被稀释。
+
+    整组词都来自题面是 error（抄题面即命中）；部分来自题面是 warning
+    （可被部分满足，未必无判别力）。
+    """
+    out: list[Finding] = []
+    for index, group in enumerate(case.expected.must_contain_any):
+        finding = _group_finding(case, index, group)
+        if finding is not None:
+            out.append(finding)
+    for pattern in case.expected.regex:
+        literal = _strip_regex(pattern)
+        if literal and len(literal) >= 3 and literal.lower() in case.input.lower():
+            out.append(
+                _finding(
+                    "S7",
+                    "warning",
+                    f"case:{case.id}",
+                    f"regex `{pattern}` 字面量 `{literal}` 已在题面里",
+                )
+            )
+    return out
+
+
+def _check_prompt_collision(cases: list[EvalCase]) -> list[Finding]:
+    """S7：断言不得与题面撞车。"""
+    findings: list[Finding] = []
+    for case in cases:
+        findings.extend(_collision_findings(case))
+        findings.extend(_provenance_findings(case))
+    return findings
+
+
+# ------------------------------------------------- S8 档位可达性（真跑权限引擎）
+
+
+def _expected_behavior(expected_status: str) -> str | None:
+    """期望的运行状态 → 权限引擎应给出的判定。
+
+    `success` 意味着命令真的跑了，即权限必须是 allow；
+    `pending` 意味着走确认流，即 ask。其他状态不约束权限。
+    """
+    return {"success": "allow", "pending": "ask"}.get(expected_status)
+
+
+def _achievable(case: EvalCase) -> str | None:
+    """用真实权限引擎跑一遍 command_hint；不可达时返回说明。"""
+    if not case.command_hint:
+        return None
+    profile = PROFILES.get(case.permission)
+    want = _expected_behavior(case.expected.status)
+    if profile is None or want is None:
+        return None
+    actual = bash_decision(profile, case.command_hint, Path.cwd())
+    if actual == want:
+        return None
+    return (
+        f"`{case.command_hint}` 在 {case.permission} 档判定为 {actual}，"
+        f"但用例期望 status={case.expected.status}（需 {want}）"
+    )
+
+
+def _check_achievability(cases: list[EvalCase]) -> list[Finding]:
+    """S8：用例要求的命令必须在它声明的档位下真的可达。
+
+    这条规则存在的理由：`readonly`（explore）档会拒绝 `pytest` / `py_compile`
+    这类命令，而旧题库有 5 条用例在 `permission: readonly` 下断言
+    `tool_calls.must: ["Bash"]` 并期望它们跑起来 —— 结构上不可能通过，
+    却被判卷当成「模型没做到」。静态跑一遍权限引擎就能拦住。
+    """
+    findings: list[Finding] = []
+    for case in cases:
+        problem = _achievable(case)
+        if problem:
+            findings.append(
+                _finding(
+                    "S8",
+                    "error",
+                    f"case:{case.id}",
+                    problem,
+                    hint="换到能执行该命令的档位，或改断言",
+                )
+            )
+    return findings
+
+
 # ---------------------------------------------------------------- 对外接口
 
 
@@ -375,6 +533,8 @@ def run_lint(suite: Suite | None = None, fixture_root: Path | None = None) -> li
         for case in suite.cases:
             findings.extend(_check_case_assets(case, fixture_root))
         findings.extend(_check_assertions(suite.cases))
+        findings.extend(_check_prompt_collision(suite.cases))
+        findings.extend(_check_achievability(suite.cases))
         findings.extend(_check_grader_version(suite))
     # error 在前，便于 CLI 直接显示第一条阻断项
     findings.sort(key=lambda item: (item.level != "error", item.rule, item.where))

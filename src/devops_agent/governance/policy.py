@@ -7,6 +7,7 @@ PermissionRule(tool_name, rule_content, behavior, source)
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from agentscope.permission import (
@@ -17,6 +18,7 @@ from agentscope.permission import (
     PermissionMode,
     PermissionRule,
 )
+from agentscope.tool import Bash
 
 from devops_agent.config import RuleSpec, RuntimePolicy, load_policy
 from devops_agent.governance.profiles import PermissionProfile
@@ -134,3 +136,20 @@ def build_permission_engine(
     return PermissionEngine(
         build_permission_context(mode, deny_rules, profile=profile, policy=policy)
     )
+
+
+def bash_decision(profile: PermissionProfile, command: str, workdir: str | Path) -> str:
+    """该档位对一条 bash 命令的判定：`allow` / `ask` / `deny`。
+
+    这是「静态预演」而不是执行：给题库 lint 用，判断一条用例要求的命令
+    在它声明的档位下是否真的可达。放在本模块是因为它是 `import agentscope`
+    的边界之一——`eval/lint.py` 只通过这个函数间接使用框架。
+    """
+    engine = build_permission_engine(profile=profile)
+    engine.context.working_directories.setdefault(
+        str(Path(workdir).expanduser().resolve()),
+        AdditionalWorkingDirectory(path=str(Path(workdir).expanduser().resolve()), source="lint"),
+    )
+    tool = Bash(cwd=str(workdir))
+    decision = asyncio.run(engine.check_permission(tool, {"command": command}))
+    return str(decision.behavior.value)

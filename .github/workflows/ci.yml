@@ -23,11 +23,16 @@ jobs:
       - name: eval suite validate
         run: python -m devops_agent.eval validate --suite eval/suites/devops-core.v1.jsonl
       # 静态契约检查：工具名闭包 / 占位符机器无关 / 文案承诺=能力矩阵 / 题库自洽 /
-      # 断言有效性 / 判卷口径版本。不跑模型，纯静态，几毫秒。
-      # 本轮把 20 条恒真断言（forbid、单元素 ordered、只读档 file_state）清掉后，
-      # 这条命令是防止它们被重新写回来的唯一闸门。
+      # 断言有效性 / 判卷口径版本 / 断言撞车（S7）/ 档位可达性（S8）。
+      # 不跑模型，纯静态，几毫秒；S8 会真跑一次权限引擎。
+      # `--known-issues` 列出已接受的存量违规（eval/lint-baseline.json）：
+      # 规则对新增用例立刻生效，存量问题显式记账而不是关掉规则。
+      # 清单项若已修好却未删除，命令会以 stale 失败，避免豁免长期滞留。
       - name: prompt contract lint
-        run: python -m devops_agent.eval prompt-lint --suite eval/suites/devops-core.v1.jsonl
+        run: |
+          python -m devops_agent.eval prompt-lint \
+            --suite eval/suites/devops-core.v1.jsonl \
+            --known-issues eval/lint-baseline.json
 
   frontend:
     runs-on: ubuntu-latest

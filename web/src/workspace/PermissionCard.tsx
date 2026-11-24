@@ -6,7 +6,7 @@
  * - 超长命令折叠，避免一条 minified 的 curl 把卡片撑满整屏。
  */
 import { useState } from 'react';
-import type { ConfirmChoice, PendingCall } from '../types';
+import type { ConfirmScope, PendingCall } from '../types';
 import { formatClock } from './time';
 
 const RISK_LABEL: Record<PendingCall['risk'], string> = {
@@ -41,8 +41,8 @@ interface Props {
   calls: PendingCall[];
   expiresAt: string | null;
   busy?: boolean;
-  /** reject 表示拒绝这一批；其余是「这一次 / 本会话 / 以后都这样」。 */
-  onDecide: (choice: ConfirmChoice) => void;
+  /** reject 表示拒绝这一批；其余是放行作用域。 */
+  onDecide: (scope: ConfirmScope | 'reject') => void;
 }
 
 export function PermissionCard({ calls, expiresAt, busy, onDecide }: Props) {
@@ -87,30 +87,22 @@ export function PermissionCard({ calls, expiresAt, busy, onDecide }: Props) {
         >
           拒绝
         </button>
-        <button type="button" className="ghost-btn" disabled={busy} onClick={() => onDecide('once')}>
-          这一次
+        <button
+          type="button"
+          className="ghost-btn"
+          disabled={busy}
+          onClick={() => onDecide('once')}
+        >
+          允许一次
         </button>
         <button
           type="button"
           className="primary-btn"
           disabled={busy || danger}
           title={danger ? '高危命令只允许放行一次' : '本会话内这类命令不再询问'}
-          onClick={() => onDecide('session')}
+          onClick={() => onDecide('prefix')}
         >
-          本会话
-        </button>
-        <button
-          type="button"
-          className="ghost-btn"
-          disabled={busy || danger}
-          title={
-            danger
-              ? '高危命令只允许放行一次'
-              : '写进部署级规则文件，换会话、重启后仍然有效'
-          }
-          onClick={() => onDecide('forever')}
-        >
-          以后都这样
+          本会话允许这类
         </button>
       </div>
     </div>

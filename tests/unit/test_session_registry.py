@@ -74,12 +74,12 @@ def test_switching_profile_rebuilds_and_persists_state(db: Path) -> None:
     entry = registry.acquire("s1", PROFILES["workspace"])
     entry.runtime.state = "前半段"
 
-    switched = registry.acquire("s1", PROFILES["container"])
+    switched = registry.acquire("s1", PROFILES["unrestricted"])
 
     assert switched is not entry
-    assert switched.profile == PROFILES["container"].key
+    assert switched.profile == "unrestricted"
     # 状态先落库，再用新档位重建：切档不该丢历史
-    assert calls[-1][1] == PROFILES["container"].key
+    assert calls[-1][1] == "unrestricted"
     assert json.loads(str(calls[-1][2]))["state"] == "前半段"
 
 
@@ -124,7 +124,7 @@ def test_acquire_restores_snapshot_from_db(db: Path) -> None:
 
 def test_save_writes_snapshot_with_permission(db: Path) -> None:
     registry = _registry([])
-    entry = registry.acquire("s1", PROFILES["workspace"])
+    entry = registry.acquire("s1", PROFILES["execute"])
     entry.runtime.state = "落库"
     registry.save("s1")
 
@@ -132,7 +132,7 @@ def test_save_writes_snapshot_with_permission(db: Path) -> None:
         saved = repo.load_session_state(conn, "s1")
     assert saved is not None
     assert json.loads(saved[0])["state"] == "落库"
-    assert saved[1] == PROFILES["workspace"].key
+    assert saved[1] == "execute"
 
 
 def test_save_skips_runtime_without_snapshot(db: Path) -> None:

@@ -11,7 +11,6 @@ import type {
   InputStage,
   PendingState,
   PermissionCatalog,
-  PermissionRule,
   Run,
   RunHealth,
   RunList,
@@ -79,37 +78,6 @@ export function fetchRun(id: number): Promise<Run> {
 /** 本部署开放的权限档位：前端只能用这里列出来的，越权档服务端会 403。 */
 export function fetchPermissions(): Promise<PermissionCatalog> {
   return getJson<PermissionCatalog>('/api/permissions');
-}
-
-/** 沉淀一条规则（「以后都这样」也走这里，只是由确认卡片触发）。 */
-export async function createPermissionRule(payload: {
-  tool: string;
-  pattern: string | null;
-  behavior?: 'allow' | 'ask' | 'deny';
-  scope?: string;
-  origin?: string;
-}): Promise<PermissionRule[]> {
-  const resp = await fetch('/api/permissions/rules', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!resp.ok) throw new Error(`保存规则失败 ${resp.status}`);
-  return ((await resp.json()) as { rules: PermissionRule[] }).rules;
-}
-
-/** 撤销一条规则：之前点错只能清会话，现在可以逐条删。 */
-export async function deletePermissionRule(
-  tool: string,
-  pattern: string | null,
-): Promise<PermissionRule[]> {
-  const resp = await fetch('/api/permissions/rules', {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tool, pattern }),
-  });
-  if (!resp.ok) throw new Error(`删除规则失败 ${resp.status}`);
-  return ((await resp.json()) as { rules: PermissionRule[] }).rules;
 }
 
 /** 刷新后恢复挂起态：必须带 session_id，服务端会校验归属。 */

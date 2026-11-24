@@ -16,8 +16,6 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from devops_agent.governance.rules import rule_prefix
-
 # 传给前端的命令原文上限：只用于展示，超长命令截断后由界面折叠
 DISPLAY_LIMIT = 2000
 
@@ -47,19 +45,11 @@ class PendingCall:
 
 @dataclass(frozen=True, slots=True)
 class ConfirmDecision:
-    """前端回的一条确认结果。
-
-    三个按钮对应 (scope, persist) 两组坐标：
-
-    - 这一次：`scope="once"`（不写规则）
-    - 本会话：`scope="prefix"`，`persist=False`（随会话快照生存）
-    - 以后都这样：`scope="prefix"`，`persist=True`（写 `permissions.local.yaml`）
-    """
+    """前端回的一条确认结果。"""
 
     tool_call_id: str
     confirmed: bool
     scope: str = "once"
-    persist: bool = False
 
 
 def _parse(raw: str) -> dict[str, Any]:
@@ -118,17 +108,14 @@ def rule_content_for(scope: str, name: str, raw_input: str) -> str | None:
 
     - once：不沉淀规则
     - exact：完整命令，最窄
-    - prefix：shell 解析后取「程序 + 子命令」，如 `git commit:*`
-
-    prefix 不再取 `command.split()[0]`：那样 `git commit -m x` 会沉淀成 `git:*`
-    （放行整个 git），`cd /repo && rm -rf build` 会沉淀成 `cd:*`（顺带放行后半段）。
-    多段命令一律不沉淀 —— 「一条规则覆盖整条复合命令」本身就是错的粒度。
+    - prefix：命令首个词 + ":*"，框架按前缀匹配
     """
     command = command_of(name, raw_input).strip()
     if scope == "exact":
         return command or None
     if scope == "prefix":
-        return rule_prefix(command)
+        head = command.split()[0] if command else ""
+        return f"{head}:*" if head else None
     return None
 
 
@@ -144,14 +131,11 @@ def parse_decisions(payload: list[dict[str, Any]]) -> list[ConfirmDecision]:
         if not call_id:
             continue
         scope = str(item.get("scope", "once"))
-        # 不沉淀规则时 persist 无意义：scope=once 的请求不该顺手写进部署级文件
-        persist = bool(item.get("persist", False)) and scope != "once"
         decisions.append(
             ConfirmDecision(
                 tool_call_id=call_id,
                 confirmed=bool(item.get("confirmed", False)),
                 scope=scope if scope in RULE_SCOPES else "once",
-                persist=persist,
             )
         )
     return decisions

@@ -13,7 +13,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from devops_agent.governance import fatigue
 from devops_agent.main import app
 from devops_agent.observability import repository as repo
 
@@ -54,16 +53,12 @@ def park_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pa
     runtime = ParkRuntime()
     app.state.runtime = runtime
     monkeypatch.setenv("DEVOPS_AGENT_DB_PATH", str(tmp_path / "perm.db"))
-    # 规则文件指到临时目录：测试绝不写仓库里的 config/permissions.local.yaml
-    monkeypatch.setenv("DEVOPS_AGENT_PERMISSIONS_FILE", str(tmp_path / "perm.yaml"))
-    fatigue.reset()
     try:
         yield runtime
     finally:
         app.state.runtime = original
         app.state.sessions = None
         app.state.sessions_base = None
-        fatigue.reset()
 
 
 def _frames(body: str) -> list[dict[str, Any]]:
@@ -82,82 +77,14 @@ def _post_stream(payload: dict[str, Any]) -> str:
         return "".join(resp.iter_text())
 
 
-def test_permissions_listing_hides_container(park_runtime: ParkRuntime) -> None:
-    """默认不开放「全放开」档；每档都带由真实引擎反推的「不问 / 会问」清单。"""
+def test_permissions_listing_hides_unrestricted(park_runtime: ParkRuntime) -> None:
     resp = client.get("/api/permissions")
     assert resp.status_code == 200
     data = resp.json()
     keys = [item["key"] for item in data["available"]]
     assert data["default"] == "workspace"
-    assert keys == ["readonly", "workspace", "cautious", "unattended"]
-    assert "container" not in keys
-
-    workspace = next(item for item in data["available"] if item["key"] == "workspace")
-    assert {"key", "label", "note", "scope", "approvals", "combo", "tools", "write"} <= set(
-        workspace
-    )
-    assert workspace["scope"] == "workspace"
-    assert workspace["write"] is True
-    # 清单来自引擎实跑，不是手写文案：白名单不问、git 要问、密钥文件被拒
-    assert "pytest -q" in workspace["auto_allow"]
-    assert "git commit -m x" in workspace["will_ask"]
-    assert "cat .env" in workspace["will_deny"]
-
-    readonly = next(item for item in data["available"] if item["key"] == "readonly")
-    assert "pytest -q" in readonly["will_deny"]
-    assert data["rules"] == []
-    assert data["rules_file"].endswith("perm.yaml")
-
-
-def test_rule_crud_roundtrip(park_runtime: ParkRuntime) -> None:
-    """沉淀一条规则 → 出现在列表里 → 按 (tool, pattern) 删掉。"""
-    created = client.post(
-        "/api/permissions/rules",
-        json={
-            "tool": "Bash",
-            "pattern": "git commit:*",
-            "behavior": "allow",
-            "origin": "git commit -m x",
-        },
-    )
-    assert created.status_code == 200
-    rules = created.json()["rules"]
-    assert [row["pattern"] for row in rules] == ["git commit:*"]
-    assert rules[0]["scope"] == "workspace"
-    assert rules[0]["origin"] == "git commit -m x"
-    assert rules[0]["created_at"]
-
-    listing = client.get("/api/permissions").json()
-    assert [row["pattern"] for row in listing["rules"]] == ["git commit:*"]
-
-    removed = client.request(
-        "DELETE",
-        "/api/permissions/rules",
-        json={"tool": "Bash", "pattern": "git commit:*"},
-    )
-    assert removed.status_code == 200
-    assert removed.json()["rules"] == []
-
-    missing = client.request(
-        "DELETE", "/api/permissions/rules", json={"tool": "Bash", "pattern": "nope:*"}
-    )
-    assert missing.status_code == 404
-
-
-def test_rule_crud_rejects_bad_behavior(park_runtime: ParkRuntime) -> None:
-    resp = client.post(
-        "/api/permissions/rules", json={"tool": "Bash", "pattern": "x:*", "behavior": "maybe"}
-    )
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "bad_behavior"
-
-
-def test_trust_endpoint_records_workdir(park_runtime: ParkRuntime) -> None:
-    resp = client.post("/api/permissions/trust", json={"path": "/tmp/some-repo"})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["mode"] in ("permissive", "strict")
-    assert any("some-repo" in path for path in body["workdirs"])
+    assert "unrestricted" not in keys
+    assert {"key", "label", "note", "fallback", "write"} <= set(data["available"][0])
 
 
 def test_requesting_unavailable_profile_is_403(park_runtime: ParkRuntime) -> None:
@@ -253,16 +180,6 @@ def test_confirm_rejects_empty_results(park_runtime: ParkRuntime) -> None:
     run_id = int(_park(_post_stream({"session_id": "s1", "user_input": "x"}))["run_id"])
     resp = client.post(f"/run/{run_id}/confirm", json={"session_id": "s1", "results": []})
     assert resp.status_code == 400
-
-
-def test_fatigue_surfaces_repeated_asks(park_runtime: ParkRuntime) -> None:
-    """同一前缀被问两次以上就冒头，前端据此提示「以后都这样」。"""
-    for _ in range(2):
-        _post_stream({"session_id": "s1", "user_input": "删掉 dist"})
-    rows = client.get("/api/permissions").json()["fatigue"]
-    assert rows, "两次挂起后应有疲劳记录"
-    assert rows[0]["prefix"] == "rm:*"
-    assert rows[0]["count"] == 2
 
 
 def test_bump_asks_counts_per_run(park_runtime: ParkRuntime) -> None:

@@ -6,6 +6,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import type { Span, TraceStep } from '../types';
 import { summarizeArgs, summarizeResult } from './trace';
 import { TraceInspector } from './TraceInspector';
+import { HealthPanel } from './HealthPanel';
 import { formatDuration } from './time';
 
 /** 落库的 span → 检查面板认识的步骤：字段一一对应，只差展示用的摘要。 */
@@ -127,23 +128,14 @@ export function RunTrace({ runId, onClose }: Props) {
         </div>
       </section>
 
-      <section className="panel">
-        <h2>健康分拆解</h2>
-        {health.data ? (
-          <div className="health-dims">
-            <div className="health-total">总分 {health.data.score}</div>
-            {Object.entries(health.data.dimensions).map(([key, value]) => (
-              <div className="health-dim" key={key}>
-                <span className="dim-name">{key}</span>
-                <div className="dim-bar">
-                  <div className="dim-fill" style={{ width: `${value ?? 0}%` }} />
-                </div>
-                <span className="dim-value">{value ?? '—'}</span>
-              </div>
-            ))}
-          </div>
-        ) : <p className="muted">计算中…</p>}
-      </section>
+      {health.data ? (
+        <HealthPanel health={health.data} />
+      ) : (
+        <section className="panel">
+          <h2>健康分拆解</h2>
+          <p className="muted">{health.isError ? '健康分加载失败，稍后自动重试。' : '计算中…'}</p>
+        </section>
+      )}
 
       <section className="panel">
         <h2>时间线（瀑布图）</h2>

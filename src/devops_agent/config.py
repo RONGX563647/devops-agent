@@ -120,10 +120,36 @@ class HealthWeights(BaseModel):
 
 
 class HealthPolicy(BaseModel):
-    """health.yaml 的完整类型化视图。"""
+    """health.yaml 的完整类型化视图（评分口径 v2）。
+
+    v1 只有「权重 + 一个固定延迟基准」，长任务必然 0 分、缺耗时会白拿 100；
+    v2 把这些都做成可配置的旋钮，口径写在配置里而不是散在代码常量里。
+    """
 
     weights: HealthWeights = Field(default_factory=HealthWeights)
+    # 第一个模型调用的时间预算；之后每次调用再叠加 per_step_baseline_ms。
+    # 固定 5000ms 会把「5 步的正常长任务」判成 0 分，按步数给预算才可比。
     latency_baseline_ms: int = 5000
+    per_step_baseline_ms: int = 6000
+    # 超预算后的衰减曲线：score = 100 * (budget / actual) ** exponent。
+    # 指数 < 1 表示「慢一点不至于零分」，但慢 3 倍仍明显掉分。
+    latency_exponent: float = 0.6
+    # 每次模型调用的 token 预算与衰减指数；会话越长单次上下文越大，这里按次均看
+    token_baseline_per_call: int = 12_000
+    token_exponent: float = 0.5
+    # 效率子分里耗时与 token 的占比（某一项缺数据时按剩余权重重归一化）
+    efficiency_split: dict[str, float] = Field(
+        default_factory=lambda: {"latency": 0.7, "tokens": 0.3}
+    )
+    # 质量：不同评分来源的可信度，以及向先验收缩的强度
+    # （prior_weight 相当于「先压一条中性样本」，避免单条 0 分把整轮判死）
+    source_weights: dict[str, float] = Field(
+        default_factory=lambda: {"human": 1.0, "judge": 0.8, "rule": 0.6}
+    )
+    quality_prior: float = 0.5
+    quality_prior_weight: float = 1.0
+    # 等级阈值：从高到低匹配，value >= 阈值即取该等级
+    grades: dict[str, int] = Field(default_factory=lambda: {"A": 90, "B": 80, "C": 70, "D": 60})
 
 
 @cache

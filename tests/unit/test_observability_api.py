@@ -115,6 +115,61 @@ def test_run_health(db: Path) -> None:
     assert client.get("/api/runs/999/health").status_code == 404
 
 
+def test_run_health_explains_every_dimension(db: Path) -> None:
+    """单次健康分要能回答「为什么是这个分」：等级、置信度、每维扣分项都在。"""
+    body = client.get("/api/runs/1/health").json()
+    assert body["version"] == "v2"
+    assert body["grade"] in {"A", "B", "C", "D", "F"}
+    assert 0.0 <= body["coverage"] <= 1.0
+    assert 0.0 <= body["confidence"] <= 1.0
+    execution = body["dimensions"]["execution"]
+    assert execution["label"] == "执行健康"
+    assert execution["value"] == 100.0
+    assert execution["items"] and execution["items"][0]["label"] == "运行状态"
+    # 一次模型调用 → 预算就是首步基准
+    assert body["model_calls"] == 1
+    assert body["budget_ms"] == 5000
+    assert body["actual_ms"] == 2000
+
+
+def test_metrics_health_aggregates_distribution(db: Path) -> None:
+    body = client.get("/api/metrics/health").json()
+    assert body["runs"] == 2
+    assert body["scored"] == 2
+    assert sum(bucket["count"] for bucket in body["distribution"]) == 2
+    assert len(body["distribution"]) == 10
+    assert set(body["dimensions"]) == {"execution", "efficiency", "quality", "safety"}
+    assert body["weights"]["execution"] == 0.35
+    # 没有 correctness 评分 → quality 无均值，也不该出现在拖分排行里
+    assert body["dimensions"]["quality"]["avg"] is None
+    assert all(row["key"] != "quality" for row in body["deficits"])
+    assert body["grades"]
+
+
+def test_metrics_health_limit_is_bounded(db: Path) -> None:
+    assert client.get("/api/metrics/health", params={"limit": 0}).status_code == 422
+    assert client.get("/api/metrics/health", params={"limit": 5000}).status_code == 422
+    assert client.get("/api/metrics/health", params={"limit": 1}).json()["runs"] == 1
+
+
+def test_metrics_breakdown(db: Path) -> None:
+    body = client.get("/api/metrics/breakdown").json()
+    assert body["outcome"] == {"total": 2, "success": 1, "failed": 1, "running": 0}
+    # 没有工具/权限 span 时不编造比率
+    assert body["tool"]["calls"] == 0
+    assert body["tool"]["failure_rate"] is None
+    assert body["permission"]["deny_rate"] is None
+    assert body["model"]["calls"] == 1
+    assert body["model"]["avg_tokens_per_call"] == 150
+    assert body["tokens"]["input"] == 160
+    assert body["tokens"]["output"] == 70
+    # 输入量在、缓存量为 0 → 命中率是 0%，但「有没有缓存数据」要单独说清
+    assert body["tokens"]["cache_hit_rate"] == 0.0
+    assert body["tokens"]["cache_recorded"] is False
+    # 失败的那次没有 error 文本，聚成一条「未记录失败原因」
+    assert body["failures"] == [{"reason": "(未记录失败原因)", "count": 1}]
+
+
 def test_metrics_summary(db: Path) -> None:
     resp = client.get("/api/metrics/summary")
     assert resp.status_code == 200

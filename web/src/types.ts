@@ -107,15 +107,78 @@ export interface Span {
   parent_id?: number | null;
 }
 
+/** 一条扣分项：回答「这 8 分扣在哪」。 */
+export interface HealthItem {
+  label: string;
+  delta: number;
+  detail: string;
+}
+
+/** 单个维度：value 为 null 表示证据不足，不参与加权。 */
+export interface HealthDimension {
+  key: string;
+  label: string;
+  value: number | null;
+  weight: number;
+  confidence: number;
+  note: string;
+  items: HealthItem[];
+}
+
 export interface RunHealth {
   run_id: number;
   score: number;
-  dimensions: {
-    execution: number;
-    efficiency: number;
-    quality: number | null;
-    safety: number;
+  grade: string;
+  /** 有权重覆盖的比例：缺维度时 < 1，说明这个总分只代表部分信号。 */
+  coverage: number;
+  confidence: number;
+  version: string;
+  /** 按步数算出的耗时预算与实际耗时，前端画「花了多少 / 本该花多少」。 */
+  budget_ms: number;
+  actual_ms: number;
+  model_calls: number;
+  dimensions: Record<string, HealthDimension>;
+}
+
+/** 健康分直方图的一桶。 */
+export interface HealthBucket {
+  bucket: string;
+  from: number;
+  count: number;
+}
+
+/** 看板用的健康分聚合（最近 N 次运行按当前口径重算）。 */
+export interface HealthMetrics {
+  version: string;
+  runs: number;
+  scored: number;
+  avg_score: number | null;
+  p50: number | null;
+  p90: number | null;
+  distribution: HealthBucket[];
+  grades: Record<string, number>;
+  dimensions: Record<string, { label: string; avg: number | null; samples: number }>;
+  deficits: { key: string; label: string; avg: number; loss: number }[];
+  weights: Record<string, number>;
+  coverage_avg: number | null;
+  confidence_avg: number | null;
+}
+
+/** 全局指标拆解：工具/权限/缓存/失败聚类。 */
+export interface Breakdown {
+  version: string;
+  outcome: { total: number; success: number; failed: number; running: number };
+  tool: { calls: number; failed: number; failure_rate: number | null };
+  permission: { decisions: number; denied: number; deny_rate: number | null };
+  model: { calls: number; tokens: number; avg_tokens_per_call: number | null };
+  tokens: {
+    input: number;
+    output: number;
+    cache_hit: number;
+    cache_hit_rate: number | null;
+    cache_recorded: boolean;
   };
+  failures: { reason: string; count: number }[];
 }
 
 export interface Summary {

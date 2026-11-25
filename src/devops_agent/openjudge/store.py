@@ -83,7 +83,18 @@ CREATE TABLE IF NOT EXISTS oj_runs (
 -- 内存标志位做不到这一点（uvicorn 多 worker 时会各放行一个）。
 CREATE UNIQUE INDEX IF NOT EXISTS idx_oj_runs_active
     ON oj_runs(status) WHERE status IN ('pending', 'running');
+-- 评测的可配置项（被测模型 / 裁判模型 / 默认开关）。单行表：配置是整体，不是集合。
+CREATE TABLE IF NOT EXISTS oj_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
 """
+
+
+def now_iso() -> str:
+    """UTC ISO 时间戳（秒级足够；批量任务不会在同一秒完成两次）。"""
+    return datetime.now(UTC).isoformat()
 
 
 def db_path() -> Path:

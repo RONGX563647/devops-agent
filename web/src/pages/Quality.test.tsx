@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchOpenJudgeBatch,
   fetchOpenJudgeBatches,
+  fetchOpenJudgeCaseDocument,
+  fetchOpenJudgeLibrary,
+  fetchOpenJudgeSettings,
   fetchOpenJudgeCases,
   fetchOpenJudgeCompare,
   fetchOpenJudgeCoverage,
@@ -29,6 +32,13 @@ vi.mock('../api/client', () => ({
   fetchOpenJudgeRun: vi.fn(),
   startOpenJudgeRun: vi.fn(),
   cancelOpenJudgeRun: vi.fn(),
+  fetchOpenJudgeSettings: vi.fn(),
+  patchOpenJudgeSettings: vi.fn(),
+  fetchOpenJudgeLibrary: vi.fn(),
+  fetchOpenJudgeCaseDocument: vi.fn(),
+  saveOpenJudgeCase: vi.fn(),
+  deleteOpenJudgeCase: vi.fn(),
+  restoreOpenJudgeCase: vi.fn(),
 }));
 
 const mockSeries = vi.mocked(fetchOpenJudgeSeries);
@@ -40,6 +50,9 @@ const mockCompare = vi.mocked(fetchOpenJudgeCompare);
 const mockCoverage = vi.mocked(fetchOpenJudgeCoverage);
 const mockRubrics = vi.mocked(fetchOpenJudgeRubrics);
 const mockRun = vi.mocked(fetchOpenJudgeRun);
+const mockSettings = vi.mocked(fetchOpenJudgeSettings);
+const mockLibrary = vi.mocked(fetchOpenJudgeLibrary);
+const mockCaseDoc = vi.mocked(fetchOpenJudgeCaseDocument);
 
 function makeOjBatch() {
   return {
@@ -177,6 +190,49 @@ beforeEach(() => {
     problems: [],
   });
   mockRubrics.mockResolvedValue({ items: [], total: 0 });
+  mockSettings.mockResolvedValue({
+    values: { target_model: '', judge_model: '', judge: false, concurrency: 2, timeout: 180 },
+    effective: { target_model: 'deepseek-v4.1-flash', judge_model: 'qwen3.8-flash' },
+    limits: {
+      max_concurrency: 4,
+      min_timeout: 30,
+      max_timeout: 900,
+      max_limit: 30,
+      tracks: ['A', 'B'],
+      risks: ['low'],
+      permissions: ['readonly'],
+    },
+  });
+  mockLibrary.mockResolvedValue({
+    items: [
+      {
+        id: 'a-1',
+        track: 'A',
+        risk: 'low',
+        permission: 'readonly',
+        subject: 'repo_qa',
+        fixture: 'python-basic',
+        offline: false,
+        source: 'repo',
+        edited: false,
+      },
+    ],
+    total: 1,
+    suite: { cases: 1, suite_sha: 'abcdef123456', overlay: 0, deleted: 0, dir: '/tmp/x' },
+    thresholds: { A: { pass_rate: 0.6 } },
+    limits: {
+      max_concurrency: 4,
+      min_timeout: 30,
+      max_timeout: 900,
+      max_limit: 30,
+      tracks: ['A', 'B'],
+      risks: ['low'],
+      permissions: ['readonly'],
+    },
+  });
+  mockCaseDoc.mockResolvedValue({
+    case: { _source: 'repo', _edited: false, id: 'a-1', track: 'A', turns: ['你好'] },
+  });
   mockRun.mockResolvedValue({
     id: 5,
     status: 'done',
@@ -193,15 +249,26 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-describe('Quality 两个视图', () => {
-  it('只有「概览」与「运行与批次」两个 tab，旧 tab 已删除', () => {
+describe('Quality 三个视图', () => {
+  it('只有「概览 / 运行与批次 / 用例与模型」三个 tab，旧 tab 已删除', () => {
     renderQuality();
 
     expect(screen.getByText('概览')).toBeTruthy();
     expect(screen.getByText('运行与批次')).toBeTruthy();
+    expect(screen.getByText('用例与模型')).toBeTruthy();
     expect(screen.queryByText('评测集')).toBeNull();
     expect(screen.queryByText('评测批次')).toBeNull();
     expect(screen.queryByText('OpenJudge')).toBeNull();
+  });
+
+  it('用例与模型视图能改模型、能打开用例', async () => {
+    renderQuality();
+    fireEvent.click(screen.getByText('用例与模型'));
+
+    expect(await screen.findByText('评测模型')).toBeTruthy();
+    expect(await screen.findByText('题库')).toBeTruthy();
+    fireEvent.click(await screen.findByText('a-1'));
+    expect(await screen.findByLabelText('用例 JSON')).toBeTruthy();
   });
 
   it('概览展示最近批次与通过率趋势', async () => {

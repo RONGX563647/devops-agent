@@ -14,11 +14,12 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from devops_agent.openjudge.store import _rows
+from devops_agent.openjudge.store import _rows, now_iso
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat()
+    """本地别名：调用点太多，保留短名字免得每行都写 `store.now_iso()`。"""
+    return now_iso()
 
 
 def claim_run(

@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from devops_agent.openjudge import benchmark, grade, report, store
+from devops_agent.openjudge import benchmark, grade, report, settings, store
 from devops_agent.openjudge.trace import TraceRecord, prompt_sha
 
 DEFAULT_OUT_DIR = Path("workspace/evals/openjudge/latest")
@@ -39,6 +38,9 @@ class RunOptions:
     plan: Path | None = None
     db: Path | None = None
     out_dir: Path | None = None
+    #: 空字符串 = 跟随界面配置 / 全局模型配置（由 `settings.resolved()` 决定）
+    target_model: str = ""
+    judge_model: str = ""
 
 
 @dataclass(slots=True)
@@ -57,6 +59,7 @@ async def _capture(
     timeout: float,
     progress: Progress | None,
     should_stop: StopCheck | None,
+    target_model: str = "",
 ) -> list[TraceRecord]:
     """固定并发抓轨迹。取消只在两条用例之间检查，不打断已开始的那一条。
 
@@ -78,7 +81,7 @@ async def _capture(
                 return
             case = cases[cursor]
             cursor += 1
-            trace = await run_case(case, suite=suite, timeout=timeout)
+            trace = await run_case(case, suite=suite, timeout=timeout, target_model=target_model)
             traces.append(trace)
             done += 1
             if progress is not None:
@@ -105,6 +108,8 @@ async def execute(
     if not cases:
         raise ValueError("没有可执行的用例")
     opts = options or RunOptions()
+    # 模型只解析一次：采集与判分必须用同一份结论，否则「换了模型」会记成两个来源。
+    models = settings.resolved(opts.target_model, opts.judge_model)
     suite = benchmark.suite_sha(cases)
     plan = grade.load_plan(opts.plan)
     started = datetime.now(UTC).isoformat()
@@ -115,25 +120,40 @@ async def execute(
         timeout=opts.timeout,
         progress=progress,
         should_stop=should_stop,
+        target_model=models["target_model"] if opts.target_model else "",
     )
     if should_stop is not None and should_stop():
         raise RunCancelled
-    results = await grade.grade_traces(cases, traces, plan=plan, judge=opts.judge)
-    summary = report.summarize(cases, traces, results, meta=meta_of(cases, plan, suite))
+    results = await grade.grade_traces(
+        cases, traces, plan=plan, judge=opts.judge, judge_model_name=models["judge_model"]
+    )
+    summary = report.summarize(
+        cases, traces, results, meta=meta_of(cases, plan, suite, models=models)
+    )
     out_dir = opts.out_dir or DEFAULT_OUT_DIR
     write_artifacts(out_dir, traces, summary)
     batch_id = persist(cases, traces, results, summary, db=opts.db, started=started)
     return RunResult(batch_id=batch_id, summary=summary, out_dir=out_dir, traces=traces)
 
 
-def meta_of(cases: list[benchmark.Case], plan: grade.Plan, suite: str) -> dict[str, Any]:
-    """批次可比性元数据：题库/计划/Rubric/模型任一变化都应让两次结果不可直接比较。"""
+def meta_of(
+    cases: list[benchmark.Case],
+    plan: grade.Plan,
+    suite: str,
+    *,
+    models: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """批次可比性元数据：题库/计划/Rubric/模型任一变化都应让两次结果不可直接比较。
+
+    `models` 省略时读界面配置 + 环境变量 —— CLI 与在线跑因而不会记出两套模型名。
+    """
     from importlib.metadata import version
 
     try:
         oj_version = version("py-openjudge")
     except Exception:  # pragma: no cover - 可选依赖
         oj_version = ""
+    active = models or settings.resolved()
     return {
         "suite_sha": suite,
         "plan": plan.name,
@@ -141,9 +161,8 @@ def meta_of(cases: list[benchmark.Case], plan: grade.Plan, suite: str) -> dict[s
         "rubric_sha": "",
         "refs_sha": "",
         "prompt_sha": prompt_sha(""),
-        "model": os.environ.get("DEVOPS_AGENT_MODEL", ""),
-        "judge_model": os.environ.get("DEVOPS_AGENT_JUDGE_MODEL")
-        or os.environ.get("DEVOPS_AGENT_MODEL", ""),
+        "model": active["target_model"],
+        "judge_model": active["judge_model"],
         "oj_version": oj_version,
         "config_id": cases[0].config_id if cases else "",
         "case_count": len(cases),

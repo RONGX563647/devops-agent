@@ -4742,3 +4742,95 @@ a:hover {
 .case-row {
   cursor: pointer;
 }
+
+/* 用例与模型：配置表单 + 用例列表 + JSON 编辑器 */
+.oj-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.oj-form-row label {
+  min-width: 96px;
+  color: var(--ink-soft);
+}
+.oj-form-row input[type='text'],
+.oj-form-row input:not([type]) ,
+.oj-form-row input[type='number'] {
+  width: 220px;
+  padding: 4px 8px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+}
+.oj-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.oj-error {
+  color: var(--danger-ink);
+  font-size: 11.5px;
+}
+.oj-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  font-size: var(--text-2xs);
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  border-radius: var(--radius-pill);
+}
+.oj-badge.overlay {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+.oj-library-head,
+.oj-editor-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.oj-library-head h3,
+.oj-editor-head h3 {
+  margin: 0;
+}
+.oj-library-body {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.4fr);
+  gap: 16px;
+  align-items: start;
+}
+.oj-editor {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+.oj-editor-text {
+  width: 100%;
+  padding: 8px 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  resize: vertical;
+}
+.case-row.is-selected {
+  background: var(--accent-faint);
+}
+@media (max-width: 1100px) {
+  .oj-library-body {
+    grid-template-columns: 1fr;
+  }
+}

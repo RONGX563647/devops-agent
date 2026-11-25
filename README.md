@@ -105,13 +105,15 @@ devops-agent/
 │   │   ├── recorder.py       #   事件流 → run + spans + input_stages
 │   │   ├── health.py         #   四维加权健康分
 │   │   ├── api.py            #   /api/runs、/api/metrics、/api/feedback
-│   │   └── api.py            #   /api/runs、/api/metrics、/api/feedback
 │   ├── openjudge/
 │   │   ├── benchmark.py      #   用例模型、五赛道枚举、覆盖率基线比对
+│   │   ├── casestore.py      #   题库读取：仓库 → 覆盖层 → 去隐藏（在线改用例的落点）
+│   │   ├── settings.py       #   oj_settings：被测/裁判模型、默认开关、并发与超时
 │   │   ├── run.py            #   采集 → 判分 → 落盘 → 入库的唯一流水线
-│   │   ├── store.py          #   批次 / 用例 / rubric 存储
+│   │   ├── store.py          #   批次 / 用例 / rubric / 配置存储
 │   │   ├── run_store.py      #   oj_runs（在线任务进度与单飞锁）
-│   │   ├── service.py / api.py #  在线任务生命周期与 /api/openjudge/*
+│   │   ├── service.py / api.py #  在线任务生命周期与 /api/openjudge/*（只读）
+│   │   ├── api_edit.py       #   /api/openjudge/{settings,cases}（可写，与 api.py 分开挂）
 │   │   ├── report.py         #   聚合、赛道判决、Markdown 渲染
 │   │   ├── grade.py / rubric.py / harness.py # 裁判、权重、真跑
 │   │   └── cli.py            #   validate / run / grade / compare / rubric
@@ -121,7 +123,7 @@ devops-agent/
 ├── web/                      # React 18 + TS + Vite 前端
 ├── tests/                    # unit / integration
 ├── skills/, config/agents/   # 占位（仅 .gitkeep）
-└── workspace/                # 运行态：observability.db、附件、评测报告（不提交）
+└── workspace/                # 运行态：observability.db、附件、评测报告、题库覆盖层（不提交）
 ```
 
 ---
@@ -178,8 +180,9 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 | `DEVOPS_AGENT_SEARCH_MODE` | `forced`（默认，连同 `search_options` 下发）/ `auto`（只授权不强制） |
 | `DEVOPS_AGENT_PERMISSION_PROFILES` | 覆盖开放档位（逗号分隔） |
 | `DEVOPS_AGENT_DEFAULT_PROFILE` | 覆盖默认档位 |
-| `DEVOPS_AGENT_JUDGE_MODEL` | 评测裁判模型（nightly 使用） |
+| `DEVOPS_AGENT_JUDGE_MODEL` | 评测裁判模型的兜底值（页面配的 `judge_model` 优先；nightly 用它） |
 | `DEVOPS_AGENT_EVAL_DB_PATH` | 评测库路径 |
+| `DEVOPS_AGENT_OPENJUDGE_OVERLAY` | 题库覆盖层目录，缺省 `workspace/openjudge/cases`（测试靠它隔离） |
 
 ### 模型侧联网搜索
 
@@ -372,6 +375,11 @@ SSE 帧约定：
 | 观测 | `GET /api/runs`、`/api/runs/{id}`、`/spans`、`/input-stages`、`/health`、`/api/metrics/{summary,health,breakdown,timeseries}`、`POST /api/feedback/{run_id}`、`GET /api/eval/trends` |
 | 评测批次 | `GET /api/openjudge/{suites,batches,batches/{id},batches/{id}/cases,compare,health,series,runs,runs/{id}}`、`POST /api/openjudge/runs`、`POST /api/openjudge/runs/{id}/cancel` |
 | OpenJudge 基准 | `GET /api/openjudge/{health,batches,batches/{id},batches/{id}/cases,cases/{id},compare,coverage,rubrics}` |
+| 评测配置与题库（可写） | `GET|PATCH /api/openjudge/settings`、`GET /api/openjudge/cases?track=`、`GET|PUT|DELETE /api/openjudge/cases/{id}`、`POST /api/openjudge/cases/{id}/restore` |
+
+> 单条用例有两个 id 空间：顶层 `/cases/{id}` 是**题库**里的用例（可编辑定义，`id` 是字符串），
+> 批次内单条明细是 `/batches/{batch_id}/cases/{row_id}`（`row_id` 是 `oj_cases` 自增主键）。
+> 两者同路径会让 FastAPI 只认先注册的那个，所以批次明细必须带 `batch_id`。
 
 `/api/tools/schema` 与 `/api/context` 都**按档位返回**：放开档实际挂了 Write/Edit，写死只读四件套会让界面上的表是错的。`/api/context` 还会给出系统提示、工具 schema 的体积与指纹 —— 工具 schema 的 JSON 有一万字符，是系统提示的二十多倍，只说「工具 4 个」等于把大头藏起来。
 
@@ -422,7 +430,7 @@ SQLite 8 张表：`runs`、`spans`、`input_stages`、`eval_scores`、`session_s
 | `/` | Workspace：对话、权限选择、确认卡片、Trace 面板、密钥页签 |
 | `/dashboard` | 总览（含实时 SSE 运行） |
 | `/runs`、`/runs/:id` | 运行列表 / Trace 瀑布与健康拆解 |
-| `/quality` | 质量评估（页内页签：概览 / 运行与批次 —— 后者可直接发起在线评测并轮询进度） |
+| `/quality` | 质量评估（页内页签：概览 / 运行与批次 / 用例与模型 —— 后者可改被测与裁判模型、可直接改题库） |
 | `/cost` | 成本与性能 |
 
 ```bash
@@ -435,8 +443,9 @@ npm run lint / typecheck / test:coverage / build
 ## 评测体系
 
 **唯一实现是 `devops_agent.openjudge`**（旧 `devops_agent.eval` 已整体删除）：五赛道 90 例，
-题库在 `eval/openjudge/cases/`，用 `py-openjudge` 的语义 Grader 判分，写入独立 SQLite
-（默认 `workspace/evals/openjudge.db`），与生产库完全分离。
+题库在 `eval/openjudge/cases/`（在线改动落在 `workspace/openjudge/cases/` 覆盖层，不碰仓库文件），
+用 `py-openjudge` 的语义 Grader 判分，写入独立 SQLite（默认 `workspace/evals/openjudge.db`），
+与生产库完全分离。
 
 分三层：**纯数据与纯函数**（`benchmark` / `trace` / `report`，不 import 模型 SDK、不联网）、
 **执行流水线**（`run.execute`，在临时工作区真跑）、**两个入口**（CLI 与在线评测，共用同一条
@@ -462,6 +471,8 @@ pip install -e ".[dev,openjudge]"          # 第三方 openjudge 为可选依赖
 python -m devops_agent.openjudge validate  --strict           # 结构 + 覆盖率基线
 python -m devops_agent.openjudge run       --concurrency 4 --timeout 180 \
     --db workspace/evals/openjudge.db --out-dir workspace/evals/nightly
+python -m devops_agent.openjudge run       --target-model deepseek-v4.1-flash \
+    --judge-model qwen3-235b-a22b          # 覆盖页面里配的模型（只这一次）
 python -m devops_agent.openjudge grade     --traces ... --out-dir ...   # 换 plan/rubric 重判
 python -m devops_agent.openjudge compare   --base 1 --head 2
 python -m devops_agent.openjudge rubric    generate --name repo_qa_quality --version v1
@@ -490,6 +501,37 @@ python -m devops_agent.openjudge rubric    generate --name repo_qa_quality --ver
 - 任务挂在进程内 `asyncio.create_task` 上，不引入 Celery/Redis（单机单用户，ADR-0001）。重启会丢
   任务，由 `reap_stale_runs` 把残留标成 `failed(error='interrupted')`，让用户重跑 —— 不做假续跑。
 - 取消在**两条用例之间**生效，正在跑的那条不打断。
+
+### 在线配置模型与改用例（「用例与模型」页签）
+
+模型和题库都不写死在代码里，页面即可改（`settings.py` / `casestore.py` / `api_edit.py`）。
+
+**模型**：被测模型与裁判模型各一个输入框，落到独立的单行表 `oj_settings`，**不复用**
+`settings['model_config']`（那份是日常对话的配置；评测跑几十条用例会把额度打满，把日常配置改过去
+再改回来是双倍风险）。裁判模型此前只能靠环境变量，换一次要重启，且与被测模型同源会系统性放水。
+
+取值优先级：**显式参数 > `oj_settings` > 环境变量 / `/api/model-config`**。空字符串表示「不覆盖」
+而不是「用空模型」，所以 `GET /settings` 会把「配的值」和「实际生效的值」分开下发
+（`values` / `effective`）。被测模型只覆盖 model 名，温度与窗口仍走正常五层解析 —— 评测不该顺手改参数，
+否则批次之间悄悄不可比。
+
+**用例**：在线编辑**不写** `eval/openjudge/cases/*.jsonl`。那是覆盖率基线的口径，改它等于让
+`validate --strict` 的棘轮跟着动。落点是覆盖层：
+
+| 路径 | 作用 |
+|---|---|
+| `eval/openjudge/cases/*.jsonl` | 仓库题库，只读基线（`validate` 与 CI 覆盖率只看这里） |
+| `workspace/openjudge/cases/overlay.jsonl` | 同 `(track, id)` 覆盖仓库条目；id 不在仓库里就是新增 |
+| `workspace/openjudge/cases/deleted.json` | 隐藏清单，只记录被隐藏的仓库用例 id |
+
+读取顺序是「仓库 → 覆盖 → 去掉隐藏」，因此页面上能改、能新增、能隐藏、能恢复，而 `git status`
+始终干净。覆盖层目录可用 `DEVOPS_AGENT_OPENJUDGE_OVERLAY` 改（测试靠它隔离）。
+
+- **写入前一定先能跑**：每条用例先过 `benchmark.parse_case()` + 单条静态校验（结构、赛道、
+  fixture 是否存在），不合法返回 422 且**磁盘零写入** —— 否则题库里会躺一条到采集阶段才炸的用例。
+- **原子写**：临时文件 + `os.replace`，避免半截 JSONL 让整个题库读不出来。
+- **CLI 与页面同源**：`cli._load()` 无 `--cases` 时也读覆盖层，否则「页面上改的题」和「命令行跑的题」
+  是两份。`validate` 反过来只读仓库，所以本地删题不会让 CI 假红。
 
 ### 静态契约 lint（P1–P4，不跑模型）
 

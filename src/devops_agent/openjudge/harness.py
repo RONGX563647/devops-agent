@@ -234,6 +234,7 @@ async def run_case(
     suite: str = "",
     timeout: float = DEFAULT_TIMEOUT,
     runtime_factory: Callable[[Path, Case], Any] | None = None,
+    target_model: str = "",
 ) -> TraceRecord:
     """跑一条用例并返回轨迹；任何失败都落在 status/error 上，不向外抛。
 
@@ -241,11 +242,14 @@ async def run_case(
     2. 先跑输入管线并留档 —— 离线用例不产生模型回答，管线产物就是唯一证据；
     3. 非离线用例才建运行时，`wait_for` 兜住超时；
     4. 无论成败都算 diff、记延迟，最后删掉临时目录。
+
+    `target_model` 是本次评测要用的被测模型（空 = 跟随全局模型配置）。它只覆盖
+    `model` 一项，其余参数仍走正常的五层解析 —— 评测不该顺手改温度或窗口。
     """
     workdir = sandbox.copy_fixture(case.fixture)
     outside = workdir.parent / "outside"
     trace = TraceRecord.for_case(case, suite_sha=suite)
-    trace.model = os.environ.get("DEVOPS_AGENT_MODEL", "")
+    trace.model = target_model or _configured_model()
     trace.prompt_sha = prompt_sha(prompt_bytes_sha(workdir))
     before = sandbox.snapshot(workdir)
     started = time.perf_counter()
@@ -262,7 +266,7 @@ async def run_case(
             runtime = (
                 runtime_factory(workdir, case)
                 if runtime_factory is not None
-                else _default_runtime(workdir, case)
+                else _default_runtime(workdir, case, target_model)
             )
             await asyncio.wait_for(_drive(runtime, case, trace, prepared, 0, outside), timeout)
     except TimeoutError:
@@ -299,9 +303,23 @@ def _workspace_state(
     }
 
 
-def _default_runtime(workdir: Path, case: Case) -> Any:
+def _configured_model() -> str:
+    """当前生效的模型名：轨迹里要记真值，否则「这次到底谁在跑」无从追溯。"""
+    try:
+        from devops_agent.model_settings import effective_params
+
+        return str(effective_params().name or "")
+    except Exception:  # pragma: no cover - 配置层不可用不该让采集失败
+        return os.environ.get("DEVOPS_AGENT_MODEL", "")
+
+
+def _default_runtime(workdir: Path, case: Case, target_model: str = "") -> Any:
     """真实运行时工厂：延迟 import，离线测试不需要装 AgentScope。"""
     from devops_agent.governance.profiles import resolve
+    from devops_agent.model_settings import effective_params
     from devops_agent.runtime.assembly import build_agentscope_runtime
 
-    return build_agentscope_runtime(workdir=workdir, profile=resolve(case.permission))
+    params = effective_params(session={"model": target_model}) if target_model else None
+    return build_agentscope_runtime(
+        workdir=workdir, profile=resolve(case.permission), params=params
+    )

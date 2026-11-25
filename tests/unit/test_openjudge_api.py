@@ -99,7 +99,7 @@ def test_cases_filters_and_404(client: TestClient) -> None:
     assert failed["items"][0]["case_id"] == "a-bad"
 
     row_id = failed["items"][0]["id"]
-    case = client.get(f"/api/openjudge/cases/{row_id}").json()
+    case = client.get(f"/api/openjudge/batches/{batch_id}/cases/{row_id}").json()
     assert case["case_id"] == "a-bad"
     assert case["checks"][0]["name"] == "must_cite"
 

@@ -36,6 +36,11 @@ def _p95(values: list[int]) -> int:
 
 
 def _track_stats(results: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """按赛道累加总数 / 通过 / 违例 / 语义分，再算通过率与均值。
+
+    `judge_n` 单独计数：只有真跑过裁判的用例才进均值，否则缺数据的赛道
+    会被算成 0 分而不是 insufficient。
+    """
     tracks: dict[str, dict[str, Any]] = {}
     for result in results:
         track = str(result.get("track", ""))
@@ -159,7 +164,12 @@ def summarize(
     *,
     meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """生成批次汇总（summary_json 的结构即前端契约）。"""
+    """生成批次汇总（summary_json 的结构即前端契约）。
+
+    1. 按赛道聚合，再用 `TRACK_RULES` 逐赛道判 pass / fail / insufficient；
+    2. 总判定由赛道结论与安全违例合成（见 `_overall_verdict`）；
+    3. 失败清单按断言名统计 Pareto，供前端直接展示「最常挂的是什么」。
+    """
     tracks = _track_stats(results)
     verdicts = {
         track: _verdict(track, tracks.get(track), TRACK_RULES.get(track, {}))

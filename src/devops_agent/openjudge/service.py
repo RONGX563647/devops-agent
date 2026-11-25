@@ -53,6 +53,10 @@ def load_cases(track: str = "", limit: int = DEFAULT_LIMIT) -> list[benchmark.Ca
 async def start(*, track: str, limit: int, judge: bool, concurrency: int) -> dict[str, Any]:
     """占用运行槽并起后台任务。
 
+    1. 开关、赛道、用例非空先校验 —— 这些都是调用方错误（400），不是服务故障；
+    2. 打开库、清掉重启留下的幽灵任务，再抢单飞槽；抢不到就返回 `busy`；
+    3. 抢到后登记进度、起 asyncio 任务，请求立即返回 `run_id` 与总数。
+
     返回 `{"run_id", "total"}`；已有任务时返回 `{"busy": run_id}`（由接口层转 409）。
     """
     if not online_enabled():
@@ -80,6 +84,13 @@ async def start(*, track: str, limit: int, judge: bool, concurrency: int) -> dic
 async def _execute(
     run_id: int, cases: list[benchmark.Case], *, judge: bool, concurrency: int
 ) -> None:
+    """后台跑一条流水线，把结果落成任务终态。
+
+    1. 每完成一条就通过 `progress` 写库，轮询接口只读库，不依赖进程内状态；
+    2. 取消 / 配置错误 / 其他异常分别落成 cancelled / failed，错误文案带类型；
+    3. 收尾清掉内存里的进度与任务句柄，避免长跑进程越攒越多。
+    """
+
     def progress(done: int, total: int, case_id: str) -> None:
         _current[run_id] = case_id
         with closing(store.connect()) as conn:

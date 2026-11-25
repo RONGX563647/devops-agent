@@ -57,6 +57,12 @@ def _optional_path(arg: str | None) -> Path | None:
 
 
 async def _run(args: argparse.Namespace) -> int:
+    """采集 + 判分一次；退出码 0 通过 / 1 未通过 / 2 配置或没有用例。
+
+    1. 按 --case / --track / --offline-only / --limit 筛出本轮用例；
+    2. 把 CLI 参数翻译成 `RunOptions`，交给与在线评测共用的 `run.execute`；
+    3. 打印批次号与每赛道结论，结论不是 pass 就返回非零，供 CI 直接阻断。
+    """
     cases = _select_cases(args)
     if not cases:
         print("没有可执行的用例", file=sys.stderr)
@@ -104,6 +110,13 @@ async def _grade(args: argparse.Namespace) -> int:
 
 
 def _validate(args: argparse.Namespace) -> int:
+    """校验题库并比对覆盖基线；有问题返回 1。
+
+    1. 单条合法性交给 `benchmark.validate`，`--strict` 时才查赛道配额；
+    2. `--update-baseline` 只重写基线，不做回退比较（否则刚降完一定「不回退」）；
+    3. 校验临时题库时跳过基线 —— 基线描述的是仓库自带那套题，口径不同；
+    4. 其余情况读基线，任何覆盖指标下降都算问题。
+    """
     cases = _load(args.cases)
     problems = benchmark.validate(cases, sandbox.fixture_root(), strict=args.strict)
     coverage = benchmark.coverage(cases)

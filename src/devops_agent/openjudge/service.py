@@ -17,18 +17,15 @@ import asyncio
 import os
 from contextlib import closing
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
-from devops_agent.openjudge import benchmark, grade, run, run_store, store
+from devops_agent.openjudge import benchmark, casestore, grade, run, run_store, settings, store
 
 ENV_FLAG = "DEVOPS_AGENT_OPENJUDGE_ONLINE"
-REPO_ROOT = Path(__file__).resolve().parents[3]
-CASES_DIR = REPO_ROOT / "eval" / "openjudge" / "cases"
 
 MAX_LIMIT = 30
 DEFAULT_LIMIT = 10
-MAX_CONCURRENCY = 4
+MAX_CONCURRENCY = settings.MAX_CONCURRENCY
 
 _current: dict[int, str] = {}
 _tasks: dict[int, asyncio.Task[None]] = {}
@@ -40,22 +37,25 @@ def online_enabled() -> bool:
 
 
 def load_cases(track: str = "", limit: int = DEFAULT_LIMIT) -> list[benchmark.Case]:
-    """按赛道与条数上限取用例。track 为空表示全部赛道。"""
-    paths = sorted(CASES_DIR.glob("*.jsonl"))
-    cases = benchmark.load_cases(paths)
-    if track:
-        cases = [case for case in cases if case.track == track]
-    if limit:
-        cases = cases[:limit]
-    return cases
+    """按赛道与条数上限取用例（含本地覆盖层，见 `casestore`）。"""
+    return casestore.load_cases(track=track, limit=limit)
 
 
-async def start(*, track: str, limit: int, judge: bool, concurrency: int) -> dict[str, Any]:
+async def start(
+    *,
+    track: str,
+    limit: int,
+    judge: bool | None = None,
+    concurrency: int | None = None,
+) -> dict[str, Any]:
     """占用运行槽并起后台任务。
 
     1. 开关、赛道、用例非空先校验 —— 这些都是调用方错误（400），不是服务故障；
     2. 打开库、清掉重启留下的幽灵任务，再抢单飞槽；抢不到就返回 `busy`；
     3. 抢到后登记进度、起 asyncio 任务，请求立即返回 `run_id` 与总数。
+
+    `judge` / `concurrency` 省略时取界面里存的默认值（`oj_settings`）——「点一下就
+    跑」和「按上次配置再跑」必须用同一套参数，否则两次结果没法比。
 
     返回 `{"run_id", "total"}`；已有任务时返回 `{"busy": run_id}`（由接口层转 409）。
     """
@@ -63,26 +63,42 @@ async def start(*, track: str, limit: int, judge: bool, concurrency: int) -> dic
         raise RuntimeError(f"在线评测未开启（设置 {ENV_FLAG}=1）")
     if track and track not in benchmark.TRACKS:
         raise ValueError(f"未知赛道：{track}")
+    defaults = settings.load()
     cases = load_cases(track, limit)
     if not cases:
         raise ValueError("没有可执行的用例")
-    workers = max(1, min(concurrency, MAX_CONCURRENCY))
+    active_judge = bool(defaults["judge"]) if judge is None else judge
+    requested = int(defaults["concurrency"]) if concurrency is None else concurrency
+    workers = max(1, min(requested, MAX_CONCURRENCY))
     with closing(store.connect()) as conn:
         store.init_db(conn)
         run_store.reap_stale_runs(conn)
         run_id = run_store.claim_run(
-            conn, track=track, total=len(cases), judge=judge, concurrency=workers
+            conn, track=track, total=len(cases), judge=active_judge, concurrency=workers
         )
         if run_id is None:
             active = run_store.active_run(conn)
             return {"busy": int(active["id"]) if active else None, "total": 0}
     _current[run_id] = ""
-    _tasks[run_id] = asyncio.create_task(_execute(run_id, cases, judge=judge, concurrency=workers))
+    _tasks[run_id] = asyncio.create_task(
+        _execute(
+            run_id,
+            cases,
+            judge=active_judge,
+            concurrency=workers,
+            timeout=float(defaults["timeout"]),
+        )
+    )
     return {"run_id": run_id, "total": len(cases)}
 
 
 async def _execute(
-    run_id: int, cases: list[benchmark.Case], *, judge: bool, concurrency: int
+    run_id: int,
+    cases: list[benchmark.Case],
+    *,
+    judge: bool,
+    concurrency: int,
+    timeout: float = 180.0,
 ) -> None:
     """后台跑一条流水线，把结果落成任务终态。
 
@@ -96,7 +112,7 @@ async def _execute(
         with closing(store.connect()) as conn:
             run_store.update_progress(conn, run_id, done)
 
-    opts = run.RunOptions(judge=judge, concurrency=concurrency)
+    opts = run.RunOptions(judge=judge, concurrency=concurrency, timeout=timeout)
     try:
         result = await run.execute(
             cases,

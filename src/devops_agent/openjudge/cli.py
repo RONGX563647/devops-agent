@@ -17,30 +17,53 @@ from pathlib import Path
 from typing import Any
 
 from devops_agent.env import load_env
-from devops_agent.openjudge import benchmark, grade, report, run, sandbox, store
+from devops_agent.openjudge import (
+    benchmark,
+    casestore,
+    grade,
+    report,
+    run,
+    sandbox,
+    store,
+)
 from devops_agent.openjudge.trace import load_traces
 
-CASES_DIR = Path(__file__).resolve().parents[3] / "eval" / "openjudge" / "cases"
-DEFAULT_BASELINE = CASES_DIR.parent / "coverage.json"
+DEFAULT_BASELINE = casestore.REPO_CASES.parent / "coverage.json"
 
 
-def _case_paths(target: str | None) -> list[Path]:
-    path = Path(target) if target else CASES_DIR
+def _case_paths(target: str) -> list[Path]:
+    path = Path(target)
     if path.is_dir():
         return sorted(path.glob("*.jsonl"))
     return [path]
 
 
 def _load(target: str | None, case_id: str = "", tracks: str = "") -> list[benchmark.Case]:
-    cases = benchmark.load_cases(_case_paths(target))
-    if case_id:
-        cases = [case for case in cases if case.id == case_id]
-        if not cases:
-            raise SystemExit(f"未找到用例 {case_id}")
-    if tracks:
-        allowed = {item.strip().upper() for item in tracks.split(",") if item.strip()}
-        cases = [case for case in cases if case.track in allowed]
-    return cases
+    """用例来源：显式路径优先；否则「仓库 + 本地覆盖层」。
+
+    覆盖层是在线改用例的落点（`workspace/openjudge/cases/`）。CLI 也读它，否则
+    「页面上改的题」和「命令行跑的题」会是两份，改完立刻对不上。
+    """
+    cases = benchmark.load_cases(_case_paths(target)) if target else casestore.load_cases()
+    return _filter_track(_filter_case(cases, case_id), tracks)
+
+
+def _filter_case(cases: list[benchmark.Case], case_id: str) -> list[benchmark.Case]:
+    """按 id 取单条；写错 id 直接退出，而不是静默跑 0 条让人以为跑过了。"""
+    if not case_id:
+        return cases
+    picked = [case for case in cases if case.id == case_id]
+    if not picked:
+        raise SystemExit(f"未找到用例 {case_id}")
+    return picked
+
+
+def _filter_track(cases: list[benchmark.Case], tracks: str) -> list[benchmark.Case]:
+    """按赛道过滤；空串表示不过滤（区别于「过滤后为空」）。"""
+    if not tracks:
+        return cases
+    allowed = {item.strip().upper() for item in tracks.split(",") if item.strip()}
+    return [case for case in cases if case.track in allowed]
 
 
 def _select_cases(args: argparse.Namespace) -> list[Any]:
@@ -74,6 +97,8 @@ async def _run(args: argparse.Namespace) -> int:
         plan=_optional_path(args.plan),
         db=_optional_path(args.db),
         out_dir=_optional_path(args.out_dir),
+        target_model=args.target_model or "",
+        judge_model=args.judge_model or "",
     )
     try:
         result = await run.execute(cases, options=options)
@@ -96,8 +121,13 @@ async def _grade(args: argparse.Namespace) -> int:
     cases = _load(args.cases)
     traces = load_traces(Path(args.traces))
     plan = grade.load_plan(_optional_path(args.plan))
+    judge_model = args.judge_model or ""
+    if judge_model:
+        print(f"裁判模型：{judge_model}")
     try:
-        results = await grade.grade_traces(cases, traces, plan=plan, judge=not args.no_judge)
+        results = await grade.grade_traces(
+            cases, traces, plan=plan, judge=not args.no_judge, judge_model_name=judge_model
+        )
     except grade.ConfigError as exc:
         print(f"配置错误：{exc}", file=sys.stderr)
         return 2
@@ -116,8 +146,12 @@ def _validate(args: argparse.Namespace) -> int:
     2. `--update-baseline` 只重写基线，不做回退比较（否则刚降完一定「不回退」）；
     3. 校验临时题库时跳过基线 —— 基线描述的是仓库自带那套题，口径不同；
     4. 其余情况读基线，任何覆盖指标下降都算问题。
+
+    覆盖基线描述的是**仓库题库**：本地覆盖层是实验，不参与「覆盖率是否回退」。
+    所以不带 `--cases` 时用 `repo_cases()` 而不是 `load_cases()` —— 否则在页面上
+    删掉一条题，CI 的覆盖率棘轮就会假红。
     """
-    cases = _load(args.cases)
+    cases = _load(args.cases) if args.cases else casestore.repo_cases()
     problems = benchmark.validate(cases, sandbox.fixture_root(), strict=args.strict)
     coverage = benchmark.coverage(cases)
     baseline = Path(args.baseline) if args.baseline else DEFAULT_BASELINE
@@ -208,6 +242,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--out-dir")
     run.add_argument("--no-judge", action="store_true")
     run.add_argument("--offline-only", action="store_true")
+    run.add_argument(
+        "--target-model",
+        default="",
+        help="被测模型（默认取界面「用例与模型」里的值，再退到全局模型配置）",
+    )
+    run.add_argument(
+        "--judge-model",
+        default="",
+        help="裁判模型（默认取界面里的值，再退到 DEVOPS_AGENT_JUDGE_MODEL / DEVOPS_AGENT_MODEL）",
+    )
     run.set_defaults(func=lambda args: asyncio.run(_run(args)))
 
     regrade = sub.add_parser("grade", help="用已有轨迹重判")
@@ -216,6 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
     regrade.add_argument("--plan")
     regrade.add_argument("--out-dir")
     regrade.add_argument("--no-judge", action="store_true")
+    regrade.add_argument("--judge-model", default="", help="裁判模型（默认取界面里的值）")
     regrade.set_defaults(func=lambda args: asyncio.run(_grade(args)))
 
     compare = sub.add_parser("compare", help="比较两个批次")

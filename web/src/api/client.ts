@@ -10,10 +10,15 @@ import type {
   ModelPatch,
   OjBatch,
   OjCaseDetail,
+  OjCaseDocument,
+  OjCaseDocumentBody,
   OjCaseList,
   OjCompare,
   OjCoverage,
   OjHealth,
+  OjLibrary,
+  OjSettings,
+  OjSettingsValues,
   OjRubric,
   OjRun,
   OjRunCreated,
@@ -351,8 +356,11 @@ export function fetchOpenJudgeCases(
 }
 
 /** OpenJudge：单条用例完整明细（规则检查、裁判意见、轨迹）。 */
-export function fetchOpenJudgeCase(rowId: number): Promise<OjCaseDetail> {
-  return getJson<OjCaseDetail>(`/api/openjudge/cases/${rowId}`);
+export function fetchOpenJudgeCase(
+  batchId: number,
+  rowId: number,
+): Promise<OjCaseDetail> {
+  return getJson<OjCaseDetail>(`/api/openjudge/batches/${batchId}/cases/${rowId}`);
 }
 
 /** OpenJudge：两批次对比。 */
@@ -405,6 +413,61 @@ export function fetchOpenJudgeRuns(limit = 10): Promise<OjRunList> {
 export function cancelOpenJudgeRun(id: number): Promise<{ id: number; status: string }> {
   return sendJson<{ id: number; status: string }>(
     `/api/openjudge/runs/${id}/cancel`,
+    'POST',
+  );
+}
+
+/** OpenJudge：评测配置（被测模型 / 裁判模型 / 默认开关）。 */
+export function fetchOpenJudgeSettings(): Promise<OjSettings> {
+  return getJson<OjSettings>('/api/openjudge/settings');
+}
+
+/** OpenJudge：局部更新配置；只传要改的字段。 */
+export function patchOpenJudgeSettings(
+  patch: Partial<OjSettingsValues>,
+): Promise<OjSettings> {
+  return sendJson<OjSettings>('/api/openjudge/settings', 'PATCH', patch);
+}
+
+/** OpenJudge：题库列表（仓库 + 本地覆盖层）。 */
+export function fetchOpenJudgeLibrary(params: {
+  track?: string;
+  source?: string;
+} = {}): Promise<OjLibrary> {
+  const query = new URLSearchParams();
+  if (params.track) query.set('track', params.track);
+  if (params.source) query.set('source', params.source);
+  const suffix = query.toString();
+  return getJson<OjLibrary>(`/api/openjudge/cases${suffix ? `?${suffix}` : ''}`);
+}
+
+/** OpenJudge：单条用例的原始 JSON（编辑器直接改这份）。 */
+export function fetchOpenJudgeCaseDocument(id: string): Promise<OjCaseDocument> {
+  return getJson<OjCaseDocument>(`/api/openjudge/cases/${encodeURIComponent(id)}`);
+}
+
+/** OpenJudge：新增或修改一条用例（同 id 覆盖，写入本地覆盖层）。 */
+export function saveOpenJudgeCase(
+  id: string,
+  raw: OjCaseDocumentBody,
+): Promise<OjCaseDocument> {
+  return sendJson<OjCaseDocument>(`/api/openjudge/cases/${encodeURIComponent(id)}`, 'PUT', raw);
+}
+
+/** OpenJudge：从题库隐藏一条（仓库文件不动，只记隐藏标记）。 */
+export function deleteOpenJudgeCase(
+  id: string,
+): Promise<{ id: string; suite: OjLibrary['suite'] }> {
+  return sendJson<{ id: string; suite: OjLibrary['suite'] }>(
+    `/api/openjudge/cases/${encodeURIComponent(id)}`,
+    'DELETE',
+  );
+}
+
+/** OpenJudge：丢弃本地改动，恢复仓库版本。 */
+export function restoreOpenJudgeCase(id: string): Promise<OjCaseDocument> {
+  return sendJson<OjCaseDocument>(
+    `/api/openjudge/cases/${encodeURIComponent(id)}/restore`,
     'POST',
   );
 }

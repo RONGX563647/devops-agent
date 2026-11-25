@@ -190,3 +190,75 @@ export interface OjRunConflictDetail {
   message: string;
   run_id: number;
 }
+
+/** 可写接口下发的边界值：前端不自己编一份「并发上限是几」。 */
+export interface OjEditLimits {
+  max_concurrency: number;
+  min_timeout: number;
+  max_timeout: number;
+  max_limit: number;
+  tracks: string[];
+  risks: string[];
+  permissions: string[];
+}
+
+/** 评测配置：`''` 表示「不覆盖，跟随默认」。 */
+export interface OjSettingsValues {
+  target_model: string;
+  judge_model: string;
+  judge: boolean;
+  concurrency: number;
+  timeout: number;
+}
+
+export interface OjSettings {
+  values: OjSettingsValues;
+  /** 实际生效的两个模型名（空值已解析到具体模型）。 */
+  effective: { target_model: string; judge_model: string };
+  limits: OjEditLimits;
+}
+
+/** 题库现状：条数 + 指纹 + 本地覆盖层情况。 */
+export interface OjSuiteView {
+  cases: number;
+  suite_sha: string;
+  overlay: number;
+  deleted: number;
+  dir: string;
+}
+
+export interface OjLibraryCase {
+  id: string;
+  track: string;
+  risk: string;
+  permission: string;
+  subject: string;
+  fixture: string;
+  offline: boolean;
+  /** repo = 仓库自带；overlay = 本地改过或新增。 */
+  source: 'repo' | 'overlay';
+  /** 真 = 覆盖层里有一条同 id 的修改（能还原）。 */
+  edited: boolean;
+}
+
+export interface OjLibrary {
+  items: OjLibraryCase[];
+  total: number;
+  suite: OjSuiteView;
+  thresholds: Record<string, Record<string, number>>;
+  limits: OjEditLimits;
+}
+
+/** 单条用例的原始 JSON；下划线字段是服务端附加的来源信息。 */
+export type OjCaseDocumentBody = Record<string, unknown> & {
+  id?: string;
+  _source?: 'repo' | 'overlay';
+  _edited?: boolean;
+  _deleted_from_repo?: boolean;
+};
+
+export interface OjCaseDocument {
+  case: OjCaseDocumentBody;
+  limits?: OjEditLimits;
+  suite?: OjSuiteView;
+}

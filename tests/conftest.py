@@ -18,5 +18,12 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate_openjudge_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """每个测试用独立的空库，避免读到本机 `workspace/evals/openjudge.db`。"""
+    """每个测试用独立的空库与空覆盖层。
+
+    - DB：避免读到本机 `workspace/evals/openjudge.db`（跑过一次评测就会让健康分
+      相关断言变红，且失败信息指不到原因）。
+    - 覆盖层：避免测试写到本机 `workspace/openjudge/cases/`。那是「在线改用例」
+      的真实落点，测试碰它等于改用户的题库。
+    """
     monkeypatch.setenv("DEVOPS_AGENT_OPENJUDGE_DB_PATH", str(tmp_path / "openjudge.db"))
+    monkeypatch.setenv("DEVOPS_AGENT_OPENJUDGE_OVERLAY", str(tmp_path / "openjudge-overlay"))

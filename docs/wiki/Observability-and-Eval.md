@@ -82,10 +82,14 @@ observability/api.py + openjudge/api.py ──► React（/runs、/dashboard、/
 ```
 python -m devops_agent.openjudge validate [--strict] [--baseline PATH] [--update-baseline]
 python -m devops_agent.openjudge run      [--track A] [--limit N] [--no-judge] [--offline-only]
-python -m devops_agent.openjudge grade    [--traces PATH]        # 换 plan/rubric 重判已有轨迹
+                                          [--target-model M] [--judge-model M]
+python -m devops_agent.openjudge grade    [--traces PATH] [--judge-model M]  # 换 plan/rubric 重判
 python -m devops_agent.openjudge compare  --base 1 --head 2
 python -m devops_agent.openjudge rubric   generate --name repo_qa_quality --version v1
 ```
+
+`--target-model` / `--judge-model` 只覆盖这一次：不传就取界面「用例与模型」里配的值，
+再退到 `DEVOPS_AGENT_MODEL` / `DEVOPS_AGENT_JUDGE_MODEL`。
 
 | 子命令 | 做什么 |
 |---|---|
@@ -207,13 +211,51 @@ POST /api/openjudge/runs/{run_id}/cancel           取消（用例间生效）
 单飞锁是 `oj_runs` 上的部分唯一索引，不是内存标志位 —— uvicorn 多 worker 时
 内存锁等于没有锁。
 
+### 评测配置与题库（`openjudge/api_edit.py`，prefix `/api/openjudge`）
+
+写接口单独一个模块：读接口失败是 500，写接口失败是 422 + 「为什么不合法」，混在一起会让
+`api.py` 的异常处理变成「一次判两种错」。
+
+```
+GET   /api/openjudge/settings                      当前配置 + 实际生效值 + 上下限
+PATCH /api/openjudge/settings                      改被测/裁判模型、默认开关、并发、超时（422 不落库）
+GET   /api/openjudge/cases?track=&source=          题库列表（仓库 + 覆盖层 - 隐藏）
+GET   /api/openjudge/cases/{id}                    单条用例定义
+PUT   /api/openjudge/cases/{id}                    覆盖或新增一条（422 含字段名）
+DELETE /api/openjudge/cases/{id}                   隐藏一条仓库用例
+POST  /api/openjudge/cases/{id}/restore            撤销覆盖 / 取消隐藏
+```
+
+两条容易踩的边界：
+
+- **`{id}` 是题库 id（字符串），不是批次内的 `oj_cases.id`（自增整数）**。批次明细挂在
+  `/batches/{batch_id}/cases/{case_row_id}`；同路径不同方法会被 FastAPI 合并成一条路由，
+  只认先注册的那个。
+- **空字符串是「不覆盖」，不是「用空模型」**。所以 `GET /settings` 分开发 `values` 与
+  `effective` 两份：前者是配的，后者是这次真会用的（`显式参数 > oj_settings > env / 全局配置`）。
+
+在线改写的落点是覆盖层，不是 git 里的题库：
+
+| 路径 | 角色 |
+|---|---|
+| `eval/openjudge/cases/*.jsonl` | 仓库题库，`validate` 与 CI 覆盖率基线的唯一口径 |
+| `workspace/openjudge/cases/overlay.jsonl` | 同 `(track, id)` 覆盖仓库条目；仓库里没有就是新增 |
+| `workspace/openjudge/cases/deleted.json` | 隐藏清单（只存 id），`repo_raw()` 仍能读到原条目 |
+
+读时按「仓库 → 覆盖 → 去隐藏」合并，因此本地删题不会让 CI 覆盖率棘轮假红 —— 精确表述是：
+`casestore.repo_cases()` 才是 `validate` 的口径，`load_cases()` 是在线跑与 CLI 的口径。
+
+写入前置校验 `benchmark.parse_case()` + 单条静态检查（结构 / 赛道 / fixture 存在），不合法返回
+422 且**磁盘零写入**：允许一条跑不起来的用例进题库，等于把它变成采集阶段的一次崩溃。落盘用
+临时文件 + `os.replace`，避免半截 JSONL 让整个题库读不出来。
+
 ### 前端路由（`web/src/App.tsx`）
 
 | 路径 | 页面 |
 |---|---|
 | `/` | Workspace（对话 + 权限选择 + 确认卡片） |
 | `/runs` / `/runs/:id` | 运行列表 / 详情 |
-| `/quality` | 质量（页内页签：概览 / 运行与批次 —— 后者可直接发起在线评测并轮询进度） |
+| `/quality` | 质量（页内页签：概览 / 运行与批次 / 用例与模型 —— 后者可改被测与裁判模型、可直接改题库） |
 | `/cost` | 成本 |
 | `/dashboard` | 看板 |
 
@@ -226,3 +268,6 @@ POST /api/openjudge/runs/{run_id}/cancel           取消（用例间生效）
 | 在线评测只到单赛道 | `limit ≤ 30` + 单赛道；全量 90 例走 CLI / nightly |
 | 选题配比未做棘轮 | `validate` 只校验每赛道最低条数，赛道内部的 risk / subject 分布靠 `coverage.json` 记录，没有强制配比 |
 | 无 flaky 检测 | 同一用例只跑一次，重复运行与随机种子尚未接入 |
+| 题库覆盖层不进 git | `workspace/openjudge/cases/` 属于运行态：换机器 / 换人要重配。**要长期生效的题目得手动搬回 `eval/openjudge/cases/`**，覆盖率基线也才认它 |
+| 用例编辑只有 JSON 文本框 | 没有表单化编辑器（赛道下拉、fixture 选择器、`expected` 结构化输入）；校验靠服务端 422 回显 |
+| 改模型不改采样参数 | 在线只覆盖 model 名，温度 / 窗口 / 工具集仍走五层解析。换模型时靠 `meta.model` 判 `not_comparable`，但同模型换温度不会被发现 |

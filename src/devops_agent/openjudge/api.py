@@ -10,20 +10,16 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
-from pathlib import Path
 from typing import TypeVar
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from devops_agent.openjudge import benchmark, report, service, store
+from devops_agent.openjudge import benchmark, casestore, report, service, store
 
 router = APIRouter(prefix="/api/openjudge", tags=["openjudge"])
 
 T = TypeVar("T")
-
-# openjudge/api.py -> openjudge -> devops_agent -> src -> 仓库根
-_CASES_DIR = Path(__file__).resolve().parents[3] / "eval" / "openjudge" / "cases"
 
 
 def _read(operation: Callable[[sqlite3.Connection], T]) -> T | None:
@@ -94,10 +90,15 @@ def openjudge_cases(
     return {"items": rows, "total": total, "limit": limit, "offset": offset}
 
 
-@router.get("/cases/{case_row_id}")
-def openjudge_case(case_row_id: int) -> dict[str, object]:
+@router.get("/batches/{batch_id}/cases/{case_row_id}")
+def openjudge_case(batch_id: int, case_row_id: int) -> dict[str, object]:
+    """批次内某一条用例明细。
+
+    挂在批次下而不是顶层的 `/cases/{id}`：顶层那个路径要留给**题库**（可编辑的
+    用例定义），两者 id 空间完全不同，混在同一层级迟早返回错对象。
+    """
     row = _read(lambda conn: store.get_case(conn, case_row_id))
-    if row is None:
+    if row is None or int(row.get("batch_id", 0)) != batch_id:
         raise HTTPException(status_code=404, detail="用例不存在")
     return row
 
@@ -122,17 +123,20 @@ def openjudge_rubrics() -> dict[str, object]:
 
 @router.get("/coverage")
 def openjudge_coverage() -> dict[str, object]:
-    """题库覆盖（赛道/风险/主题/工具）与校验问题，前端「覆盖」面板直接用。"""
-    paths = sorted(_CASES_DIR.glob("*.jsonl"))
-    if not paths:
-        return {"cases": 0, "suite_sha": "", "coverage": {}, "problems": []}
-    cases = benchmark.load_cases(paths)
-    problems = benchmark.validate(cases, _CASES_DIR.parent / "fixtures", strict=False)
+    """题库覆盖（赛道/风险/主题/工具）与校验问题。
+
+    口径是**仓库题库**：这是 CI 覆盖率基线的同一份事实。本地覆盖层改了哪几条由
+    `overlay` / `deleted` 两个计数单独说明，避免「我改了两条 → 覆盖率下跌」的误读。
+    """
+    cases = casestore.repo_cases()
+    if not cases:
+        return {"cases": 0, "suite_sha": "", "coverage": {}, "problems": [], "overlay": 0}
     return {
         "cases": len(cases),
         "suite_sha": benchmark.suite_sha(cases),
         "coverage": benchmark.coverage(cases),
-        "problems": problems,
+        "problems": benchmark.validate(cases, casestore.FIXTURES, strict=False),
+        **casestore.suite_view(),
     }
 
 
@@ -143,8 +147,7 @@ def openjudge_suites() -> dict[str, object]:
     阈值从 `report.TRACK_RULES` 下发，前端不再自己维护一份「门禁线」——
     之前那套写死在前端，取的是 `items[0]`，结果拿到的是最旧的套件。
     """
-    paths = sorted(_CASES_DIR.glob("*.jsonl"))
-    cases = benchmark.load_cases(paths) if paths else []
+    cases = casestore.load_cases()
     coverage = benchmark.coverage(cases) if cases else {"tracks": {}}
     latest = _read(_latest_tracks) or {}
     return {

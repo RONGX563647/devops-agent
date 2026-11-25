@@ -36,10 +36,10 @@ function TrackRow({ track, stat }: { track: string; stat: OjTrackStat }) {
   );
 }
 
-function CaseDrawer({ rowId }: { rowId: number }) {
+function CaseDrawer({ batchId, rowId }: { batchId: number; rowId: number }) {
   const detail = useQuery({
-    queryKey: ['oj-case', rowId],
-    queryFn: () => fetchOpenJudgeCase(rowId),
+    queryKey: ['oj-case', batchId, rowId],
+    queryFn: () => fetchOpenJudgeCase(batchId, rowId),
   });
   if (detail.isLoading) return <div className="muted">加载用例明细…</div>;
   if (detail.error || !detail.data) return <div className="muted">用例明细不可用</div>;
@@ -352,7 +352,9 @@ export function OpenJudge() {
                 下一页
               </button>
             </div>
-            {openCase !== null && <CaseDrawer rowId={openCase} />}
+            {openCase !== null && activeId !== null && (
+              <CaseDrawer batchId={activeId} rowId={openCase} />
+            )}
           </div>
         </>
       )}

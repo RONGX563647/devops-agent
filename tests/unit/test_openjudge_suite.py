@@ -447,7 +447,7 @@ def test_judge_model_requires_credentials(monkeypatch: pytest.MonkeyPatch) -> No
         "DEVOPS_AGENT_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
-    with pytest.raises(grade.ConfigError, match="缺少环境变量"):
+    with pytest.raises(grade.ConfigError, match="缺少配置"):
         grade.judge_model()
 
 

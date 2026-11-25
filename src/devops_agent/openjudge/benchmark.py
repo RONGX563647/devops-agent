@@ -225,19 +225,20 @@ def _parse_turns(raw: dict[str, Any], case_id: str) -> tuple[Turn, ...]:
 
 
 def parse_case(raw: dict[str, Any]) -> Case:
-    """把一行 JSON 解析成 Case；任何结构错误都带 case id 抛出。
-
-    1. 查未知字段 2. id 必填 3. 枚举白名单 + turns/expected 递归解析。
-    """
+    """把一行 JSON 解析成 Case；任何结构错误都带 case id 抛出。"""
+    # step1: 查未知字段
     unknown = set(raw) - _TOP_KEYS
+    # step2: id 必填
     case_id = str(raw.get("id", "")).strip()
     if not case_id:
         raise ValueError("用例缺少 id")
     if unknown:
         raise ValueError(f"{case_id}: 未知顶层字段 {sorted(unknown)}")
+    # step3: 枚举字段走白名单
     track = _require(str(raw.get("track", "")), TRACKS, case_id, "赛道")
     risk = _require(str(raw.get("risk", "")), RISKS, case_id, "风险等级")
     permission = _require(str(raw.get("permission", "")), PERMISSIONS, case_id, "权限档位")
+    # step4: turns/expected 递归解析后构造
     return Case(
         id=case_id,
         track=track,
@@ -358,17 +359,18 @@ def _case_problems(case: Case, known_fixtures: set[str]) -> list[str]:
 def validate(cases: list[Case], fixtures: Path, *, strict: bool = True) -> list[str]:
     """校验题库：配比、fixture 存在、断言非空、确认轮与权限匹配。
 
-    1. 收 fixture 名 2. 单例检查（B 权限/确认轮/D 离线） 3. strict 比配额防删薄。
-
     返回问题列表（空 = 通过）。`strict=True` 时配比不足也算问题，
     与 CI 的 `eval validate --strict` 口径一致。
     """
     problems: list[str] = []
     counts = {track: 0 for track in TRACKS}
+    # step1: 收 fixture 目录名
     known_fixtures = {path.name for path in fixtures.iterdir() if path.is_dir()}
+    # step2: 逐条单例检查
     for case in cases:
         counts[case.track] += 1
         problems.extend(_case_problems(case, known_fixtures))
+    # step3: strict 比配额防删薄
     if strict:
         for track, quota in TRACK_QUOTA.items():
             if counts[track] < quota:

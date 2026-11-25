@@ -350,10 +350,7 @@ async def grade_traces(
     judge: bool = True,
     judge_model_name: str = "",
 ) -> list[dict[str, Any]]:
-    """对轨迹逐条判分；`judge=False` 只跑规则门禁（离线 PR 用）。
-
-    1. 每条跑断言 2. judge=False 停在此 3. 需裁判构造模型，缺配置抛 ConfigError 4. 并回算 passed。
-    """
+    """对轨迹逐条判分；`judge=False` 只跑规则门禁（离线 PR 用）。"""
     active_plan = plan or load_plan()
     by_id = {case.id: case for case in cases}
     results: list[dict[str, Any]] = []
@@ -361,6 +358,7 @@ async def grade_traces(
         case = by_id.get(trace.case_id)
         if case is None:
             continue
+        # step1: 每条先跑确定性断言
         checks = run_checks(case, trace)
         results.append(
             {
@@ -377,12 +375,15 @@ async def grade_traces(
             }
         )
 
+    # step2: judge=False 到此为止
     if not judge:
         _finish(results)
         return results
 
+    # step3: 需裁判则构造模型，缺配置抛 ConfigError
     if model is None:
         model = judge_model(judge_model_name)
+    # step4: 语义分并回后算 passed
     await _apply_judge(active_plan, model, cases, traces, results)
     _finish(results)
     return results
@@ -453,19 +454,19 @@ async def _apply_judge(
 ) -> None:
     """只对规则通过且声明了 judge 的用例跑语义裁判。
 
-    1. 过滤规则失败/无 judge 2. 投四桶 3. 每桶 GradingRunner 并发 4. update 合并不覆盖。
-
     分组裁剪（避免把「不适用」判成 0 分）：
     - 工具组只在用例显式声明了期望工具/入参时跑，且只把命中的调用交给裁判；
     - 确认类用例不跑 instruction：确认/拒绝是用户决定，用第一句操作指令
       去评「有没有照做」必然冤枉模型；
     - loop 需要至少两次工具调用才有意义。
     """
+    # step1: 过滤规则失败/无 judge 者
     trace_by_id = {trace.case_id: trace for trace in traces}
     result_by_id = {result["case_id"]: result for result in results}
     buckets: dict[str, tuple[list[dict[str, Any]], list[str]]] = {
         name: ([], []) for name in _JUDGE_GROUPS
     }
+    # step2: 按适用性投四桶
     for case in cases:
         trace = trace_by_id.get(case.id)
         row = _judge_row(case, result_by_id.get(case.id), trace)
@@ -473,12 +474,14 @@ async def _apply_judge(
             continue
         _fill_buckets(case, trace, row, buckets)
 
+    # step3: 四桶各一个 GradingRunner 并发
     groups = await asyncio.gather(
         _run_group(plan, ("correctness", "relevance"), model, buckets["content"][0]),
         _run_group(plan, ("instruction",), model, buckets["instruction"][0]),
         _run_group(plan, ("tool_select", "tool_param"), model, buckets["tool"][0]),
         _run_group(plan, ("loop",), model, buckets["loop"][0]),
     )
+    # step4: 多组结果 update 合并不覆盖
     for name, graded in zip(_JUDGE_GROUPS, groups, strict=False):
         for case_id, item in zip(buckets[name][1], graded, strict=False):
             # 同一用例可能同时被多组判分，合并而不是覆盖

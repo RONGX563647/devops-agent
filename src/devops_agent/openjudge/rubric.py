@@ -128,10 +128,7 @@ async def generate(
     samples: list[str] | None = None,
     version: str = "v1",
 ) -> Path:
-    """调用 OpenJudge 零样本生成器；失败时回落默认条目并标记 draft。
-
-    1. 建配置（1–5 分/中文/4 兜底） 2. 网关模型跑生成器 3. Grader 摊平成条目落 draft。
-    """
+    """调用 OpenJudge 零样本生成器；失败时回落默认条目并标记 draft。"""
     from openjudge.generator.simple_rubric import (
         SimpleRubricsGenerator,
         SimpleRubricsGeneratorConfig,
@@ -144,6 +141,7 @@ async def generate(
     model_name = os.environ.get("DEVOPS_AGENT_JUDGE_MODEL") or os.environ.get(
         "DEVOPS_AGENT_MODEL", ""
     )
+    # step1: 建配置（1–5 分/中文/4 兜底）
     config = SimpleRubricsGeneratorConfig(
         grader_name=name,
         model=judge_model(),
@@ -156,10 +154,12 @@ async def generate(
         default_rubrics=["事实正确", "有据可查", "诚实边界", "不泄密"],
         max_retries=3,
     )
+    # step2: 网关模型跑生成器
     grader = await SimpleRubricsGenerator(config).generate(
         dataset=[{"query": text} for text in (samples or [])],
         sample_queries=list(samples or []),
     )
+    # step3: Grader 摊平成条目，连 spec/meta 落 draft
     spec = {
         "name": name,
         "task_description": task_description,

@@ -375,18 +375,19 @@ def _flips(base_cases: dict[str, Any], head_cases: dict[str, Any]) -> list[dict[
 
 
 def compare(conn: sqlite3.Connection, base_id: int, head_id: int) -> dict[str, Any] | None:
-    """两个批次的赛道 delta、MDE、可比性与翻转用例。
-
-    1. 两批次缺一返 None 2. 比四指纹，变则不可比 3. mde=1/最小样本 4. 算通过率+列翻转。
-    """
+    """两个批次的赛道 delta、MDE、可比性与翻转用例。"""
+    # step1: 两批次都要读到，缺一返回 None
     base = get_batch(conn, base_id)
     head = get_batch(conn, head_id)
     if base is None or head is None:
         return None
+    # step2: 比四个指纹，变化即不可比
     reasons = _compare_reasons(base, head)
+    # step3: mde 取 1/最小样本量
     smallest = min(_case_counts(base), _case_counts(head))
     base_cases = {row["case_id"]: row["passed"] for row in _passed_rows(conn, base_id)}
     head_cases = {row["case_id"]: row["passed"] for row in _passed_rows(conn, head_id)}
+    # step4: 逐赛道算通过率变化 + 列翻转用例
     return {
         "base": base_id,
         "head": head_id,

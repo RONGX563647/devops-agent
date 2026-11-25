@@ -80,14 +80,13 @@ def _optional_path(arg: str | None) -> Path | None:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    """采集 + 判分一次；退出码 0 通过 / 1 未通过 / 2 配置或没有用例。
-
-    1. 筛 --case/--track/--limit 2. 参数转 RunOptions 交 run.execute 3. 非 pass 返回非零阻断 CI。
-    """
+    """采集 + 判分一次；退出码 0 通过 / 1 未通过 / 2 配置或没有用例。"""
+    # step1: 按 case/track/limit 筛用例
     cases = _select_cases(args)
     if not cases:
         print("没有可执行的用例", file=sys.stderr)
         return 2
+    # step2: 参数转 RunOptions 交 run.execute
     options = run.RunOptions(
         judge=not args.no_judge,
         concurrency=args.concurrency,
@@ -112,6 +111,7 @@ async def _run(args: argparse.Namespace) -> int:
     )
     for track, stats in sorted(summary["tracks"].items()):
         print(f"  {track}: {stats['passed']}/{stats['total']} {stats['verdict']}")
+    # step3: 非 pass 返回非零阻断 CI
     return 0 if summary["verdict"] == "pass" else 1
 
 
@@ -140,25 +140,27 @@ async def _grade(args: argparse.Namespace) -> int:
 def _validate(args: argparse.Namespace) -> int:
     """校验题库并比对覆盖基线；有问题返回 1。
 
-    1. validate 查单条+strict 配额 2. update-baseline 只写不比 3. 临时题库跳基线 4. 覆盖降即问题。
-
     覆盖基线描述的是**仓库题库**：本地覆盖层是实验，不参与「覆盖率是否回退」。
     所以不带 `--cases` 时用 `repo_cases()` 而不是 `load_cases()` —— 否则在页面上
     删掉一条题，CI 的覆盖率棘轮就会假红。
     """
     cases = _load(args.cases) if args.cases else casestore.repo_cases()
+    # step1: validate 查单条，strict 查配额
     problems = benchmark.validate(cases, sandbox.fixture_root(), strict=args.strict)
     coverage = benchmark.coverage(cases)
     baseline = Path(args.baseline) if args.baseline else DEFAULT_BASELINE
+    # step2: update-baseline 只写不比回退
     if args.update_baseline:
         baseline.write_text(
             json.dumps(coverage, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         print(f"已写入覆盖基线 {baseline}")
+    # step3: 临时题库跳基线
     elif args.cases:
         # 基线描述的是仓库自带题库；校验一份临时题库时不应拿它做回退判断。
         pass
+    # step4: 其余读基线，覆盖降即问题
     elif baseline.exists():
         declared = json.loads(baseline.read_text(encoding="utf-8"))
         problems.extend(benchmark.compare_coverage(coverage, declared))

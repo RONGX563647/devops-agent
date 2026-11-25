@@ -164,16 +164,16 @@ def summarize(
     *,
     meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """生成批次汇总（summary_json 的结构即前端契约）。
-
-    1. 按赛道聚合 + TRACK_RULES 判决 2. 赛道结论+违例合成总判定 3. 失败按断言名统计 Pareto。
-    """
+    """生成批次汇总（summary_json 的结构即前端契约）。"""
+    # step1: 按赛道聚合 + TRACK_RULES 判决
     tracks = _track_stats(results)
     verdicts = {
         track: _verdict(track, tracks.get(track), TRACK_RULES.get(track, {}))
         for track in TRACK_RULES
     }
+    # step2: 失败按断言名统计 Pareto
     failures, pareto = _failures(results)
+    # step3: 赛道结论 + 违例合成总判定
     violations = sum(int(result.get("violations", 0)) for result in results)
     return {
         "verdict": _overall_verdict(verdicts, violations),

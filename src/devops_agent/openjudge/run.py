@@ -61,10 +61,7 @@ async def _capture(
     should_stop: StopCheck | None,
     target_model: str = "",
 ) -> list[TraceRecord]:
-    """固定并发抓轨迹。取消只在两条用例之间检查，不打断已开始的那一条。
-
-    1. worker 共享 cursor 自增 2. 单例失败写 status 不外抛 3. 取消让 worker 退出，已完成照常返。
-    """
+    """固定并发抓轨迹。取消只在两条用例之间检查，不打断已开始的那一条。"""
     from devops_agent.openjudge.harness import run_case
 
     total = len(cases)
@@ -74,17 +71,20 @@ async def _capture(
 
     async def worker() -> None:
         nonlocal cursor, done
+        # step1: worker 共享 cursor，取值即自增
         while cursor < total:
             if should_stop is not None and should_stop():
                 return
             case = cases[cursor]
             cursor += 1
+            # step2: 单例失败由 run_case 写 status，不外抛
             trace = await run_case(case, suite=suite, timeout=timeout, target_model=target_model)
             traces.append(trace)
             done += 1
             if progress is not None:
                 progress(done, total, case.id)
 
+    # step3: 并发启动 worker；取消只在用例间生效
     await asyncio.gather(*(worker() for _ in range(max(1, concurrency))))
     return traces
 
@@ -96,18 +96,17 @@ async def execute(
     progress: Progress | None = None,
     should_stop: StopCheck | None = None,
 ) -> RunResult:
-    """跑一批：采集 → 判分 → 汇总 → 落盘 → 入库。取消时抛 `RunCancelled`。
-
-    1. 固定指纹+判分计划 2. 采集轨迹 3. 规则门禁全覆盖，语义仅通过者 4. 汇总+写盘+入库返 batch_id。
-    """
+    """跑一批：采集 → 判分 → 汇总 → 落盘 → 入库。取消时抛 `RunCancelled`。"""
     if not cases:
         raise ValueError("没有可执行的用例")
     opts = options or RunOptions()
     # 模型只解析一次：采集与判分必须用同一份结论，否则「换了模型」会记成两个来源。
+    # step1: 固定题库指纹与判分计划，进批次元数据
     models = settings.resolved(opts.target_model, opts.judge_model)
     suite = benchmark.suite_sha(cases)
     plan = grade.load_plan(opts.plan)
     started = datetime.now(UTC).isoformat()
+    # step2: 采集轨迹（唯一驱动模型的一步）
     traces = await _capture(
         cases,
         suite=suite,
@@ -119,6 +118,7 @@ async def execute(
     )
     if should_stop is not None and should_stop():
         raise RunCancelled
+    # step3: 规则门禁全覆盖，语义裁判仅规则通过者
     results = await grade.grade_traces(
         cases, traces, plan=plan, judge=opts.judge, judge_model_name=models["judge_model"]
     )
@@ -127,6 +127,7 @@ async def execute(
     )
     out_dir = opts.out_dir or DEFAULT_OUT_DIR
     write_artifacts(out_dir, traces, summary)
+    # step4: 汇总 + 写盘 + 入库，返回 batch_id
     batch_id = persist(cases, traces, results, summary, db=opts.db, started=started)
     return RunResult(batch_id=batch_id, summary=summary, out_dir=out_dir, traces=traces)
 
@@ -190,13 +191,11 @@ def persist(
     db: Path | None,
     started: str,
 ) -> int | None:
-    """一个批次 + 每条用例一行；trace 原样存，便于换 plan 重判。
-
-    1. 写批次头拿 batch_id 2. 按 case_id 配对结果+轨迹 3. 逐条落库，无结果跳过。
-    """
+    """一个批次 + 每条用例一行；trace 原样存，便于换 plan 重判。"""
     del cases  # 用例形态已在 summary/results 里，签名保留便于调用方对齐
     with store.connect(db) as conn:
         store.init_db(conn)
+        # step1: 写批次头拿 batch_id
         batch_id = store.insert_batch(
             conn,
             suite_sha=str(summary["meta"].get("suite_sha", "")),
@@ -211,7 +210,9 @@ def persist(
             verdict=str(summary["verdict"]),
             summary=summary,
         )
+        # step2: 按 case_id 配对结果与轨迹
         by_case = {item["case_id"]: item for item in results}
+        # step3: 逐条落库，无判分结果的跳过
         for trace in traces:
             result = by_case.get(trace.case_id)
             if result is not None:

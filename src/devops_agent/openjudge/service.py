@@ -44,13 +44,12 @@ async def start(
 ) -> dict[str, Any]:
     """占用运行槽并起后台任务。
 
-    1. 校验开关/赛道/用例 2. 清幽灵任务+抢单飞槽 3. 起 asyncio 任务返 run_id。
-
     `judge` / `concurrency` 省略时取界面里存的默认值（`oj_settings`）——「点一下就
     跑」和「按上次配置再跑」必须用同一套参数，否则两次结果没法比。
 
     返回 `{"run_id", "total"}`；已有任务时返回 `{"busy": run_id}`（由接口层转 409）。
     """
+    # step1: 校验开关/赛道/用例非空
     if not online_enabled():
         raise RuntimeError(f"在线评测未开启（设置 {ENV_FLAG}=1）")
     if track and track not in benchmark.TRACKS:
@@ -62,6 +61,7 @@ async def start(
     active_judge = bool(defaults["judge"]) if judge is None else judge
     requested = int(defaults["concurrency"]) if concurrency is None else concurrency
     workers = max(1, min(requested, MAX_CONCURRENCY))
+    # step2: 清幽灵任务 + 抢 DB 单飞槽
     with closing(store.connect()) as conn:
         store.init_db(conn)
         run_store.reap_stale_runs(conn)
@@ -71,6 +71,7 @@ async def start(
         if run_id is None:
             active = run_store.active_run(conn)
             return {"busy": int(active["id"]) if active else None, "total": 0}
+    # step3: 起 asyncio 任务，立即返回 run_id
     _current[run_id] = ""
     _tasks[run_id] = asyncio.create_task(
         _execute(
@@ -92,17 +93,16 @@ async def _execute(
     concurrency: int,
     timeout: float = 180.0,
 ) -> None:
-    """后台跑一条流水线，把结果落成任务终态。
+    """后台跑一条流水线，把结果落成任务终态。"""
 
-    1. 每条经 progress 写库 2. 取消/错误落 cancelled/failed 3. 收尾清内存句柄防累积。
-    """
-
+    # step1: 每条完成经 progress 写库，轮询只读库
     def progress(done: int, total: int, case_id: str) -> None:
         _current[run_id] = case_id
         with closing(store.connect()) as conn:
             run_store.update_progress(conn, run_id, done)
 
     opts = run.RunOptions(judge=judge, concurrency=concurrency, timeout=timeout)
+    # step2: 取消/配置错/其余异常分别落终态
     try:
         result = await run.execute(
             cases,
@@ -118,6 +118,7 @@ async def _execute(
         _finish(run_id, status="failed", error=f"{type(exc).__name__}: {exc}")
     else:
         _finish(run_id, status="done", batch_id=result.batch_id)
+    # step3: 收尾清内存进度与任务句柄
     finally:
         _current.pop(run_id, None)
         _cancelled.discard(run_id)

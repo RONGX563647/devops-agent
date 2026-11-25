@@ -179,10 +179,7 @@ def _record_stages(prepared: Any, trace: TraceRecord) -> None:
 async def _drive(
     runtime: Any, case: Case, trace: TraceRecord, prepared: Any, cursor: int, outside: Path
 ) -> None:
-    """按 turns 驱动：用户输入 → 事件 → 挂起 → 确认续跑。
-
-    1. OUTSIDE 换路径 2. 游标增量抽调用/结果 3. 挂起有 confirm 续跑 4. 上限 _MAX_CONFIRM_ROUNDS。
-    """
+    """按 turns 驱动：用户输入 → 事件 → 挂起 → 确认续跑。"""
     pending: dict[str, ToolCallRecord] = {}
     turns = list(case.turns)
     index = 0
@@ -193,11 +190,14 @@ async def _drive(
             index += 1
             continue
         trace.turns.append({"user": turn.text, "final": ""})
+        # step1: OUTSIDE 占位符换真路径
         text = _resolve_outside(turn.text, outside)
+        # step2: 增量抽工具调用/结果
         events = [event async for event in runtime.stream(f"oj-{trace.run_id}", text)]
         _absorb(events, trace)
         cursor = _collect(runtime, cursor, trace, pending)
         index += 1
+        # step3: 挂起则按 confirm 轮续跑，上限 _MAX_CONFIRM_ROUNDS
         rounds = 0
         while rounds < _MAX_CONFIRM_ROUNDS:
             awaiting = runtime.pending_calls()
@@ -230,12 +230,10 @@ async def run_case(
     target_model: str = "",
 ) -> TraceRecord:
     """跑一条用例并返回轨迹；任何失败都落在 status/error 上，不向外抛。
-
-    1. 复制 fixture+备 outside 2. 跑管线留档 3. 非离线建运行时 4. 算 diff/记延迟/删临时目录。
-
     `target_model` 是本次评测要用的被测模型（空 = 跟随全局模型配置）。它只覆盖
     `model` 一项，其余参数仍走正常的五层解析 —— 评测不该顺手改温度或窗口。
     """
+    # step1: 复制 fixture，备 outside 越权目录
     workdir = sandbox.copy_fixture(case.fixture)
     outside = workdir.parent / "outside"
     trace = TraceRecord.for_case(case, suite_sha=suite)
@@ -244,6 +242,7 @@ async def run_case(
     before = sandbox.snapshot(workdir)
     started = time.perf_counter()
     try:
+        # step2: 跑输入管线并留档（离线用例唯一证据）
         prepared = prepare(_resolve_outside(case.prompt, outside), workspace_root=workdir)
         _record_stages(prepared, trace)
         # 输入管线的最终文本是 D 赛道「密钥是否真被脱敏」的唯一证据：
@@ -252,6 +251,7 @@ async def run_case(
             "prepared_text": prepared.text[:8000],
             "references": [{"kind": ref.kind, "value": ref.value} for ref in prepared.references],
         }
+        # step3: 非离线才建运行时并驱动
         if not case.offline:
             runtime = (
                 runtime_factory(workdir, case)
@@ -265,6 +265,7 @@ async def run_case(
     except Exception as exc:  # noqa: BLE001 - 单条用例失败不能中断整批
         trace.status = "error"
         trace.error = f"{type(exc).__name__}: {exc}"
+    # step4: 算 diff/记延迟/删临时目录
     finally:
         after = sandbox.snapshot(workdir)
         trace.workspace = _workspace_state(before, after, workdir, case)

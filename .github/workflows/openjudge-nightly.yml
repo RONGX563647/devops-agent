@@ -1,0 +1,49 @@
+name: openjudge-nightly
+
+on:
+  schedule:
+    # 每天 03:30 UTC（北京时间 11:30），避开白天配额高峰
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+# 评测只需读代码与写运行期文件（报告走 artifact 上传），不需要写仓库。
+permissions:
+  contents: read
+
+jobs:
+  openjudge:
+    runs-on: ubuntu-latest
+    # 主要耗时是模型调用：90 实例 × 每条一次 agent 轨迹 + 一次裁判，并发 4、
+    # 单条上限 180s，最坏约 67 分钟。超时说明卡在模型侧而不是评测逻辑。
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev,openjudge]"
+      - name: validate suite
+        run: python -m devops_agent.openjudge validate --strict
+      - name: run openjudge with judge
+        env:
+          DEVOPS_AGENT_API_KEY: ${{ secrets.DEVOPS_AGENT_API_KEY }}
+          DEVOPS_AGENT_BASE_URL: ${{ secrets.DEVOPS_AGENT_BASE_URL }}
+          DEVOPS_AGENT_MODEL: ${{ secrets.DEVOPS_AGENT_MODEL }}
+          DEVOPS_AGENT_JUDGE_MODEL: ${{ secrets.DEVOPS_AGENT_JUDGE_MODEL }}
+          DEVOPS_AGENT_OPENJUDGE_DB_PATH: workspace/evals/openjudge.db
+        run: |
+          # 退出码即门禁：verdict=pass 才返回 0。阈值在 report.TRACK_RULES
+          # （A–E 各自的通过率与裁判下限），与页面上「赛道阈值」同源，不再有两份口径。
+          python -m devops_agent.openjudge run \
+            --concurrency 4 \
+            --out-dir workspace/evals/nightly
+      - name: upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openjudge-report
+          path: |
+            workspace/evals/nightly/summary.json
+            workspace/evals/nightly/report.md
+            workspace/evals/nightly/traces.jsonl
+          if-no-files-found: warn

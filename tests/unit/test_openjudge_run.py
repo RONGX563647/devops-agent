@@ -476,7 +476,7 @@ def test_cli_load_unknown_case_and_track_filter(tmp_path: Path, fixtures: Path) 
 def test_cli_meta_contains_hashes(tmp_path: Path, fixtures: Path) -> None:
     cases = [make_case()]
     plan = cli.grade.load_plan()
-    meta = cli._meta(cases, plan, "suite")
+    meta = cli.run.meta_of(cases, plan, "suite")
     assert meta["suite_sha"] == "suite"
     assert meta["plan_sha"]
     assert meta["case_count"] == 1

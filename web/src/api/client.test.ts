@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  ApiError,
+  cancelOpenJudgeRun,
   deleteAttachment,
   deleteSecret,
-  fetchEvalBatch,
-  fetchEvalBatches,
-  fetchEvalCases,
-  fetchEvalCompare,
-  fetchEvalTrends,
   fetchHealth,
   fetchInputStages,
+  fetchOpenJudgeRun,
+  fetchOpenJudgeRuns,
+  fetchOpenJudgeSeries,
+  fetchOpenJudgeSuites,
   fetchPending,
   fetchPermissions,
   fetchRun,
@@ -21,6 +22,7 @@ import {
   fetchSummary,
   fetchTimeseries,
   postFeedback,
+  startOpenJudgeRun,
   switchSessionPermission,
   uploadAttachment,
 } from './client';
@@ -33,6 +35,12 @@ function mockJson(body: unknown = []) {
   return vi
     .spyOn(globalThis, 'fetch')
     .mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }));
+}
+
+function mockJsonStatus(body: unknown, status: number) {
+  return vi
+    .spyOn(globalThis, 'fetch')
+    .mockResolvedValue(new Response(JSON.stringify(body), { status }));
 }
 
 describe('client', () => {
@@ -89,10 +97,11 @@ describe('client', () => {
     [() => fetchMetricsHealth(50), '/api/metrics/health?limit=50'],
     [() => fetchBreakdown(), '/api/metrics/breakdown'],
     [() => fetchTimeseries(14), '/api/metrics/timeseries?days=14'],
-    [() => fetchEvalTrends(), '/api/eval/trends'],
-    [() => fetchEvalBatch(5), '/api/eval/batches/5'],
-    [() => fetchEvalCompare(1, 2), '/api/eval/compare?base=1&head=2'],
     [() => fetchSecrets(), '/api/secrets'],
+    [() => fetchOpenJudgeSuites(), '/api/openjudge/suites'],
+    [() => fetchOpenJudgeSeries(30), '/api/openjudge/series?days=30'],
+    [() => fetchOpenJudgeRun(5), '/api/openjudge/runs/5'],
+    [() => fetchOpenJudgeRuns(10), '/api/openjudge/runs?limit=10'],
   ];
 
   it.each(paths)('请求路径 %2', async (call, expected) => {
@@ -101,24 +110,44 @@ describe('client', () => {
     expect(spy).toHaveBeenCalledWith(expected);
   });
 
-  it('fetchEvalBatches 默认带 limit=20&offset=0', async () => {
-    const spy = mockJson({ items: [], total: 0 });
-    await fetchEvalBatches();
-    expect(spy).toHaveBeenCalledWith('/api/eval/batches?limit=20&offset=0');
+  it('startOpenJudgeRun POST JSON body 并回传 run_id', async () => {
+    const spy = mockJson({ run_id: 42, total: 10 });
+    const data = await startOpenJudgeRun({ track: 'A', limit: 10, judge: false });
+    expect(spy).toHaveBeenCalledWith('/api/openjudge/runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ track: 'A', limit: 10, judge: false }),
+    });
+    expect(data.run_id).toBe(42);
   });
 
-  it('fetchEvalCases 拼接筛选与分页参数', async () => {
-    const spy = mockJson({ items: [], total: 0 });
-    await fetchEvalCases(3, { status: 'failed', tag: 'safety', limit: 50, offset: 100 });
-    expect(spy).toHaveBeenCalledWith(
-      '/api/eval/batches/3/cases?status=failed&tag=safety&limit=50&offset=100',
-    );
+  it('startOpenJudgeRun 409 时抛 ApiError，detail 里带正在跑的 run_id', async () => {
+    mockJsonStatus({ detail: { message: '已有任务在跑', run_id: 77 } }, 409);
+
+    const err = await startOpenJudgeRun({ track: 'A' }).catch((error: unknown) => error);
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(409);
+    expect((err as ApiError).detail).toEqual({ message: '已有任务在跑', run_id: 77 });
   });
 
-  it('fetchEvalCases 缺省分页为 50/0', async () => {
-    const spy = mockJson({ items: [], total: 0 });
-    await fetchEvalCases(3);
-    expect(spy).toHaveBeenCalledWith('/api/eval/batches/3/cases?limit=50&offset=0');
+  it('startOpenJudgeRun 400 时 detail 是字符串原因', async () => {
+    mockJsonStatus({ detail: '在线评测未开启' }, 400);
+
+    const err = await startOpenJudgeRun({}).catch((error: unknown) => error);
+
+    expect((err as ApiError).detail).toBe('在线评测未开启');
+  });
+
+  it('cancelOpenJudgeRun 走 POST 取消端点', async () => {
+    const spy = mockJson({ id: 5, status: 'cancelled' });
+    const data = await cancelOpenJudgeRun(5);
+    expect(spy).toHaveBeenCalledWith('/api/openjudge/runs/5/cancel', {
+      method: 'POST',
+      headers: undefined,
+      body: undefined,
+    });
+    expect(data.status).toBe('cancelled');
   });
 
   it('非 2xx 抛错', async () => {

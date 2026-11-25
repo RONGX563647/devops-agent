@@ -63,9 +63,8 @@ PYTHONPATH=src E:/code/devops-agent/.venv/Scripts/python.exe -m pytest --cov=dev
 | lint | `ruff check .` | |
 | type check | `mypy src` | |
 | 质量门禁 | `python scripts/check_gates.py` | 读 [config/gates.yaml](../../config/gates.yaml)，实际执行覆盖率 / 死代码 / 复杂度（`--with-mutation` 才加变异测试） |
-| 题库校验 | `eval validate --suite eval/suites/devops-core.v2.jsonl --strict` | `--strict` 让「样本不足」也阻断 |
-| 清单同步 | `python scripts/check_manifest_sync.py` | 比对 JSON 语义而非字节，避免缩进差异假红 |
-| 契约 lint | `eval prompt-lint --known-issues eval/lint-baseline.json` | S1–S8；存量违规显式记账，修好后不删清单项会以 stale 失败 |
+| 题库校验 | `python -m devops_agent.openjudge validate --strict` | 校验用例结构，并比对 `coverage.json` 覆盖率基线（只许涨） |
+| 契约 lint | `python -m devops_agent.prompt_lint --known-issues eval/lint-baseline.json` | P1–P4；存量违规显式记账，修好后不删清单项会以 `[error] baseline` 失败 |
 
 ### 4.2 `frontend`
 
@@ -90,18 +89,19 @@ frontend_gates:     # web/
 `check_gates.py` 会把本次 checkout 的 `src` 插到 `sys.path` 最前，
 确保读到的是本仓库的配置层而非 editable install 指向的副本。
 
-## 5. Nightly 评测（`.github/workflows/eval-nightly.yml`）
+## 5. Nightly 评测（`.github/workflows/openjudge-nightly.yml`）
 
 - 触发：`cron "30 3 * * *"`（UTC 03:30 / 北京时间 11:30）+ `workflow_dispatch`；
-  `timeout-minutes: 30`。
-- 步骤：`eval validate` → `eval run --judge --judge-scope all` →
-  上传 `report.json` / `report.md` / `cases.jsonl`（`if: always()`）。
-- 基线可选：仅当 `workspace/evals/baseline.json` 存在时加 `--baseline`。
-  该目录被 gitignore，所以**默认没有基线，回归检测不生效**。
-- 退出码：`fail` 与 `warn` 都让 nightly 变红；`insufficient`（题库未达门禁量）为 0。
+  `timeout-minutes: 90`（五赛道 90 例真要跑模型）。
+- 步骤：`openjudge validate --strict` → `openjudge run --concurrency 4` →
+  上传 `summary.json` / `report.md` / `traces.jsonl`（`if: always()`）。
+- 回归检测靠 `compare`：只要库里有上一批，`--base/--head` 就能出 delta；
+  指纹（`suite_sha` / `plan_sha` / `rubric_sha` / `model`）不一致时判 `not_comparable`
+  而不是退步 —— 换了实验不该用旧基线卡。
+- 退出码：`fail` 非零；`insufficient`（该赛道未达 `min_n`）为 0。
 
-`--judge-scope all` 是显式写死的：默认值就是 `all`，写出来是为了防止将来改默认值后
-nightly 悄悄变成「只判通过的用例」这种有偏口径。
+裁判可关（`--no-judge`）：门禁里的规则部分不花额度，先在 PR 里跑规则、nightly 再跑
+完整口径，是刻意的分层。
 
 ## 6. 提交与合并
 

@@ -15,12 +15,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from devops_agent.eval.scorer import EvalDimension
+from devops_agent.observability.models import EvalDimension
 
 logger = logging.getLogger(__name__)
 
 DB_PATH_ENV = "DEVOPS_AGENT_DB_PATH"
-EVAL_DB_PATH_ENV = "DEVOPS_AGENT_EVAL_DB_PATH"
 
 # 评测维度 CHECK 与枚举同源：新增维度只改 EvalDimension，DB 约束自动跟进。
 _DIMENSIONS_SQL = ", ".join(f"'{dim.value}'" for dim in EvalDimension)
@@ -113,35 +112,6 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TEXT NOT NULL,
     updated_by TEXT NOT NULL DEFAULT ''
 );
-CREATE TABLE IF NOT EXISTS eval_batches (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    suite         TEXT NOT NULL,
-    suite_version TEXT NOT NULL DEFAULT '',
-    suite_sha     TEXT NOT NULL DEFAULT '',
-    prompt_id     TEXT NOT NULL DEFAULT '',
-    prompt_sha    TEXT NOT NULL DEFAULT '',
-    model         TEXT NOT NULL DEFAULT '',
-    profile       TEXT NOT NULL DEFAULT '',
-    started_at    TEXT NOT NULL,
-    finished_at   TEXT,
-    status        TEXT NOT NULL DEFAULT 'running',
-    summary_json  TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_eval_batches_started ON eval_batches(started_at, id);
-CREATE TABLE IF NOT EXISTS eval_cases (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    batch_id    INTEGER NOT NULL REFERENCES eval_batches(id) ON DELETE CASCADE,
-    case_id     TEXT NOT NULL,
-    run_id      INTEGER,
-    status      TEXT NOT NULL DEFAULT '',
-    passed      INTEGER NOT NULL DEFAULT 0,
-    scores_json TEXT NOT NULL DEFAULT '',
-    detail_json TEXT NOT NULL DEFAULT '',
-    latency_ms  INTEGER NOT NULL DEFAULT 0,
-    tokens      INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_eval_cases_batch ON eval_cases(batch_id, status);
-CREATE INDEX IF NOT EXISTS idx_eval_cases_case ON eval_cases(case_id);
 """
 
 # 后加的列（CREATE TABLE IF NOT EXISTS 不会给老库补列，必须 ALTER）。
@@ -236,11 +206,3 @@ def _ensure_columns(
     for name, ddl in columns:
         if name not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
-
-
-def eval_db_path() -> Path:
-    """评测数据库路径：环境变量优先，默认 workspace/evals/eval.db。"""
-    override = os.environ.get(EVAL_DB_PATH_ENV)
-    if override:
-        return Path(override).expanduser().resolve()
-    return Path(__file__).resolve().parents[4] / "workspace" / "evals" / "eval.db"

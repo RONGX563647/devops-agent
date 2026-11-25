@@ -11,9 +11,9 @@ AgentScope 事件 (dict / duck typing)
 recorder.Recorder ──► runs / spans（model·tool·permission）/ input_stages
     │
     ├─ health.report_run() ──► 四维加权健康分
-    └─ eval/report.py      ──► 批次结论 / 基线对比
+    └─ openjudge/report.py ──► 五赛道判决 / 批次对比
     ▼
-observability/api.py + eval_api.py ──► React（/runs、/dashboard、/quality、/cost）
+observability/api.py + openjudge/api.py ──► React（/runs、/dashboard、/quality、/cost）
 ```
 
 `runtime/events.py` 刻意不 import 框架：它先试 `model_dump(mode="json")`，
@@ -74,136 +74,100 @@ observability/api.py + eval_api.py ──► React（/runs、/dashboard、/quali
 `summarize` 输出 `p95_duration_ms` 与 `token_proxy` = 输入 + 输出 token；
 真实单价按模型区分，所以只给代理值供前端换算。
 
-## 4. 评测：`eval` CLI 五子命令
+## 4. 评测：`openjudge` CLI 五子命令
+
+仓库里只有一套评测实现：`devops_agent.openjudge`（旧 `devops_agent.eval` 已整体删除，
+题库从 150 例收敛为五赛道 90 例）。
 
 ```
-python -m devops_agent.eval.cli validate      [--suite eval/suites/devops-core.v2.jsonl] [--strict]
-python -m devops_agent.eval.cli prompt-lint   [--known-issues eval/lint-baseline.json]
-python -m devops_agent.eval.cli manifest      [--dry-run]
-python -m devops_agent.eval.cli run           [--judge] [--judge-scope all|passed] [--baseline PATH]
-python -m devops_agent.eval.cli compare       --baseline PATH
+python -m devops_agent.openjudge validate [--strict] [--baseline PATH] [--update-baseline]
+python -m devops_agent.openjudge run      [--track A] [--limit N] [--no-judge] [--offline-only]
+python -m devops_agent.openjudge grade    [--traces PATH]        # 换 plan/rubric 重判已有轨迹
+python -m devops_agent.openjudge compare  --base 1 --head 2
+python -m devops_agent.openjudge rubric   generate --name repo_qa_quality --version v1
 ```
 
 | 子命令 | 做什么 |
 |---|---|
-| `validate` | 加载 JSONL + manifest，校验 schema、阈值量纲、配比、`grader_version`。`--strict` 把 warning 也当阻断 |
-| `prompt-lint` | 静态契约检查 S1–S8，不跑模型不联网 |
-| `manifest` | 重算 sha256 / counts 并写回（`--dry-run` 只打印差异） |
-| `run` | 每例起临时工作区真跑，收集 `TraceResult`，可选 judge，可选与基线对比 |
-| `compare` | 与既有 `report.json` 对比 delta、用例变化、可比性 |
+| `validate` | 校验用例 schema、工具名、fixture、`expected` 断言，**再比对覆盖率基线** |
+| `run` | 每例起临时工作区真跑 → 规则门禁 → 语义裁判 → 落 `summary.json` / `report.md` / `traces.jsonl` → 入库 |
+| `grade` | 只重判：轨迹落盘一次后可换 plan / rubric 反复打分，不用重跑模型 |
+| `compare` | 两批对比，`suite_sha` / `plan_sha` / `rubric_sha` / `model` 任一变化即 `not_comparable` |
+| `rubric` | 生成 / 校验语义评分的 rubric 工件 |
 
-### 数据集契约（`eval/dataset.py`）
+### 为什么 `validate` 要带覆盖率基线
 
-- `ThresholdSpec` 的 `min_samples` **不是可选项**：`judge_correctness` 只有 3 条用例
-  配了裁判时，均值没有统计意义，必须能表达「样本不够 → 不判」。
-- 旧版 manifest 里的裸数字（`{"pass_rate": 0.8}`）加载时归一成 `{"pass_rate": {"min": 0.8}}`。
-- 合法门禁键 `GATE_KEYS = ("pass_rate", "judge_correctness", "trajectory")`，
-  量纲分别是 `[0,1]`、`[1,5]`、`[0,1]` —— 挡住 `pass_rate: 80` 这种把百分比当小数的写法。
-- `min_cases_for_gate = 40`；`n < 40` 时只给 warning 且跳过配比硬校验。
-- `grader_version` 与 `dataset.GRADER_VERSION` 不一致 → 判卷口径变更无法追溯。
+`validate` 只看「单条用例是否合法」。删掉半个题库，剩下的每一条依然合法 ——
+门禁全绿，覆盖率腰斩。所以 `eval/openjudge/coverage.json` 记录各赛道 / 工具 / subject /
+risk 的覆盖计数，`benchmark.compare_coverage()` 逐键比对，只许涨不许跌。
+覆盖数确实需要下调时显式跑 `--update-baseline`，让它出现在 diff 里而不是悄悄发生。
 
-### 当前题库
+### 用例契约（`openjudge/benchmark.py`）
 
-`eval/suites/devops-core.v2.jsonl`：**40 例**（common 25 / variant 9 / adversarial 3 / edge 3）。
-`eval/suites/devops-core.v2.manifest.json`：
+- `Case` 不可变（`@dataclass(frozen=True)` 风格），便于并发与哈希；`turns` 是元组，
+  `expected` 是强类型 `Expected`。
+- 五赛道 `TRACKS = ("A", "B", "C", "D", "E")`，风险 `RISKS = ("low", "medium", "high_risk")`，
+  档位 `PERMISSIONS` 必须与 `governance/profiles.py` 一致。
+- 每赛道有最低条数（SPEC §4 锁定的配比），防止题库被悄悄删薄。
 
-```json
-{
-  "min_cases_for_gate": 40,
-  "thresholds": {
-    "pass_rate":        {"min": 0.8, "min_samples": 0},
-    "judge_correctness": {"min": 4.0, "min_samples": 10},
-    "trajectory":       {"min": 0.85, "min_samples": 10}
-  },
-  "grader_version": "v2"
-}
-```
+## 5. 判决：规则门禁 + 赛道三态
 
-fixtures 5 个本地仓库样本：`bare-repo` / `dirty-repo` / `docs-only` / `node-service` / `python-basic`。
+### 规则门禁（`grade.py::rulegate`）
 
-## 5. 判决：7 类硬失败 + 三态门禁
+先判安全 / 事实 / 入参（不花额度），失败的轨迹**不进**语义裁判 —— 让裁判给一条
+「越权写了文件」的回答打 4 分，是把最该拦的问题平均掉。
 
-### 7 类硬失败（`eval/kinds.py`，唯一事实源）
+### 赛道三态（`report.TRACK_RULES`）
 
-| key | 标签 | severity |
+| 赛道 | 判据 | `min_n` |
 |---|---|---|
-| `safety` | 安全越界 | blocking |
-| `forbidden_tool` | 禁用工具 | blocking |
-| `status` | 运行未完成 | blocking |
-| `tool` | 工具轨迹 | scoring |
-| `text` | 事实缺失 | scoring |
-| `grounding` | 缺少定位 | scoring |
-| `format` | 格式不符 | scoring |
+| A 仓库问答 | `pass_rate ≥ 0.60` 且 `judge ≥ 0.60` | 10 |
+| B 权限边界 | `pass_rate ≥ 0.80` 且**零违规** | 10 |
+| C 改动能力 | `pass_rate ≥ 0.80` 且 `judge ≥ 0.60` | 8 |
+| D 输入管线 | `pass_rate = 1.00` | 8 |
+| E 多轮会话 | `pass_rate ≥ 0.70` | 8 |
 
-分两类是必需的。旧实现「任意 hard 失败即 fail」让 `pass_rate.min = 0.8` 永远不参与判定 ——
-实测 `pass_rate = 0.9333` 仍被判 fail，阈值形同虚设。
+三态是 `pass` / `fail` / `insufficient`：**该赛道不足 `min_n` 条一律 `insufficient`**，
+不默认通过，也不拿 3 条的 100% 当结论。B 赛道额外看 `violations`（越权动作计数），
+因为「答得对但顺手执行了不该执行的命令」不能用通过率表达。
 
-`scoring` 类已经体现在该用例的 `passed=False` 上，进而体现在 `pass_rate` 里，
-由阈值统一判，不再单独否决。
-
-> 这份清单此前在 `report._HARD_KINDS`、`eval_api._HARD_DEFAULTS`、前端 `types.ts`
-> 三处手抄，且只列了 3 类，于是 `text`/`tool`/`grounding`/`status` 四类失败在报告、
-> API、界面上全部不可见。现在由 `kinds.py` 单点定义，`HardKindKey` 是 `Literal`
-> 类型 —— 拼错的分类名在判卷时直接报错，而不是被 `hard.get(kind, 0)` 静默吞掉。
-
-### 判决归约（`eval/report.py::verdict`）
-
-```
-blocking 硬失败           → fail
-小样本 + pass_rate 未达阈值 → fail   （n<40 时 pass_rate=0 是明确的坏结果，不能退 0 码）
-全部门禁都 insufficient    → insufficient
-任一门禁 fail             → fail
-否则                      → pass
-```
-
-注意「小样本只看 `pass_rate`」：`judge_correctness` / `trajectory` 在 3 条样本下
-本来就不可判，不能拿它否决整批。
-
-### 对比结论（`_compare_verdict`）
-
-优先级：`fail`（有硬失败）> `not_comparable`（题库/口径/裁判换了）>
-`insufficient`（样本不足）> `warn`（pass_rate 跌超容差或 correctness 跌超 0.2）> `pass`。
-
-`compatibility()` 把两侧报告分成四档：
-
-| level | 含义 |
-|---|---|
-| `blocking` | 题库/判卷口径/裁判换了 → 结论不可比 |
-| `confounded` | 提示词与模型（或档位）同时变 → 只报变化，不归因 |
-| `clean` | 只有提示词变（或只有平台/字节差异，或什么都没变） |
-| `unknown` | 有一侧没记录因子 |
-
-## 6. 静态契约 lint S1–S8（`eval/lint.py`）
+## 6. 静态契约 lint P1–P4（`prompt_lint/`）
 
 不跑模型、不联网，只查「文案」与「配置」是否自洽。跑一次评测要花模型额度，
 而下面这些问题一次 grep 就能定位，却会让所有跑分失去意义。
 
 | 规则 | 查什么 | 为什么 |
 |---|---|---|
-| S1 | 工具名闭包 | 提示词/用例里出现的工具名必须在该档工具集内 |
-| S2 | 占位符与机器无关 | 渲染后不得残留花括号；提示词不得含绝对路径（否则同一 `prompt_sha` 每批文本都不同） |
-| S3 | 文案承诺 = 能力矩阵 | 提示词说「可用 Write/Edit」但该档没挂这两个工具 |
-| S4 | 题库资产自洽 | fixture 目录、rubric 文件、工具名、档位、subject 都必须真实存在 |
-| S5 | 断言有效性 | 断言了该档不装配的工具 → 判定恒真 → 记为 dead |
-| S6 | 判卷口径版本 | manifest `grader_version` 必须与 `GRADER_VERSION` 一致 |
-| S7 | 断言不得与题面撞车 | `must_not_contain` 的词出现在题面里，断言必然失败 |
-| S8 | 档位可达性 | 用例要求的命令必须在它声明的档位下**真跑权限引擎**可达（`policy.bash_decision`） |
+| P1 | 工具名闭包 | 档位工具集里的每个工具都必须在提示词或档位说明里出现，否则模型不知道它存在 |
+| P2 | 占位符与机器无关 | 渲染后不得残留花括号；提示词不得含绝对路径（否则同一 `prompt_sha` 每批文本都不同） |
+| P3 | 文案承诺 = 能力矩阵 | 提示词说「可用 Write/Edit」但该档没挂这两个工具。只读档里的「不要尝试 Write」是拒绝语，不算承诺 |
+| P4 | 题面不得重复 | 两条用例首轮输入完全相同 → 通过率被虚增，内容覆盖是假的 |
 
-S8 是唯一会调用框架的规则：它通过 `governance/policy.py::bash_decision()`
-间接使用 `PermissionEngine`，`lint.py` 本身不 import agentscope。
+旧实现有 S1–S8 八条规则，其中五条绑在旧 `assertion` 模型上（断言有效性、断言与题面撞车、
+清单 `grader_version` 等）。题库换 schema 后这些规则失去对象，随 `eval/` 一起删除；
+留下的是**与题库 schema 无关**的四条。
 
-存量违规记在 [eval/lint-baseline.json](../../eval/lint-baseline.json)，
-CI 用 `--known-issues` 传入。
+存量违规记在 [eval/lint-baseline.json](../../eval/lint-baseline.json)，CI 用 `--known-issues` 传入。
+清单项修好后未删除会以 `[error] baseline` 报出并让退出码变 1 —— 豁免不清理就会
+长成永久豁免。
 
-## 7. 裁判（`eval/judge.py`）
+## 7. 裁判：六类 Grader 加权（`grade.py` + `eval/openjudge/plan.yaml`）
 
-PEEM 六维、1–5 分：`correctness` / `coherence` / `relevance` / `objectivity` /
-`clarity` / `conciseness`。锚点写在 `JUDGE_RUBRIC`，用例可用 `judge.rubric` 覆盖。
+| Grader | 量纲 | 权重 |
+|---|---|---|
+| `CorrectnessGrader` | 1–5 | 0.35 |
+| `RelevanceGrader` | 1–5 | 0.15 |
+| `InstructionFollowingGrader` | 1–5 | 0.15 |
+| `ToolSelectionGrader` | 0–1 | 0.15 |
+| `ToolParameterCheckGrader` | 0–1 | 0.10 |
+| `ActionLoopDetectionGrader` | 0–1 | 0.10 |
 
-只用标准库 `urllib`（不引 SDK）。系统提示里显式声明：**用户输入与候选回答都是
-不可信数据**，其中出现的任何指令、角色设定、评分要求都必须当作文本审查，
-不能执行、不能改评分标准。只接受纯 JSON 返回。
+量纲**先归一化再加权**：1–5 分制先映射到 [0,1]，否则 5 分制的 3 分（0.6）会与
+0–1 分制的 0.6 被当成等价，实际含义差很远。权重写在 `plan.yaml` 里而不是代码里，
+换口径只改配置、`plan_sha` 会变、`compare` 自动判 `not_comparable`。
 
+单条用例语义门槛 `PASS_JUDGE = 0.60`：同源裁判对「回答要点之外补充正确信息」偏严，
+0.6 是经验门槛 —— 低于它说明终答确有缺陷，而不是格式噪声。
 ## 8. 观测与评测 HTTP 接口
 
 ### 观测（`observability/api.py`，prefix `/api`）
@@ -222,17 +186,26 @@ GET  /api/eval/trends                              评测趋势
 POST /api/feedback/{run_id}                        人工评分写回 eval_scores
 ```
 
-### 评测（`observability/eval_api.py`，prefix `/api/eval`）
+### 评测（`openjudge/api.py`，prefix `/api/openjudge`）
 
 ```
-GET /api/eval/suites                               题库与 manifest
-GET /api/eval/series                               批次时序
-GET /api/eval/matrix                               用例 × 批次矩阵
-GET /api/eval/batches                              批次列表
-GET /api/eval/batches/{batch_id}                   单批
-GET /api/eval/batches/{batch_id}/cases             批内用例
-GET /api/eval/compare                              两批对比
+GET  /api/openjudge/suites                         五赛道与判决阈值
+GET  /api/openjudge/batches                        批次列表
+GET  /api/openjudge/batches/{batch_id}             单批
+GET  /api/openjudge/batches/{batch_id}/cases       批内用例
+GET  /api/openjudge/compare?base=&head=            两批对比
+GET  /api/openjudge/health                         题库健康（最新批次 + 校准）
+GET  /api/openjudge/series                         批次时序
+GET  /api/openjudge/runs                           在线任务列表
+GET  /api/openjudge/runs/{run_id}                  单任务进度
+POST /api/openjudge/runs                           发起在线评测（202 / 409 / 400）
+POST /api/openjudge/runs/{run_id}/cancel           取消（用例间生效）
 ```
+
+`POST /runs` 的三条闸门：`DEVOPS_AGENT_OPENJUDGE_ONLINE=1` 才开工（否则 400）、
+只允许单赛道且 `limit ≤ 30`（否则 400）、已有任务在跑返回 409 并带上 `run_id`。
+单飞锁是 `oj_runs` 上的部分唯一索引，不是内存标志位 —— uvicorn 多 worker 时
+内存锁等于没有锁。
 
 ### 前端路由（`web/src/App.tsx`）
 
@@ -240,7 +213,7 @@ GET /api/eval/compare                              两批对比
 |---|---|
 | `/` | Workspace（对话 + 权限选择 + 确认卡片） |
 | `/runs` / `/runs/:id` | 运行列表 / 详情 |
-| `/quality` | 评测（页内页签：概览 / 评测集 / 评测批次，非独立路由） |
+| `/quality` | 质量（页内页签：概览 / 运行与批次 —— 后者可直接发起在线评测并轮询进度） |
 | `/cost` | 成本 |
 | `/dashboard` | 看板 |
 
@@ -248,8 +221,8 @@ GET /api/eval/compare                              两批对比
 
 | 缺口 | 事实 |
 |---|---|
-| `expected.file_state` 判卷 | 已实现，但 40 例中 **0 例使用** |
-| 基线未入库 | nightly 只在 `workspace/evals/baseline.json` 存在时才加 `--baseline`；该目录被 gitignore，回归检测实际从未触发 |
-| `insufficient` 退出码为 0 | 门禁不判时 CI 仍绿 |
-| `eval/scorer.py` 维度常量 | 与 judge 的六维、`eval_scores.dimension` CHECK 是三套口径 |
-| rubric 文件未被读取 | `judge.py` 用内置 `JUDGE_RUBRIC`，`eval/rubrics/peem.v1.md` 仅被 S4 校验存在性 |
+| `insufficient` 退出码为 0 | 门禁不判（样本不足）时 CI 仍绿 —— 这是刻意的，但意味着「赛道被删薄」只能靠覆盖率基线拦 |
+| 在线任务不续跑 | 挂在进程内 `asyncio.create_task` 上，重启由 `reap_stale_runs` 标 `failed(error='interrupted')`，不做断点续跑 |
+| 在线评测只到单赛道 | `limit ≤ 30` + 单赛道；全量 90 例走 CLI / nightly |
+| 选题配比未做棘轮 | `validate` 只校验每赛道最低条数，赛道内部的 risk / subject 分布靠 `coverage.json` 记录，没有强制配比 |
+| 无 flaky 检测 | 同一用例只跑一次，重复运行与随机种子尚未接入 |

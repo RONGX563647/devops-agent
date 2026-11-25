@@ -1,101 +1,107 @@
 /**
  * 质量概览 —— 首屏就回答「这批能不能用」。
  *
- * 之前默认落在「线上反馈」，没人打分时首屏是空的；真正的评测结果藏在第二个子页。
- * 这里把结论、四个关键指标与趋势放在最前面，`insufficient` 必须带原因，
- * 不能只留一个没有解释的徽标。
+ * 数据源是 OpenJudge 的批次序列：结论、关键指标与趋势放在最前面，
+ * `insufficient` 必须带原因，不能只留一个没有解释的徽标。
+ * 首屏加载中要显式占位：先渲染「还没有批次」再被数据替换，是两次不同的结论。
  */
 import { useQuery } from '@tanstack/react-query';
-import { fetchEvalBatches, fetchEvalSeries, fetchEvalSuites } from '../../api/client';
-import type { EvalBatch, EvalSeriesPoint } from '../../types';
+import { fetchOpenJudgeSeries, fetchOpenJudgeSuites } from '../../api/client';
+import type { OjSeriesPoint, OjSuites } from '../../types';
 import { TrendChart, type TrendPoint } from './charts';
-import { formatPercent, formatScore, precisionLimit, signedDelta } from './format';
+import { formatPercent, precisionLimit, signedDelta } from './format';
 
 const VERDICT_TEXT: Record<string, string> = {
   pass: '通过：全部门禁达标',
   fail: '未通过：存在硬失败或门禁未达',
   warn: '回退：指标下降超过精度上限',
   insufficient: '样本不足，不参与发布门禁',
-  not_comparable: '不可比：题库/判卷/裁判变了，delta 不能归因',
-  running: '运行中',
 };
 
 interface Props {
   onShowBatches: () => void;
 }
 
-function conclusionOf(batch: EvalBatch): string {
-  const base = VERDICT_TEXT[batch.verdict] ?? batch.verdict;
-  if (batch.verdict === 'insufficient') {
-    return `${base} —— 样本 ${batch.n} < ${batch.min_cases_for_gate}，通过率 ${formatPercent(batch.pass_rate)} 仅供参考`;
-  }
-  const failed = batch.gates.filter((gate) => gate.state === 'fail');
-  if (failed.length > 0) {
-    return `${base} —— ${failed.map((gate) => `${gate.key}=${formatScore(gate.value)} < ${gate.min}`).join('；')}`;
-  }
-  return `${base} —— 通过率 ${formatPercent(batch.pass_rate)}（n=${batch.n}）`;
+function lastPoint(points: OjSeriesPoint[]): OjSeriesPoint | null {
+  return points.length > 0 ? points[points.length - 1] : null;
 }
 
-function toTrendPoints(points: EvalSeriesPoint[]): TrendPoint[] {
+function toTrendPoints(points: OjSeriesPoint[]): TrendPoint[] {
   return points.map((point) => ({
-    label: `#${point.id}`,
+    label: `#${point.batch_id}`,
     passRate: point.pass_rate,
-    n: point.n,
+    n: point.cases,
   }));
 }
 
-function trendCaption(points: EvalSeriesPoint[]): string {
+function trendCaption(points: OjSeriesPoint[]): string {
   if (points.length === 0) return '还没有批次，先跑一次评测。';
   const last = points[points.length - 1];
   const prev = points.length > 1 ? points[points.length - 2] : null;
   if (!prev) {
-    return `仅有一个批次：通过率 ${formatPercent(last.pass_rate)}（n=${last.n}）。`;
+    return `仅有一个批次：通过率 ${formatPercent(last.pass_rate)}（n=${last.cases}）。`;
   }
   const delta = last.pass_rate - prev.pass_rate;
-  const limit = precisionLimit(Math.min(last.n, prev.n));
+  const limit = precisionLimit(Math.min(last.cases, prev.cases));
   const significant = Math.abs(delta) >= limit;
-  return `最新 #${last.id} 通过率 ${formatPercent(last.pass_rate)}，较上批 ${signedDelta(delta, 'pp')}；`
+  return `最新 #${last.batch_id} 通过率 ${formatPercent(last.pass_rate)}，较上批 ${signedDelta(delta, 'pp')}；`
     + `精度上限 ${(limit * 100).toFixed(1)}pp，${significant ? '变化可辨识' : '变化在抖动范围内'}。`;
 }
 
+/** 门禁线：取第一个赛道配置的 pass_rate 阈值，没配置时退回 0.8。 */
+function thresholdOf(suites: OjSuites | undefined): number {
+  for (const track of suites?.tracks ?? []) {
+    const rule = track.rules.pass_rate;
+    if (typeof rule === 'number') return rule;
+  }
+  return 0.8;
+}
+
+function conclusionOf(point: OjSeriesPoint): string {
+  const base = VERDICT_TEXT[point.verdict] ?? point.verdict;
+  return `${base} —— 通过率 ${formatPercent(point.pass_rate)}（n=${point.cases}）`;
+}
+
 export function Overview({ onShowBatches }: Props) {
-  const series = useQuery({ queryKey: ['eval-series'], queryFn: () => fetchEvalSeries(30) });
-  const latest = useQuery({ queryKey: ['eval-batches', 'latest'], queryFn: () => fetchEvalBatches(1) });
-  const suites = useQuery({ queryKey: ['eval-suites'], queryFn: fetchEvalSuites });
+  const series = useQuery({
+    queryKey: ['oj-series', 30],
+    queryFn: () => fetchOpenJudgeSeries(30),
+  });
+  const suites = useQuery({ queryKey: ['oj-suites'], queryFn: fetchOpenJudgeSuites });
 
-  const points = series.data?.items ?? [];
-  const batch = latest.data?.items[0] ?? null;
-  const suite = suites.data?.items[0] ?? null;
-  const threshold = suite?.thresholds.pass_rate?.min ?? 0.8;
-
-  if (series.isError || latest.isError) {
+  if (series.isLoading) {
+    return <p className="query-loading">正在加载质量趋势…</p>;
+  }
+  if (series.isError) {
     return <p className="query-error">概览加载失败，稍后自动重试。</p>;
   }
-  if (!batch) {
+
+  const points = series.data?.points ?? [];
+  const latest = lastPoint(points);
+  const threshold = thresholdOf(suites.data);
+
+  if (!latest) {
     return (
       <section className="panel">
         <h2>最近一次评测</h2>
-        <p className="muted">还没有批次。先跑一次评测，这里会出现结论、指标与趋势。</p>
-        <code className="cli-hint">
-          python -m devops_agent.eval run --suite eval/suites/devops-core.v1.jsonl --out
-          workspace/eval/latest
-        </code>
+        <p className="muted">
+          还没有批次。到「运行与批次」发起一次评测，这里会出现结论、指标与趋势。
+        </p>
+        <button type="button" className="primary-btn" onClick={onShowBatches}>
+          去发起评测
+        </button>
       </section>
     );
   }
 
-  const judgeCorrectness = batch.judge?.correctness ?? null;
   const kpis = [
-    { label: '通过率', value: formatPercent(batch.pass_rate), detail: `${batch.passed}/${batch.n}` },
-    { label: 'judge 正确性', value: formatScore(judgeCorrectness), detail: '1–5 分' },
-    { label: '轨迹分', value: formatScore(batch.trajectory_score), detail: '工具选择质量' },
-    { label: 'p95 耗时', value: `${batch.p95_ms ?? 0} ms`, detail: '单条用例' },
+    { label: '通过率', value: formatPercent(latest.pass_rate), detail: `n=${latest.cases}` },
+    { label: '用例数', value: latest.cases, detail: '本批次实际执行' },
+    { label: '结论', value: latest.verdict, detail: '批次终态' },
     {
-      // 前缀缓存命中率：提示词布局改动（例如把档位说明从系统提示挪到末尾）
-      // 会先让这个数字掉，而通过率可能完全不动。
-      label: '缓存命中',
-      value: formatPercent(batch.cache_hit_rate),
-      detail: '前缀复用',
+      label: '完成时间',
+      value: latest.finished_at.replace('T', ' ').slice(0, 19),
+      detail: 'UTC',
     },
   ];
 
@@ -104,15 +110,10 @@ export function Overview({ onShowBatches }: Props) {
       <section className="panel quality-conclusion">
         <h2>最近一次评测</h2>
         <p className="quality-conclusion-line">
-          <span className={`badge badge-${batch.verdict}`}>
-            {batch.verdict}
-          </span>
-          <strong>{conclusionOf(batch)}</strong>
+          <span className={`badge badge-${latest.verdict}`}>{latest.verdict}</span>
+          <strong>{conclusionOf(latest)}</strong>
         </p>
-        <p className="hint">
-          #{batch.id} · {batch.suite}@{batch.suite_version} · {batch.prompt_id} ·{' '}
-          {batch.profile} · grader {batch.grader_version || '未记录'}
-        </p>
+        <p className="hint">批次 #{latest.batch_id} · 完成于 {latest.finished_at}</p>
         <div className="quality-kpis">
           {kpis.map((item) => (
             <div className="quality-kpi" key={item.label}>

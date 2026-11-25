@@ -172,7 +172,7 @@ class HealthPolicy(BaseModel):
     # 质量：不同评分来源的可信度，以及向先验收缩的强度
     # （prior_weight 相当于「先压一条中性样本」，避免单条 0 分把整轮判死）
     source_weights: dict[str, float] = Field(
-        default_factory=lambda: {"human": 1.0, "judge": 0.8, "rule": 0.6}
+        default_factory=lambda: {"human": 1.0, "judge": 0.8, "openjudge": 0.7, "rule": 0.6}
     )
     quality_prior: float = 0.5
     quality_prior_weight: float = 1.0

@@ -19,8 +19,8 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-from devops_agent.eval.scorer import EvalDimension
 from devops_agent.observability.models import (
+    EvalDimension,
     EvalScoreRecord,
     InputStageRecord,
     RunRecord,
@@ -29,22 +29,10 @@ from devops_agent.observability.models import (
 
 from .db import (
     DB_PATH_ENV,
-    EVAL_DB_PATH_ENV,
     connect,
     default_db_path,
-    eval_db_path,
     init_db,
     logger,
-)
-from .evals import (
-    count_eval_batches,
-    count_eval_cases,
-    create_eval_batch,
-    finish_eval_batch,
-    get_eval_batch,
-    insert_eval_case,
-    list_eval_batches,
-    list_eval_cases,
 )
 from .inputs import add_input_stages, list_input_stages
 from .pending import active_run_for_session, bump_asks, get_pending, park_run, unpark_run
@@ -72,7 +60,6 @@ from .spans import add_span, count_spans_by_type, list_spans, span_stats
 
 __all__ = [
     "DB_PATH_ENV",
-    "EVAL_DB_PATH_ENV",
     "MODEL_CONFIG_KEY",
     "EvalDimension",
     "EvalScoreRecord",
@@ -88,27 +75,18 @@ __all__ = [
     "bump_asks",
     "connect",
     "contextmanager",
-    "count_eval_batches",
-    "count_eval_cases",
     "count_runs",
     "count_spans_by_type",
-    "create_eval_batch",
     "create_run",
     "current_setting_version",
     "default_db_path",
     "delete_run",
     "delete_session_state",
-    "eval_db_path",
-    "finish_eval_batch",
     "finish_run",
-    "get_eval_batch",
     "get_pending",
     "get_run",
     "init_db",
-    "insert_eval_case",
     "json",
-    "list_eval_batches",
-    "list_eval_cases",
     "list_input_stages",
     "list_runs",
     "list_scores",

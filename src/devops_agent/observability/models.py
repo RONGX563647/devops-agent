@@ -1,12 +1,30 @@
 """可观测性数据模型 —— 纯数据结构，不依赖任何框架。
 
-三个模型对应三张表：RunRecord（一次运行）、SpanRecord（运行中的一个步骤）、
-EvalScoreRecord（一次质量打分）。字段设计与 ADR-0001 的数据模型一致。
+四个结构对应三类表：RunRecord（一次运行）、SpanRecord（运行中的一个步骤）、
+EvalScoreRecord（一次质量打分），外加质量维度的枚举 EvalDimension。
+字段设计与 ADR-0001 的数据模型一致。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
+
+
+class EvalDimension(StrEnum):
+    """质量评分维度。反馈入口用它拒绝脏值，健康分用它筛 correctness 样本。"""
+
+    CORRECTNESS = "correctness"
+    PERFORMANCE = "performance"
+    SAFETY = "safety"
+
+    @classmethod
+    def is_valid(cls, value: str) -> bool:
+        return value in cls._value2member_map_
+
+    @classmethod
+    def values(cls) -> tuple[str, ...]:
+        return tuple(member.value for member in cls)
 
 
 @dataclass(frozen=True, slots=True)

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +65,24 @@ CREATE TABLE IF NOT EXISTS oj_rubrics (
     created_at TEXT NOT NULL,
     meta_json TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS oj_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    track TEXT NOT NULL DEFAULT '',
+    total INTEGER NOT NULL DEFAULT 0,
+    done INTEGER NOT NULL DEFAULT 0,
+    judge INTEGER NOT NULL DEFAULT 0,
+    concurrency INTEGER NOT NULL DEFAULT 1,
+    batch_id INTEGER,
+    error TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL
+);
+-- 单飞：任何时刻只允许一个未完成任务。部分唯一索引在多进程下同样生效，
+-- 内存标志位做不到这一点（uvicorn 多 worker 时会各放行一个）。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_oj_runs_active
+    ON oj_runs(status) WHERE status IN ('pending', 'running');
 """
 
 
@@ -392,3 +410,58 @@ def health(conn: sqlite3.Connection) -> dict[str, Any]:
         "anchors": None,
         "flake": None,
     }
+
+
+# --------------------------------------------------------------------------- 趋势与赛道
+
+
+def series(conn: sqlite3.Connection, *, days: int = 30, limit: int = 200) -> list[dict[str, Any]]:
+    """按批次升序的通过率序列，供质量页折线使用。"""
+    cutoff = (datetime.now(UTC) - timedelta(days=max(1, days))).isoformat()
+    rows = _rows(
+        conn,
+        """
+        SELECT id, finished_at, verdict, summary_json FROM oj_batches
+         WHERE finished_at <> '' AND finished_at >= ?
+         ORDER BY id ASC LIMIT ?
+        """,
+        (cutoff, max(1, min(limit, 500))),
+    )
+    points: list[dict[str, Any]] = []
+    for row in rows:
+        summary = json.loads(row.get("summary_json", "{}") or "{}")
+        kpi = summary.get("kpi", {})
+        tracks = summary.get("tracks", {})
+        points.append(
+            {
+                "batch_id": row["id"],
+                "finished_at": row["finished_at"],
+                "verdict": row["verdict"],
+                "pass_rate": float(kpi.get("pass_rate", 0.0) or 0.0),
+                "cases": int(kpi.get("cases", 0) or 0),
+                "tracks": {key: float(val.get("pass_rate", 0.0)) for key, val in tracks.items()},
+            }
+        )
+    return points
+
+
+def latest_track_stats(
+    conn: sqlite3.Connection, track: str, *, scan: int = 50
+) -> dict[str, Any] | None:
+    """最近一个包含该赛道的批次统计；没有就返回 None（前端显式显示「尚无批次」）。"""
+    rows = _rows(
+        conn,
+        "SELECT id, finished_at, verdict, summary_json FROM oj_batches ORDER BY id DESC LIMIT ?",
+        (max(1, scan),),
+    )
+    for row in rows:
+        summary = json.loads(row.get("summary_json", "{}") or "{}")
+        stats = (summary.get("tracks") or {}).get(track)
+        if stats:
+            return {
+                "batch_id": row["id"],
+                "finished_at": row["finished_at"],
+                "pass_rate": float(stats.get("pass_rate", 0.0)),
+                "verdict": str(stats.get("verdict", row["verdict"])),
+            }
+    return None

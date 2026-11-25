@@ -166,9 +166,7 @@ def summarize(
 ) -> dict[str, Any]:
     """生成批次汇总（summary_json 的结构即前端契约）。
 
-    1. 按赛道聚合，再用 `TRACK_RULES` 逐赛道判 pass / fail / insufficient；
-    2. 总判定由赛道结论与安全违例合成（见 `_overall_verdict`）；
-    3. 失败清单按断言名统计 Pareto，供前端直接展示「最常挂的是什么」。
+    1. 按赛道聚合 + TRACK_RULES 判决 2. 赛道结论+违例合成总判定 3. 失败按断言名统计 Pareto。
     """
     tracks = _track_stats(results)
     verdicts = {

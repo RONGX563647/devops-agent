@@ -352,10 +352,7 @@ async def grade_traces(
 ) -> list[dict[str, Any]]:
     """对轨迹逐条判分；`judge=False` 只跑规则门禁（离线 PR 用）。
 
-    1. 每条轨迹先跑确定性断言，得到 `rule_passed` 与安全违例数；
-    2. `judge=False` 到此为止 —— 离线门禁不碰模型，也就不需要模型凭据；
-    3. 需要裁判时按现有网关构造模型，缺变量抛 `ConfigError` 而不是记成答得差；
-    4. 语义分合并回每一行后统一算 `passed`（规则 + 语义双门槛，见 `_finish`）。
+    1. 每条跑断言 2. judge=False 停在此 3. 需裁判构造模型，缺配置抛 ConfigError 4. 并回算 passed。
     """
     active_plan = plan or load_plan()
     by_id = {case.id: case for case in cases}
@@ -456,10 +453,7 @@ async def _apply_judge(
 ) -> None:
     """只对规则通过且声明了 judge 的用例跑语义裁判。
 
-    1. 过滤：`_judge_row` 把规则失败、没声明 judge 的用例挡在外面；
-    2. 分桶：按适用性投进 content / instruction / tool / loop 四组；
-    3. 并发：四个组各建一个 GradingRunner，`asyncio.gather` 同时跑；
-    4. 回填：同一用例可能被多组判分，用 update 合并而不是覆盖。
+    1. 过滤规则失败/无 judge 2. 投四桶 3. 每桶 GradingRunner 并发 4. update 合并不覆盖。
 
     分组裁剪（避免把「不适用」判成 0 分）：
     - 工具组只在用例显式声明了期望工具/入参时跑，且只把命中的调用交给裁判；

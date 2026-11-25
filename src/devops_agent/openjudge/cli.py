@@ -82,9 +82,7 @@ def _optional_path(arg: str | None) -> Path | None:
 async def _run(args: argparse.Namespace) -> int:
     """采集 + 判分一次；退出码 0 通过 / 1 未通过 / 2 配置或没有用例。
 
-    1. 按 --case / --track / --offline-only / --limit 筛出本轮用例；
-    2. 把 CLI 参数翻译成 `RunOptions`，交给与在线评测共用的 `run.execute`；
-    3. 打印批次号与每赛道结论，结论不是 pass 就返回非零，供 CI 直接阻断。
+    1. 筛 --case/--track/--limit 2. 参数转 RunOptions 交 run.execute 3. 非 pass 返回非零阻断 CI。
     """
     cases = _select_cases(args)
     if not cases:
@@ -142,10 +140,7 @@ async def _grade(args: argparse.Namespace) -> int:
 def _validate(args: argparse.Namespace) -> int:
     """校验题库并比对覆盖基线；有问题返回 1。
 
-    1. 单条合法性交给 `benchmark.validate`，`--strict` 时才查赛道配额；
-    2. `--update-baseline` 只重写基线，不做回退比较（否则刚降完一定「不回退」）；
-    3. 校验临时题库时跳过基线 —— 基线描述的是仓库自带那套题，口径不同；
-    4. 其余情况读基线，任何覆盖指标下降都算问题。
+    1. validate 查单条+strict 配额 2. update-baseline 只写不比 3. 临时题库跳基线 4. 覆盖降即问题。
 
     覆盖基线描述的是**仓库题库**：本地覆盖层是实验，不参与「覆盖率是否回退」。
     所以不带 `--cases` 时用 `repo_cases()` 而不是 `load_cases()` —— 否则在页面上

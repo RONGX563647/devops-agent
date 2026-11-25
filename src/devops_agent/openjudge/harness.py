@@ -183,7 +183,13 @@ def _record_stages(prepared: Any, trace: TraceRecord) -> None:
 async def _drive(
     runtime: Any, case: Case, trace: TraceRecord, prepared: Any, cursor: int, outside: Path
 ) -> None:
-    """按 turns 驱动：用户输入 → 事件 → 挂起 → 确认续跑。"""
+    """按 turns 驱动：用户输入 → 事件 → 挂起 → 确认续跑。
+
+    1. 逐轮取用户输入，先把 `{{OUTSIDE}}` 换成本次运行的绝对路径再送进运行时；
+    2. 每轮结束用游标增量抽取工具调用与结果，不重复扫历史消息；
+    3. 运行时挂起时：后面还有 confirm 轮就续跑，没有就标 `parked` 提前收尾；
+    4. 续跑最多 `_MAX_CONFIRM_ROUNDS` 轮，防止模型反复要授权把批次拖死。
+    """
     pending: dict[str, ToolCallRecord] = {}
     turns = list(case.turns)
     index = 0
@@ -229,7 +235,13 @@ async def run_case(
     timeout: float = DEFAULT_TIMEOUT,
     runtime_factory: Callable[[Path, Case], Any] | None = None,
 ) -> TraceRecord:
-    """跑一条用例并返回轨迹；任何失败都落在 status/error 上，不向外抛。"""
+    """跑一条用例并返回轨迹；任何失败都落在 status/error 上，不向外抛。
+
+    1. 复制 fixture 到临时工作区，并给越权用例准备同级 `outside/` 目录；
+    2. 先跑输入管线并留档 —— 离线用例不产生模型回答，管线产物就是唯一证据；
+    3. 非离线用例才建运行时，`wait_for` 兜住超时；
+    4. 无论成败都算 diff、记延迟，最后删掉临时目录。
+    """
     workdir = sandbox.copy_fixture(case.fixture)
     outside = workdir.parent / "outside"
     trace = TraceRecord.for_case(case, suite_sha=suite)

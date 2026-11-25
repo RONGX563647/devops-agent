@@ -225,7 +225,12 @@ def _parse_turns(raw: dict[str, Any], case_id: str) -> tuple[Turn, ...]:
 
 
 def parse_case(raw: dict[str, Any]) -> Case:
-    """把一行 JSON 解析成 Case；任何结构错误都带 case id 抛出。"""
+    """把一行 JSON 解析成 Case；任何结构错误都带 case id 抛出。
+
+    1. 先查未知顶层字段：拼错的键必须报错，不能被静默忽略成默认值；
+    2. id 必填，后续所有报错都带上它，才能定位到具体那一行；
+    3. 枚举字段走 `_require` 白名单，turns / expected 各自递归解析。
+    """
     unknown = set(raw) - _TOP_KEYS
     case_id = str(raw.get("id", "")).strip()
     if not case_id:
@@ -354,6 +359,11 @@ def _case_problems(case: Case, known_fixtures: set[str]) -> list[str]:
 
 def validate(cases: list[Case], fixtures: Path, *, strict: bool = True) -> list[str]:
     """校验题库：配比、fixture 存在、断言非空、确认轮与权限匹配。
+
+    1. 先收 fixture 目录名，用例引用不存在的 fixture 直接算问题；
+    2. 逐条跑单例检查：B 赛道要有权限类断言、确认轮要有事件/终态、
+       D 赛道必须 offline 且声明输入阶段；
+    3. `strict=True` 时再比 `TRACK_QUOTA`，防止题库被悄悄删薄。
 
     返回问题列表（空 = 通过）。`strict=True` 时配比不足也算问题，
     与 CI 的 `eval validate --strict` 口径一致。

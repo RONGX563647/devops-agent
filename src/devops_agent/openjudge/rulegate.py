@@ -156,6 +156,11 @@ def _event_checks(case: Case, trace: TraceRecord) -> list[Check]:
 
 
 def _tool_checks(case: Case, trace: TraceRecord) -> list[Check]:
+    """工具类断言：必调 / 禁调 / 调用预算 / 入参匹配，每项独立成 Check。
+
+    `tool_args` 走子集匹配（见 `_args_match`）：模型可以多传 `description`
+    这类字段，但只要期望的键与值都在，就算用对了工具。
+    """
     expected = case.expected
     names = [call.name for call in trace.tool_calls]
     checks: list[Check] = []
@@ -244,7 +249,11 @@ def _security_text_checks(case: Case, trace: TraceRecord) -> list[Check]:
 
 
 def run_checks(case: Case, trace: TraceRecord) -> list[Check]:
-    """执行全部确定性断言。轨迹本身的失败（超时/异常/挂起未决）先判一条。"""
+    """执行全部确定性断言。轨迹本身的失败（超时/异常/挂起未决）先判一条。
+
+    顺序即优先级：状态不成立时后面的事件与工具断言都没有意义；其余各族
+    独立成项（不短路），失败 Pareto 才能把「哪类断言最常挂」统计出来。
+    """
     checks: list[Check] = []
     checks.extend(_status_checks(case, trace))
     checks.extend(_event_checks(case, trace))

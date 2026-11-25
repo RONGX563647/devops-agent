@@ -130,9 +130,7 @@ async def generate(
 ) -> Path:
     """调用 OpenJudge 零样本生成器；失败时回落默认条目并标记 draft。
 
-    1. 先建生成配置：1–5 分制、中文、给出 4 条默认条目兜底；
-    2. 用现有网关的模型跑 `SimpleRubricsGenerator`，样本只是参考，可以为空；
-    3. 把返回的 Grader 摊平成条目，连同 spec / meta 一起落盘成 draft。
+    1. 建配置（1–5 分/中文/4 兜底） 2. 网关模型跑生成器 3. Grader 摊平成条目落 draft。
     """
     from openjudge.generator.simple_rubric import (
         SimpleRubricsGenerator,

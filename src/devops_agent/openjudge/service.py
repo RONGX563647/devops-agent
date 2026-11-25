@@ -2,13 +2,7 @@
 
 三条约束，都是刻意的：
 
-1. 单进程 asyncio 任务，不引入队列。本项目是单机单用户工具（ADR-0001），
-   加 Celery/Redis 是过度设计；代价是进程重启即丢任务，由 `reap_stale_runs`
-   把残留标成 failed，而不是假装还能续跑。
-2. 单飞锁在 DB（`oj_runs` 的部分唯一索引），不在内存。uvicorn 开多 worker 时
-   内存标志位等于没有锁。
-3. 进度按用例落库。轮询接口读库就能拿到 `done`，不依赖进程内状态；
-   只有 `current_case` 是内存值（它每 2 秒被覆盖，丢了也不影响结论）。
+1. 单进程 asyncio 无队列，重启丢任务标 failed 2. 单飞锁在 DB 不在内存 3. 进度按用例落库供轮询。
 """
 
 from __future__ import annotations
@@ -50,9 +44,7 @@ async def start(
 ) -> dict[str, Any]:
     """占用运行槽并起后台任务。
 
-    1. 开关、赛道、用例非空先校验 —— 这些都是调用方错误（400），不是服务故障；
-    2. 打开库、清掉重启留下的幽灵任务，再抢单飞槽；抢不到就返回 `busy`；
-    3. 抢到后登记进度、起 asyncio 任务，请求立即返回 `run_id` 与总数。
+    1. 校验开关/赛道/用例 2. 清幽灵任务+抢单飞槽 3. 起 asyncio 任务返 run_id。
 
     `judge` / `concurrency` 省略时取界面里存的默认值（`oj_settings`）——「点一下就
     跑」和「按上次配置再跑」必须用同一套参数，否则两次结果没法比。
@@ -102,9 +94,7 @@ async def _execute(
 ) -> None:
     """后台跑一条流水线，把结果落成任务终态。
 
-    1. 每完成一条就通过 `progress` 写库，轮询接口只读库，不依赖进程内状态；
-    2. 取消 / 配置错误 / 其他异常分别落成 cancelled / failed，错误文案带类型；
-    3. 收尾清掉内存里的进度与任务句柄，避免长跑进程越攒越多。
+    1. 每条经 progress 写库 2. 取消/错误落 cancelled/failed 3. 收尾清内存句柄防累积。
     """
 
     def progress(done: int, total: int, case_id: str) -> None:

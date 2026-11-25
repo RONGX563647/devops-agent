@@ -63,9 +63,7 @@ async def _capture(
 ) -> list[TraceRecord]:
     """固定并发抓轨迹。取消只在两条用例之间检查，不打断已开始的那一条。
 
-    1. 多个 worker 共享同一个 `cursor`，取值后立即自增，谁也不会抢到同一条；
-    2. 单条用例的任何失败都由 `run_case` 写进 `trace.status`，不向外抛；
-    3. 取消只让 worker 在下一轮循环退出，已经跑完的轨迹照常返回。
+    1. worker 共享 cursor 自增 2. 单例失败写 status 不外抛 3. 取消让 worker 退出，已完成照常返。
     """
     from devops_agent.openjudge.harness import run_case
 
@@ -100,10 +98,7 @@ async def execute(
 ) -> RunResult:
     """跑一批：采集 → 判分 → 汇总 → 落盘 → 入库。取消时抛 `RunCancelled`。
 
-    1. 先固定题库指纹与判分计划，二者都要进批次元数据，决定两次结果能否比较；
-    2. 采集轨迹（这一步才会真正驱动模型，`judge=False` 时也只省掉后面的裁判）；
-    3. 判分：规则门禁对全部用例生效，语义裁判只处理规则通过的那部分；
-    4. 汇总成人可读的报告，同时写盘并入库，返回 `batch_id` 供对比接口引用。
+    1. 固定指纹+判分计划 2. 采集轨迹 3. 规则门禁全覆盖，语义仅通过者 4. 汇总+写盘+入库返 batch_id。
     """
     if not cases:
         raise ValueError("没有可执行的用例")
@@ -197,9 +192,7 @@ def persist(
 ) -> int | None:
     """一个批次 + 每条用例一行；trace 原样存，便于换 plan 重判。
 
-    1. 先写批次头（指纹、模型、结论）拿到 `batch_id`；
-    2. 按 `case_id` 把判分结果与轨迹配对 —— 两者来自不同函数，顺序不保证一致；
-    3. 逐条落库；没有判分结果的轨迹直接跳过，不留半截记录。
+    1. 写批次头拿 batch_id 2. 按 case_id 配对结果+轨迹 3. 逐条落库，无结果跳过。
     """
     del cases  # 用例形态已在 summary/results 里，签名保留便于调用方对齐
     with store.connect(db) as conn:

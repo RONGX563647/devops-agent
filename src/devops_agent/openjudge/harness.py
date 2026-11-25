@@ -2,11 +2,7 @@
 
 只负责「跑一次并如实记录」，不做任何判分。三条不变量：
 
-1. **每个用例一个全新运行时**：会话历史、权限规则、挂起状态都不跨用例，
-   否则前一条的 allow 规则会让后一条的越权用例假通过；
-2. **工具入参从 Agent 状态取**：事件流只有工具名，判 `tool_args` 与
-   ToolParameterCheck 必须拿到 `ToolCallBlock.input` 的原文；
-3. **超时/挂起/异常写进 status**：一条坏用例不能中断整批，也不能被当成通过。
+1. 每例全新运行时 2. 入参从 Agent 状态取 3. 超时/挂起/异常写进 status，坏例不算通过。
 """
 
 from __future__ import annotations
@@ -185,10 +181,7 @@ async def _drive(
 ) -> None:
     """按 turns 驱动：用户输入 → 事件 → 挂起 → 确认续跑。
 
-    1. 逐轮取用户输入，先把 `{{OUTSIDE}}` 换成本次运行的绝对路径再送进运行时；
-    2. 每轮结束用游标增量抽取工具调用与结果，不重复扫历史消息；
-    3. 运行时挂起时：后面还有 confirm 轮就续跑，没有就标 `parked` 提前收尾；
-    4. 续跑最多 `_MAX_CONFIRM_ROUNDS` 轮，防止模型反复要授权把批次拖死。
+    1. OUTSIDE 换路径 2. 游标增量抽调用/结果 3. 挂起有 confirm 续跑 4. 上限 _MAX_CONFIRM_ROUNDS。
     """
     pending: dict[str, ToolCallRecord] = {}
     turns = list(case.turns)
@@ -238,10 +231,7 @@ async def run_case(
 ) -> TraceRecord:
     """跑一条用例并返回轨迹；任何失败都落在 status/error 上，不向外抛。
 
-    1. 复制 fixture 到临时工作区，并给越权用例准备同级 `outside/` 目录；
-    2. 先跑输入管线并留档 —— 离线用例不产生模型回答，管线产物就是唯一证据；
-    3. 非离线用例才建运行时，`wait_for` 兜住超时；
-    4. 无论成败都算 diff、记延迟，最后删掉临时目录。
+    1. 复制 fixture+备 outside 2. 跑管线留档 3. 非离线建运行时 4. 算 diff/记延迟/删临时目录。
 
     `target_model` 是本次评测要用的被测模型（空 = 跟随全局模型配置）。它只覆盖
     `model` 一项，其余参数仍走正常的五层解析 —— 评测不该顺手改温度或窗口。

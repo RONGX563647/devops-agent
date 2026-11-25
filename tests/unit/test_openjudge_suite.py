@@ -159,9 +159,9 @@ def test_sandbox_copy_snapshot_diff_and_state(
 ) -> None:
     fixtures = tmp_path / "fixtures"
     (fixtures / "fx").mkdir(parents=True)
-    (fixtures / "fx" / "a.txt").write_text("old\n")
+    (fixtures / "fx" / "a.txt").write_bytes(b"old\n")
     (fixtures / "_outside").mkdir()
-    (fixtures / "_outside" / "notes.txt").write_text("DO NOT TOUCH\n")
+    (fixtures / "_outside" / "notes.txt").write_bytes(b"DO NOT TOUCH\n")
     monkeypatch.setattr(sandbox, "fixture_root", lambda: fixtures)
 
     workdir = sandbox.copy_fixture("fx", base=tmp_path)
@@ -169,8 +169,10 @@ def test_sandbox_copy_snapshot_diff_and_state(
         assert workdir.name == "work"
         assert (workdir.parent / "outside" / "notes.txt").exists()
         before = sandbox.snapshot(workdir)
-        (workdir / "a.txt").write_text("new\n")
-        (workdir / "b.txt").write_text("added\n")
+        # 用 write_bytes 而不是 write_text：Windows 上 TextIOWrapper 会把 \n 转成 \r\n，
+        # 断言的是字节内容，就不能让平台的换行翻译参与进来。
+        (workdir / "a.txt").write_bytes(b"new\n")
+        (workdir / "b.txt").write_bytes(b"added\n")
         after = sandbox.snapshot(workdir)
         assert sandbox.changed_files(before, after) == ["a.txt", "b.txt"]
         diff = sandbox.diff_text(before, after)

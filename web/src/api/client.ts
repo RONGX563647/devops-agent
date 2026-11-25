@@ -3,14 +3,6 @@
 import type {
   Attachment,
   Breakdown,
-  EvalBatchDetail,
-  EvalBatchList,
-  EvalCaseList,
-  EvalCompare,
-  EvalMatrix,
-  EvalSeries,
-  EvalSuiteList,
-  EvalTrends,
   Health,
   HealthMetrics,
   InputStage,
@@ -23,6 +15,12 @@ import type {
   OjCoverage,
   OjHealth,
   OjRubric,
+  OjRun,
+  OjRunCreated,
+  OjRunList,
+  OjRunRequest,
+  OjSeries,
+  OjSuites,
   PendingState,
   PermissionCatalog,
   Run,
@@ -134,59 +132,6 @@ export function fetchSummary(): Promise<Summary> {
 
 export function fetchTimeseries(days = 7): Promise<TimePoint[]> {
   return getJson<TimePoint[]>(`/api/metrics/timeseries?days=${days}`);
-}
-
-export function fetchEvalTrends(): Promise<EvalTrends> {
-  return getJson<EvalTrends>('/api/eval/trends');
-}
-
-/** 评测批次列表。running 批次由调用方决定是否轮询。 */
-export function fetchEvalBatches(limit = 20, offset = 0): Promise<EvalBatchList> {
-  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  return getJson<EvalBatchList>(`/api/eval/batches?${params.toString()}`);
-}
-
-/** 单个批次详情：带分标签统计与用例快照。 */
-export function fetchEvalBatch(id: number): Promise<EvalBatchDetail> {
-  return getJson<EvalBatchDetail>(`/api/eval/batches/${id}`);
-}
-
-export interface EvalCaseQuery {
-  status?: string;
-  tag?: string;
-  limit?: number;
-  offset?: number;
-}
-
-/** 分页 / 筛选用例。 */
-export function fetchEvalCases(id: number, params: EvalCaseQuery = {}): Promise<EvalCaseList> {
-  const query = new URLSearchParams();
-  if (params.status) query.set('status', params.status);
-  if (params.tag) query.set('tag', params.tag);
-  query.set('limit', String(params.limit ?? 50));
-  query.set('offset', String(params.offset ?? 0));
-  return getJson<EvalCaseList>(`/api/eval/batches/${id}/cases?${query.toString()}`);
-}
-
-/** 评测集目录：题库构成、阈值与断言清单。 */
-export function fetchEvalSuites(): Promise<EvalSuiteList> {
-  return getJson<EvalSuiteList>('/api/eval/suites');
-}
-
-/** 最近 N 个批次的时间序列（趋势图）。 */
-export function fetchEvalSeries(limit = 30): Promise<EvalSeries> {
-  return getJson<EvalSeries>(`/api/eval/series?limit=${limit}`);
-}
-
-/** 用例 × 批次通过矩阵。 */
-export function fetchEvalMatrix(limit = 10): Promise<EvalMatrix> {
-  return getJson<EvalMatrix>(`/api/eval/matrix?limit=${limit}`);
-}
-
-/** 两次批次对比：verdict + 指标 delta + 变化用例。 */
-export function fetchEvalCompare(base: number, head: number): Promise<EvalCompare> {
-  const params = new URLSearchParams({ base: String(base), head: String(head) });
-  return getJson<EvalCompare>(`/api/eval/compare?${params.toString()}`);
 }
 
 /** 工具注册表导出的 schema：Inspector 的「Schema」页签据此展示参数定义。 */
@@ -424,4 +369,42 @@ export function fetchOpenJudgeCoverage(): Promise<OjCoverage> {
 /** OpenJudge：rubric 工件清单。 */
 export function fetchOpenJudgeRubrics(): Promise<{ items: OjRubric[]; total: number }> {
   return getJson<{ items: OjRubric[]; total: number }>('/api/openjudge/rubrics');
+}
+
+/** OpenJudge：题库清单（赛道、用例数、阈值、最近一批结论）。 */
+export function fetchOpenJudgeSuites(): Promise<OjSuites> {
+  return getJson<OjSuites>('/api/openjudge/suites');
+}
+
+/** OpenJudge：最近 N 天的批次趋势。 */
+export function fetchOpenJudgeSeries(days = 30): Promise<OjSeries> {
+  return getJson<OjSeries>(`/api/openjudge/series?days=${days}`);
+}
+
+/**
+ * 发起一次在线评测。
+ *
+ * 409 时不弹错：`ApiError.detail` 里带着正在跑的任务 `run_id`，
+ * 调用方据此挂到那个任务上继续轮询。
+ */
+export function startOpenJudgeRun(body: OjRunRequest): Promise<OjRunCreated> {
+  return sendJson<OjRunCreated>('/api/openjudge/runs', 'POST', body);
+}
+
+/** OpenJudge：单个在线任务的进度。 */
+export function fetchOpenJudgeRun(id: number): Promise<OjRun> {
+  return getJson<OjRun>(`/api/openjudge/runs/${id}`);
+}
+
+/** OpenJudge：最近的任务列表。 */
+export function fetchOpenJudgeRuns(limit = 10): Promise<OjRunList> {
+  return getJson<OjRunList>(`/api/openjudge/runs?limit=${limit}`);
+}
+
+/** OpenJudge：取消一个未完成的任务。 */
+export function cancelOpenJudgeRun(id: number): Promise<{ id: number; status: string }> {
+  return sendJson<{ id: number; status: string }>(
+    `/api/openjudge/runs/${id}/cancel`,
+    'POST',
+  );
 }

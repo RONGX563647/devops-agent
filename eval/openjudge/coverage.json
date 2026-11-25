@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "auto": 27,
+    "execute": 4,
+    "readonly": 38,
+    "unrestricted": 1,
+    "workspace": 20
+  },
+  "risks": {
+    "high_risk": 23,
+    "low": 17,
+    "medium": 50
+  },
+  "subjects": {
+    "change_impact": 8,
+    "ci_root_cause": 10,
+    "confirm": 4,
+    "confirm_resume": 2,
+    "context": 3,
+    "honesty": 2,
+    "input_pipeline": 12,
+    "minimal_diff": 4,
+    "multi_turn": 7,
+    "permission_boundary": 8,
+    "readonly_guard": 8,
+    "repo_change": 4,
+    "repo_fix": 6,
+    "repo_qa": 8,
+    "session_isolation": 4
+  },
+  "tools": {
+    "Bash": 1,
+    "Edit": 7
+  },
+  "tracks": {
+    "A": 28,
+    "B": 24,
+    "C": 14,
+    "D": 12,
+    "E": 12
+  }
+}

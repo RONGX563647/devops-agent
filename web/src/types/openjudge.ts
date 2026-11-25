@@ -111,3 +111,82 @@ export interface OjHealth {
   calibration: Record<string, number> | null;
   anchors: Record<string, number> | null;
 }
+
+// --- 题库 / 趋势 / 在线运行 -------------------------------------------
+
+/** 某赛道最近一批的结论；从未跑过时为 null。 */
+export interface OjSuiteLatest {
+  batch_id: number;
+  pass_rate: number;
+  verdict: string;
+  finished_at: string;
+}
+
+/** 一个赛道的题库规模、阈值与最近结论。 */
+export interface OjSuiteTrack {
+  track: string;
+  cases: number;
+  /** 阈值来自服务端 TRACK_RULES，如 {pass_rate: 0.6, judge: 0.6, min_n: 10}。 */
+  rules: Record<string, number>;
+  latest: OjSuiteLatest | null;
+}
+
+export interface OjSuites {
+  total: number;
+  suite_sha: string;
+  tracks: OjSuiteTrack[];
+}
+
+/** 趋势图上的一个批次点。 */
+export interface OjSeriesPoint {
+  batch_id: number;
+  finished_at: string;
+  verdict: string;
+  pass_rate: number;
+  cases: number;
+  /** 各赛道通过率；没跑到的赛道不出现。 */
+  tracks: Record<string, number>;
+}
+
+export interface OjSeries {
+  points: OjSeriesPoint[];
+}
+
+export type OjRunStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
+
+export interface OjRun {
+  id: number;
+  status: OjRunStatus;
+  /** 空串表示全部赛道。 */
+  track: string;
+  total: number;
+  done: number;
+  judge: boolean;
+  batch_id: number | null;
+  error: string;
+  elapsed_ms: number;
+  current_case: string;
+}
+
+export interface OjRunRequest {
+  track?: string;
+  limit?: number;
+  judge?: boolean;
+  concurrency?: number;
+}
+
+export interface OjRunCreated {
+  run_id: number;
+  total: number;
+}
+
+export interface OjRunList {
+  items: OjRun[];
+  total: number;
+}
+
+/** POST /runs 的 409 detail：直接挂到这个 run 上，而不是报错。 */
+export interface OjRunConflictDetail {
+  message: string;
+  run_id: number;
+}

@@ -1,17 +1,13 @@
 import { useState } from 'react';
 import { Overview } from './quality/Overview';
-import { SuitePanel } from './quality/SuitePanel';
 import { OpenJudge } from './quality/OpenJudge';
-import { EvalBatches } from './eval/Batches';
 
-/** 四个视图：「能不能用」→「拿什么测的」→「逐条明细」→「OpenJudge 基准」。 */
-type QualityView = 'overview' | 'suite' | 'batches' | 'openjudge';
+/** 两个视图：「这批能不能用」→「发起一次评测并看逐条明细」。 */
+type QualityView = 'overview' | 'run';
 
 const VIEWS: { key: QualityView; label: string }[] = [
   { key: 'overview', label: '概览' },
-  { key: 'suite', label: '评测集' },
-  { key: 'batches', label: '评测批次' },
-  { key: 'openjudge', label: 'OpenJudge' },
+  { key: 'run', label: '运行与批次' },
 ];
 
 export function Quality() {
@@ -20,7 +16,7 @@ export function Quality() {
   return (
     <div className="page">
       <h1>质量评估</h1>
-      <p className="subtitle">结论 → 题库 → 明细：先看这批能不能用，再看分数是从哪来的</p>
+      <p className="subtitle">先看这批能不能用，再发起一次评测看分数是从哪来的</p>
 
       <div className="view-tabs" role="tablist" aria-label="质量视图">
         {VIEWS.map((item) => (
@@ -37,10 +33,8 @@ export function Quality() {
         ))}
       </div>
 
-      {view === 'overview' && <Overview onShowBatches={() => setView('batches')} />}
-      {view === 'suite' && <SuitePanel />}
-      {view === 'batches' && <EvalBatches />}
-      {view === 'openjudge' && <OpenJudge />}
+      {view === 'overview' && <Overview onShowBatches={() => setView('run')} />}
+      {view === 'run' && <OpenJudge />}
     </div>
   );
 }

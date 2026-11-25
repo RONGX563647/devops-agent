@@ -1,8 +1,8 @@
-"""OpenJudge 评测只读 API —— 批次、用例、对比、覆盖与 rubric。
+"""OpenJudge API —— 批次/用例/对比/覆盖只读，外加「在线发起评测」的四个写端点。
 
-与 `observability/eval_api.py` 同一套约定：
-- 只读，写入只由 CLI 完成；
-- 数据库不可用（文件缺失/表缺失）时返回空列表或 404，不放大成 500；
+约定：
+- 读接口在库不可用（文件缺失/表缺失）时返回空列表或 404，不放大成 500；
+- 写接口只有「起任务 / 取消」两个动作，真正落库的仍是 `run.execute` 同一条流水线；
 - 字段与 CLI 产出的 summary_json 对齐，前端不用二次解析。
 """
 
@@ -14,8 +14,9 @@ from pathlib import Path
 from typing import TypeVar
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
-from devops_agent.openjudge import benchmark, store
+from devops_agent.openjudge import benchmark, report, service, store
 
 router = APIRouter(prefix="/api/openjudge", tags=["openjudge"])
 
@@ -133,3 +134,88 @@ def openjudge_coverage() -> dict[str, object]:
         "coverage": benchmark.coverage(cases),
         "problems": problems,
     }
+
+
+@router.get("/suites")
+def openjudge_suites() -> dict[str, object]:
+    """赛道清单：用例数、阈值、最近一批通过率。
+
+    阈值从 `report.TRACK_RULES` 下发，前端不再自己维护一份「门禁线」——
+    之前那套写死在前端，取的是 `items[0]`，结果拿到的是最旧的套件。
+    """
+    paths = sorted(_CASES_DIR.glob("*.jsonl"))
+    cases = benchmark.load_cases(paths) if paths else []
+    coverage = benchmark.coverage(cases) if cases else {"tracks": {}}
+    latest = _read(_latest_tracks) or {}
+    return {
+        "total": len(cases),
+        "suite_sha": benchmark.suite_sha(cases) if cases else "",
+        "tracks": [
+            {
+                "track": track,
+                "cases": int(coverage.get("tracks", {}).get(track, 0)),
+                "rules": report.TRACK_RULES.get(track, {}),
+                "latest": latest.get(track),
+            }
+            for track in benchmark.TRACKS
+        ],
+    }
+
+
+def _latest_tracks(conn: sqlite3.Connection) -> dict[str, dict[str, object] | None]:
+    return {track: store.latest_track_stats(conn, track) for track in benchmark.TRACKS}
+
+
+@router.get("/series")
+def openjudge_series(days: int = Query(30, ge=1, le=365)) -> dict[str, object]:
+    points = _read(lambda conn: store.series(conn, days=days))
+    return {"points": points or []}
+
+
+class RunStartIn(BaseModel):
+    track: str = ""
+    limit: int = Field(default=service.DEFAULT_LIMIT, ge=1, le=service.MAX_LIMIT)
+    judge: bool = False
+    concurrency: int = Field(default=2, ge=1, le=service.MAX_CONCURRENCY)
+
+
+@router.post("/runs", status_code=202)
+async def openjudge_start_run(body: RunStartIn) -> dict[str, object]:
+    """在线发起一次评测。默认单赛道 + 10 条 + 不启用裁判，全量必须显式放宽。"""
+    try:
+        payload = await service.start(
+            track=body.track.strip().upper(),
+            limit=body.limit,
+            judge=body.judge,
+            concurrency=body.concurrency,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if "busy" in payload:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "已有评测在运行", "run_id": payload.get("busy")},
+        )
+    return payload
+
+
+@router.get("/runs")
+def openjudge_runs(limit: int = Query(10, ge=1, le=50)) -> dict[str, object]:
+    items = service.recent(limit)
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/runs/{run_id}")
+def openjudge_run(run_id: int) -> dict[str, object]:
+    row = service.status(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return row
+
+
+@router.post("/runs/{run_id}/cancel", status_code=202)
+def openjudge_cancel_run(run_id: int) -> dict[str, object]:
+    row = service.cancel(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return {"id": row["id"], "status": row["status"]}

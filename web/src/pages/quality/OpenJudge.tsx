@@ -13,31 +13,10 @@ import {
 } from '../../api/client';
 import { MetricCard } from '../../components/MetricCard';
 import type { OjBatch, OjCaseRow, OjTrackStat } from '../../types';
-
-const TRACK_LABEL: Record<string, string> = {
-  A: 'A 仓库问答',
-  B: 'B 权限边界',
-  C: 'C 改动能力',
-  D: 'D 输入管线',
-  E: 'E 多轮会话',
-};
-
-const VERDICT_TEXT: Record<string, string> = {
-  pass: '通过',
-  fail: '未达标',
-  insufficient: '样本不足',
-};
-
-function percent(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '—';
-  return `${(value * 100).toFixed(1)}%`;
-}
-
-function verdictClass(verdict: string): string {
-  if (verdict === 'pass') return 'is-pass';
-  if (verdict === 'fail') return 'is-fail';
-  return 'is-pending';
-}
+import { formatPercent as percent } from './format';
+import { TRACK_LABEL, VERDICT_TEXT, verdictClass } from './labels';
+import { RunBar } from './run/RunBar';
+import { SuitesCard } from './run/SuitesCard';
 
 function TrackRow({ track, stat }: { track: string; stat: OjTrackStat }) {
   return (
@@ -168,24 +147,33 @@ export function OpenJudge() {
   const total = casesQuery.data?.total ?? 0;
   const coverage = coverageQuery.data?.coverage ?? {};
   const trackOptions = Object.keys(tracks).sort();
-
-  if (batchesQuery.isLoading) return <div className="muted">加载 OpenJudge 批次…</div>;
-  if (list.length === 0) {
-    return (
-      <div className="panel">
-        <h2>OpenJudge 评测</h2>
-        <p className="muted">
-          还没有批次。先运行{' '}
-          <code>python -m devops_agent.openjudge run --db workspace/evals/openjudge.db</code>
-        </p>
-      </div>
-    );
-  }
+  const empty = !batchesQuery.isLoading && list.length === 0;
 
   return (
     <div className="oj-view">
-      <div className="panel">
-        <h2>批次</h2>
+      <RunBar
+        onFinished={(batchId) => {
+          setSelected(batchId);
+          setOffset(0);
+          setOpenCase(null);
+        }}
+      />
+      <SuitesCard />
+
+      {batchesQuery.isLoading && <div className="muted">加载 OpenJudge 批次…</div>}
+      {empty && (
+        <div className="panel">
+          <h2>尚无批次</h2>
+          <p className="muted">
+            在上方发起一次评测，跑完后这里会出现批次结论与逐条明细。
+          </p>
+        </div>
+      )}
+
+      {list.length > 0 && (
+        <>
+          <div className="panel">
+            <h2>批次</h2>
         <div className="tag-row">
           {list.map((item) => (
             <button
@@ -487,6 +475,8 @@ export function OpenJudge() {
           </table>
         )}
       </div>
+        </>
+      )}
     </div>
   );
 }

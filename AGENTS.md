@@ -107,7 +107,7 @@ git fetch origin && git checkout main && git pull
 1. **框架使用**：允许直接使用 AgentScope / OpenJudge 的类型与 API，不再维护 `import agentscope`
    的白名单；第三方 pip 依赖 `openjudge`（`py-openjudge`）仍只在 `devops_agent/openjudge/` 内
    import，保持可选依赖隔离——没装 `[openjudge]` extra 时其余功能不受影响。分层依赖仍由
-   `.importlinter` + `lint-imports` 强制（`eval` / `input` / `observability` 不直接依赖 `agentscope`，
+   `.importlinter` + `lint-imports` 强制（`prompt_lint` / `input` / `observability` 不直接依赖 `agentscope`，
    网关不反向依赖 runtime/observability）。`runtime/events.py` 仍靠 duck typing 不 import 框架，
    以保持事件转译可用假事件测试。现有代码不为此规则重构。
 2. **编排与执行分离**：`runtime/` 只做编排，`executor/boundary.py` 管沙箱执行面。
@@ -118,7 +118,7 @@ git fetch origin && git checkout main && git pull
 6. **证据优先**：不编造哈希、偏移量、测试结果；未运行的步骤显式标注 `NOT RUN` 和复现命令。
 7. **注释规范与单文件行数**：
    - 源码文件（不含测试）单文件硬上限 **500 物理行**，由 `scripts/check_file_size.py` +
-     `config/gates.yaml` 执行；`eval/` 下 4 个存量文件记录在 `config/size-baseline.json`，
+     `config/gates.yaml` 执行；存量超标文件记录在 `config/size-baseline.json`（当前为空），
      只能下降。新增超限文件必须先拆职责，禁止用 `eslint-disable`、压缩空行或堆注释规避。
    - 注释分三层：模块 docstring 写不变量与长「为什么」；函数 docstring 一句话职责，
      超过 20 行的编排函数写 3–6 条编号步骤；行内注释只写顺序、不变量、反直觉实现，

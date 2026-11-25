@@ -2,10 +2,10 @@
 root_package = devops_agent
 include_external_packages = True
 
-[importlinter:contract:eval-no-framework]
-name = eval 层不得直接依赖 AgentScope
+[importlinter:contract:prompt-lint-no-framework]
+name = prompt_lint 层不得直接依赖 AgentScope
 type = forbidden
-source_modules = devops_agent.eval
+source_modules = devops_agent.prompt_lint
 forbidden_modules = agentscope
 allow_indirect_imports = True
 

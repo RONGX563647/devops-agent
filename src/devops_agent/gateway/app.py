@@ -18,7 +18,6 @@ from devops_agent.gateway.stream import router as stream_router
 from devops_agent.input.api import router as attachments_router
 from devops_agent.model_api import router as model_config_router
 from devops_agent.observability.api import router as observability_router
-from devops_agent.observability.eval_api import router as eval_router
 from devops_agent.openjudge.api import router as openjudge_router
 from devops_agent.runtime.assembly import build_agentscope_runtime
 from devops_agent.runtime.runtime import AgentRuntime, EchoRuntime
@@ -119,7 +118,6 @@ def health() -> dict[str, Any]:
 
 
 app.include_router(observability_router)
-app.include_router(eval_router)
 app.include_router(openjudge_router)
 app.include_router(attachments_router)
 app.include_router(secrets_router)

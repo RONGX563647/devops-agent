@@ -3,6 +3,8 @@
 `run` 是唯一会驱动真实模型的入口；`grade` 只读轨迹重判，换 plan/rubric 不重跑。
 PR 门禁用 `run --no-judge --offline-only`（只跑输入管线与确定性断言），
 夜间用完整批次。
+
+执行本身在 `run.execute`（与在线评测共用），这里只负责参数解析与退出码。
 """
 
 from __future__ import annotations
@@ -10,17 +12,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from devops_agent.env import load_env
-from devops_agent.openjudge import benchmark, grade, report, sandbox, store
-from devops_agent.openjudge.trace import TraceRecord, load_traces, prompt_sha
+from devops_agent.openjudge import benchmark, grade, report, run, sandbox, store
+from devops_agent.openjudge.trace import load_traces
 
 CASES_DIR = Path(__file__).resolve().parents[3] / "eval" / "openjudge" / "cases"
+DEFAULT_BASELINE = CASES_DIR.parent / "coverage.json"
 
 
 def _case_paths(target: str | None) -> list[Path]:
@@ -42,92 +43,6 @@ def _load(target: str | None, case_id: str = "", tracks: str = "") -> list[bench
     return cases
 
 
-async def _capture(
-    cases: list[benchmark.Case], *, suite: str, concurrency: int, timeout: float
-) -> list[TraceRecord]:
-    semaphore = asyncio.Semaphore(max(1, concurrency))
-
-    async def one(case: benchmark.Case) -> TraceRecord:
-        async with semaphore:
-            return cast(TraceRecord, await harness_run(case, suite=suite, timeout=timeout))
-
-    return list(await asyncio.gather(*(one(case) for case in cases)))
-
-
-def harness_run(case: benchmark.Case, *, suite: str, timeout: float) -> Any:
-    from devops_agent.openjudge.harness import run_case
-
-    return run_case(case, suite=suite, timeout=timeout)
-
-
-def _meta(cases: list[benchmark.Case], plan: grade.Plan, suite: str) -> dict[str, Any]:
-    from importlib.metadata import version
-
-    try:
-        oj_version = version("py-openjudge")
-    except Exception:  # pragma: no cover - 可选依赖
-        oj_version = ""
-    return {
-        "suite_sha": suite,
-        "plan": plan.name,
-        "plan_sha": grade.plan_sha(plan),
-        "rubric_sha": "",
-        "refs_sha": "",
-        "prompt_sha": prompt_sha(""),
-        "model": os.environ.get("DEVOPS_AGENT_MODEL", ""),
-        "judge_model": os.environ.get("DEVOPS_AGENT_JUDGE_MODEL")
-        or os.environ.get("DEVOPS_AGENT_MODEL", ""),
-        "oj_version": oj_version,
-        "config_id": cases[0].config_id if cases else "",
-        "case_count": len(cases),
-    }
-
-
-def _persist(
-    cases: list[benchmark.Case],
-    traces: list[TraceRecord],
-    results: list[dict[str, Any]],
-    summary: dict[str, Any],
-    out_dir: Path,
-    db: Path | None,
-    started: str,
-) -> int | None:
-    with store.connect(db) as conn:
-        store.init_db(conn)
-        batch_id = store.insert_batch(
-            conn,
-            suite_sha=str(summary["meta"].get("suite_sha", "")),
-            plan_sha=str(summary["meta"].get("plan_sha", "")),
-            rubric_sha=str(summary["meta"].get("rubric_sha", "")),
-            prompt_sha=str(summary["meta"].get("prompt_sha", "")),
-            model=str(summary["meta"].get("model", "")),
-            oj_version=str(summary["meta"].get("oj_version", "")),
-            config_id=str(summary["meta"].get("config_id", "")),
-            started_at=started,
-            finished_at=datetime.now(UTC).isoformat(),
-            verdict=str(summary["verdict"]),
-            summary=summary,
-        )
-        for trace in traces:
-            result = next((item for item in results if item["case_id"] == trace.case_id), None)
-            if result is not None:
-                store.insert_case(conn, batch_id, result=result, trace=trace.to_dict())
-    return batch_id
-
-
-def _write(out_dir: Path, traces: list[TraceRecord], summary: dict[str, Any]) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    trace_file = out_dir / "traces.jsonl"
-    trace_file.write_text(
-        "".join(json.dumps(trace.to_dict(), ensure_ascii=False) + "\n" for trace in traces),
-        encoding="utf-8",
-    )
-    (out_dir / "summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    (out_dir / "report.md").write_text(report.render_markdown(summary), encoding="utf-8")
-
-
 def _select_cases(args: argparse.Namespace) -> list[Any]:
     cases = _load(args.cases, args.case, args.track)
     if args.offline_only:
@@ -146,25 +61,25 @@ async def _run(args: argparse.Namespace) -> int:
     if not cases:
         print("没有可执行的用例", file=sys.stderr)
         return 2
-    suite = benchmark.suite_sha(cases)
-    plan = grade.load_plan(Path(args.plan) if args.plan else None)
-    started = datetime.now(UTC).isoformat()
-    traces = await _capture(cases, suite=suite, concurrency=args.concurrency, timeout=args.timeout)
+    options = run.RunOptions(
+        judge=not args.no_judge,
+        concurrency=args.concurrency,
+        timeout=args.timeout,
+        plan=_optional_path(args.plan),
+        db=_optional_path(args.db),
+        out_dir=_optional_path(args.out_dir),
+    )
     try:
-        results = await grade.grade_traces(cases, traces, plan=plan, judge=not args.no_judge)
+        result = await run.execute(cases, options=options)
     except grade.ConfigError as exc:
         print(f"配置错误：{exc}", file=sys.stderr)
         return 2
-    meta = _meta(cases, plan, suite)
-    summary = report.summarize(cases, traces, results, meta=meta)
-    out_dir = Path(args.out_dir) if args.out_dir else Path("workspace/evals/openjudge/latest")
-    _write(out_dir, traces, summary)
-    batch_id = _persist(cases, traces, results, summary, out_dir, _optional_path(args.db), started)
+    summary = result.summary
     kpi = summary["kpi"]
     print(
-        f"batch={batch_id} verdict={summary['verdict']} "
+        f"batch={result.batch_id} verdict={summary['verdict']} "
         f"passed={kpi['passed']}/{kpi['cases']} violations={kpi['violations']} "
-        f"judge_n={kpi['judge_n']} out={out_dir}"
+        f"judge_n={kpi['judge_n']} out={result.out_dir}"
     )
     for track, stats in sorted(summary["tracks"].items()):
         print(f"  {track}: {stats['passed']}/{stats['total']} {stats['verdict']}")
@@ -174,16 +89,16 @@ async def _run(args: argparse.Namespace) -> int:
 async def _grade(args: argparse.Namespace) -> int:
     cases = _load(args.cases)
     traces = load_traces(Path(args.traces))
-    plan = grade.load_plan(Path(args.plan) if args.plan else None)
+    plan = grade.load_plan(_optional_path(args.plan))
     try:
         results = await grade.grade_traces(cases, traces, plan=plan, judge=not args.no_judge)
     except grade.ConfigError as exc:
         print(f"配置错误：{exc}", file=sys.stderr)
         return 2
     suite = benchmark.suite_sha(cases)
-    summary = report.summarize(cases, traces, results, meta=_meta(cases, plan, suite))
+    summary = report.summarize(cases, traces, results, meta=run.meta_of(cases, plan, suite))
     out_dir = Path(args.out_dir) if args.out_dir else Path("workspace/evals/openjudge/regrade")
-    _write(out_dir, traces, summary)
+    run.write_artifacts(out_dir, traces, summary)
     print(f"verdict={summary['verdict']} out={out_dir}")
     return 0 if summary["verdict"] == "pass" else 1
 
@@ -192,6 +107,21 @@ def _validate(args: argparse.Namespace) -> int:
     cases = _load(args.cases)
     problems = benchmark.validate(cases, sandbox.fixture_root(), strict=args.strict)
     coverage = benchmark.coverage(cases)
+    baseline = Path(args.baseline) if args.baseline else DEFAULT_BASELINE
+    if args.update_baseline:
+        baseline.write_text(
+            json.dumps(coverage, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(f"已写入覆盖基线 {baseline}")
+    elif args.cases:
+        # 基线描述的是仓库自带题库；校验一份临时题库时不应拿它做回退判断。
+        pass
+    elif baseline.exists():
+        declared = json.loads(baseline.read_text(encoding="utf-8"))
+        problems.extend(benchmark.compare_coverage(coverage, declared))
+    else:
+        problems.append(f"缺少覆盖基线 {baseline}（用 --update-baseline 生成）")
     print(
         json.dumps(
             {"cases": len(cases), "coverage": coverage, "problems": problems},
@@ -245,6 +175,12 @@ def build_parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate", help="校验题库与覆盖率")
     validate.add_argument("--cases")
     validate.add_argument("--strict", action="store_true")
+    validate.add_argument("--baseline", help="覆盖基线 JSON，默认 eval/openjudge/coverage.json")
+    validate.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="按当前题库重写覆盖基线（只应随 PR 显式提升）",
+    )
     validate.set_defaults(func=_validate)
 
     run = sub.add_parser("run", help="采集轨迹并判分")

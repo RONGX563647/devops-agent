@@ -390,3 +390,20 @@ def coverage(cases: list[Case]) -> dict[str, Any]:
         "subjects": subjects,
         "risks": risks,
     }
+
+
+def compare_coverage(current: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
+    """覆盖基线只能涨不能跌。
+
+    为什么需要它：`validate` 只校验「单条用例是否合法」，删掉半个题库它依然全绿。
+    基线把「当前覆盖」钉成可 diff 的事实，删题必须先改基线，改基线才会出现在 PR 里。
+    """
+    problems: list[str] = []
+    for key in ("tracks", "tools", "subjects", "risks"):
+        declared = baseline.get(key) or {}
+        actual = current.get(key) or {}
+        for name, count in sorted(declared.items()):
+            now = int(actual.get(name, 0))
+            if now < int(count):
+                problems.append(f"覆盖回退：{key}.{name} {count} → {now}")
+    return problems

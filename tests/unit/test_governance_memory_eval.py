@@ -5,10 +5,10 @@ from unittest.mock import MagicMock
 from agentscope.permission import PermissionEngine, PermissionMode, PermissionRule
 
 from devops_agent.config import PermissionPolicy, RuleSpec, RuntimePolicy, WorkingDirSpec
-from devops_agent.eval.scorer import EvalDimension
 from devops_agent.governance.policy import build_permission_engine, deny_rule
 from devops_agent.memory import ledger
 from devops_agent.memory.ledger import build_mem0_middleware
+from devops_agent.observability.models import EvalDimension
 
 
 def test_deny_rule() -> None:

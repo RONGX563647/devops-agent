@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from devops_agent.config import HealthPolicy
-from devops_agent.eval.scorer import EvalDimension
 from devops_agent.observability.health.model import (
     DIMENSION_LABELS,
     DimensionScore,
@@ -11,7 +12,7 @@ from devops_agent.observability.health.model import (
     _clamp,
     _round,
 )
-from devops_agent.observability.models import EvalScoreRecord, SpanRecord
+from devops_agent.observability.models import EvalDimension, EvalScoreRecord, SpanRecord
 
 
 def _correctness_samples(
@@ -22,6 +23,33 @@ def _correctness_samples(
         (score.score, policy.source_weights.get(score.source, 0.5))
         for score in scores
         if score.dimension == EvalDimension.CORRECTNESS.value and 0.0 <= score.score <= 1.0
+    ]
+
+
+def _openjudge_samples(policy: HealthPolicy) -> list[tuple[float, float]]:
+    """最新一批 OpenJudge 各赛道通过率，作为机器侧 correctness 样本。
+
+    旧 eval 的 `eval_scores` 停写后，质量维度不能就此「没有证据」——端到端评测
+    本来就是这类信号最直接的来源。读不到评测库时返回空，不影响其它维度。
+    """
+    weight = policy.source_weights.get("openjudge", 0.7)
+    if weight <= 0:
+        return []
+    from devops_agent.openjudge import store  # 局部 import：无评测库时健康分照常算
+
+    try:
+        with store.connect() as conn:
+            store.init_db(conn)
+            batches = store.list_batches(conn, limit=1)
+    except (sqlite3.Error, OSError):
+        return []
+    if not batches:
+        return []
+    tracks = (batches[0].get("summary") or {}).get("tracks") or {}
+    return [
+        (float(stats["pass_rate"]), weight)
+        for stats in tracks.values()
+        if isinstance(stats, dict) and stats.get("pass_rate") is not None
     ]
 
 
@@ -74,22 +102,27 @@ def _quality_items(
 def quality_detail(
     scores: list[EvalScoreRecord], policy: HealthPolicy, weight: float = 0.25
 ) -> DimensionScore:
-    """效果质量：correctness 评分按来源加权，并向中性先验收缩。"""
-    # 1. 只保留落在 0-1 的有效 correctness 评分，来源决定样本权重
-    samples = _correctness_samples(scores, policy)
-    # 2. 没有样本就给空维度，避免无证据的分数参与加权
+    """效果质量：人工/judge 评分与端到端评测通过率按来源加权，再向中性先验收缩。"""
+    # 1. 只保留落在 0-1 的有效 correctness 评分；评测赛道作为机器样本并入
+    rated = _correctness_samples(scores, policy)
+    machine = _openjudge_samples(policy)
+    samples = rated + machine
+    # 2. 两类样本都没有就给空维度，避免无证据的分数参与加权
     if not samples:
         return _empty_quality(weight, "没有 correctness 评分，该维度不参与加权")
     # 3. 加权求均值，再向先验收缩（详见 _weighted_shrink）
     raw, shrunk, confidence = _weighted_shrink(samples, policy)
-    # 4. 归一化到 0-100 并保留解释项
+    # 4. 归一化到 0-100 并保留解释项；note 里分开写人工与机器样本，便于判断证据构成
+    note = f"{len(rated)} 条评分"
+    if machine:
+        note = f"{len(rated)} 条评分 + {len(machine)} 条评测赛道"
     return DimensionScore(
         key="quality",
         label=DIMENSION_LABELS["quality"],
         value=_round(_clamp(shrunk * 100.0)),
         weight=weight,
         confidence=_round(confidence, 3),
-        note=f"{len(samples)} 条评分",
+        note=note,
         items=_quality_items(samples, policy, raw, shrunk),
     )
 

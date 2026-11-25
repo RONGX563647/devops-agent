@@ -16,10 +16,10 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, field_validator
 
 from devops_agent.config import HealthPolicy, load_health
-from devops_agent.eval.scorer import EvalDimension
 from devops_agent.observability import health as health_mod
 from devops_agent.observability import repository as repo
 from devops_agent.observability.models import (
+    EvalDimension,
     EvalScoreRecord,
     InputStageRecord,
     RunRecord,

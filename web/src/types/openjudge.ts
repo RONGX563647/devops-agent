@@ -5,6 +5,22 @@ export interface OjKpi {
   passed: number;
   judge_n: number;
   violations: number;
+  /** 终态分布与失败归因，由后端汇总；缺字段的老批次显示「—」。 */
+  status_counts?: Record<string, number>;
+  rule_failed_cases?: number;
+  judge_failed_cases?: number;
+  not_judged_cases?: number;
+  pass_rate?: number;
+  latency_p95_ms?: number;
+  tokens?: Record<string, number>;
+}
+
+/** 赛道未达标原因：实际值与阈值都由后端给出，前端只展示不比较。 */
+export interface OjTrackReason {
+  code: string;
+  actual: number | null;
+  threshold: number | null;
+  message: string;
 }
 
 export interface OjTrackStat {
@@ -14,6 +30,7 @@ export interface OjTrackStat {
   judge_avg: number | null;
   violations: number;
   verdict: 'pass' | 'fail' | 'insufficient';
+  reasons?: OjTrackReason[];
 }
 
 export interface OjFailure {
@@ -58,13 +75,88 @@ export interface OjCaseRow {
   tokens: Record<string, number>;
 }
 
+/** 单条规则断言。security 断言违例单列，不并入语义质量均分。 */
+export interface OjCheck {
+  name: string;
+  kind: string;
+  passed: boolean;
+  detail?: string;
+  security?: boolean;
+}
+
+/** 裁判项：scored/skipped 是后端写入的新字段，旧字段保持可选以兼容历史批次。 */
+export interface JudgeEntry {
+  status?: 'scored' | 'skipped';
+  skip_reason?: string;
+  score?: number;
+  normalized?: number;
+  weight?: number;
+  reason?: string;
+}
+
+export type OjFailureType =
+  | ''
+  | 'runtime'
+  | 'security'
+  | 'rule'
+  | 'judge_skipped'
+  | 'judge_score';
+
+export interface OjJudgeFailure {
+  key: string;
+  normalized: number;
+  weight: number;
+  contribution: number;
+}
+
+/** 单条用例的判定依据：分数、失败类型、公式全部来自后端。 */
+export interface OjScoring {
+  rule_passed: boolean;
+  violations: number;
+  judge_norm: number | null;
+  pass_judge: number;
+  passed: boolean;
+  formula: string;
+  failure_type: OjFailureType;
+  rule_failed_checks: string[];
+  judge_failed: OjJudgeFailure[];
+}
+
+export interface OjToolCall {
+  name: string;
+  args: Record<string, unknown>;
+  state: string;
+  result_excerpt: string;
+}
+
+/** 执行轨迹快照；长文本字段只读展示，前端不重算。 */
+export interface OjTrace {
+  case_id?: string;
+  run_id?: string;
+  model?: string;
+  status?: string;
+  error?: string;
+  turns: Record<string, string>[];
+  tool_calls: OjToolCall[];
+  events: string[];
+  input_stages: Record<string, unknown>[];
+  workspace: {
+    states?: Record<string, unknown>;
+    diff?: string;
+    hashes?: Record<string, string>;
+  } & Record<string, unknown>;
+  judge_input: Record<string, unknown>;
+  final_text: string;
+}
+
 export interface OjCaseDetail extends OjCaseRow {
-  checks: { name: string; kind: string; passed: boolean; detail?: string }[];
-  judge: Record<string, { score?: number; normalized?: number; weight?: number; reason?: string }>;
+  checks: OjCheck[];
+  judge: Record<string, JudgeEntry>;
+  scoring: OjScoring;
   events: string[];
   input_stages: unknown[];
   workspace: Record<string, unknown>;
-  trace: Record<string, unknown>;
+  trace: OjTrace;
 }
 
 export interface OjCaseList {
@@ -137,6 +229,27 @@ export interface OjSuites {
   tracks: OjSuiteTrack[];
 }
 
+/** 评分契约（GET /scoring-config）：阈值、权重、量纲的唯一来源。 */
+export interface OjJudgeSpec {
+  key: string;
+  grader: string;
+  weight: number;
+  scale: [number, number];
+}
+
+export interface OjTrackRule {
+  pass_rate: number;
+  min_n: number;
+  judge?: number;
+  max_violations?: number;
+}
+
+export interface OjScoringConfig {
+  plan: { name: string; sha: string; judges: OjJudgeSpec[] };
+  pass_judge: number;
+  track_rules: Record<string, OjTrackRule>;
+}
+
 /** 趋势图上的一个批次点。 */
 export interface OjSeriesPoint {
   batch_id: number;
@@ -170,6 +283,8 @@ export interface OjRun {
 
 export interface OjRunRequest {
   track?: string;
+  /** 与 track 二选一：显式指定要复现的用例，仍受 max_limit 约束。 */
+  case_ids?: string[];
   limit?: number;
   judge?: boolean;
   concurrency?: number;

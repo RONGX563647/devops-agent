@@ -1,7 +1,8 @@
-/** OpenJudge 评测视图：批次结论 → 赛道 → 失败用例 → 覆盖/对比/rubric。 */
+/** OpenJudge 评测视图：任务区 → 结果区（批次/评分流程/失败定位/明细/对比）。 */
 
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import {
   fetchOpenJudgeBatch,
   fetchOpenJudgeBatches,
@@ -10,116 +11,143 @@ import {
   fetchOpenJudgeCompare,
   fetchOpenJudgeCoverage,
   fetchOpenJudgeRubrics,
+  fetchOpenJudgeScoringConfig,
 } from '../../api/client';
 import { MetricCard } from '../../components/MetricCard';
 import type { OjBatch, OjCaseRow, OjTrackStat } from '../../types';
 import { formatPercent as percent } from './format';
-import { TRACK_LABEL, VERDICT_TEXT, verdictClass } from './labels';
+import { TRACK_LABEL, verdictClass, verdictText } from './labels';
+import { BatchStrip } from './run/BatchStrip';
+import { CaseDrawer } from './run/CaseDrawer';
+import { CaseFilters } from './run/CaseFilters';
+import { CaseTable } from './run/CaseTable';
+import { FAILURE_TAB, type DrawerTab } from './run/diagnosis';
+import { FailureList } from './run/FailureList';
+import { ResultsExtras, RubricPanel } from './run/ResultsExtras';
 import { RunBar } from './run/RunBar';
+import { ScoreFlow } from './run/ScoreFlow';
 import { SuitesCard } from './run/SuitesCard';
 
-function TrackRow({ track, stat }: { track: string; stat: OjTrackStat }) {
-  return (
-    <tr>
-      <td>{TRACK_LABEL[track] ?? track}</td>
-      <td>{stat.n}</td>
-      <td>{stat.passed}</td>
-      <td>{percent(stat.pass_rate)}</td>
-      <td>{stat.judge_avg === null ? '—' : stat.judge_avg.toFixed(2)}</td>
-      <td>{stat.violations}</td>
-      <td>
-        <span className={`status-pill ${verdictClass(stat.verdict)}`}>
-          {VERDICT_TEXT[stat.verdict] ?? stat.verdict}
-        </span>
-      </td>
-    </tr>
-  );
+const PAGE_SIZES = [10, 20, 50, 100];
+
+function parsePageSize(raw: string | null): number {
+  const value = Number(raw ?? 50);
+  return PAGE_SIZES.includes(value) ? value : 50;
 }
 
-function CaseDrawer({ batchId, rowId }: { batchId: number; rowId: number }) {
-  const detail = useQuery({
-    queryKey: ['oj-case', batchId, rowId],
-    queryFn: () => fetchOpenJudgeCase(batchId, rowId),
-  });
-  if (detail.isLoading) return <div className="muted">加载用例明细…</div>;
-  if (detail.error || !detail.data) return <div className="muted">用例明细不可用</div>;
-  const item = detail.data;
-  const failed = item.checks.filter((check) => !check.passed);
+/** jsdom 里没有 scrollIntoView；有也不保证接受 options，逐层防护。 */
+function reveal(node: HTMLElement | null): void {
+  if (!node || typeof node.scrollIntoView !== 'function') return;
+  try {
+    node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch {
+    node.scrollIntoView();
+  }
+}
+
+function TrackRow({ track, stat, highlighted }: {
+  track: string;
+  stat: OjTrackStat;
+  highlighted: boolean;
+}) {
+  const [showReasons, setShowReasons] = useState(false);
+  const reasons = stat.reasons ?? [];
   return (
-    <div className="oj-drawer">
-      <h3>
-        <code>{item.case_id}</code>{' '}
-        <span className={`status-pill ${item.passed ? 'is-pass' : 'is-fail'}`}>
-          {item.status}
-        </span>
-      </h3>
-      <div className="muted">
-        赛道 {item.track} · 主题 {item.subject} · 风险 {item.risk} · 耗时 {item.latency_ms}ms
-      </div>
-      <h4>规则失败项</h4>
-      {failed.length === 0 ? (
-        <p className="muted">全部规则通过</p>
-      ) : (
-        <ul>
-          {failed.map((check) => (
-            <li key={check.name}>
-              <code>{check.name}</code> {check.detail}
-            </li>
-          ))}
-        </ul>
+    <>
+      <tr className={highlighted ? 'is-highlight' : undefined}>
+        <td>{TRACK_LABEL[track] ?? track}</td>
+        <td>{stat.n}</td>
+        <td>{stat.passed}</td>
+        <td>{percent(stat.pass_rate)}</td>
+        <td>{stat.judge_avg === null ? '—' : stat.judge_avg.toFixed(2)}</td>
+        <td>{stat.violations}</td>
+        <td>
+          <span className={`status-pill ${verdictClass(stat.verdict)}`}>
+            {verdictText(stat.verdict)}
+          </span>
+          {reasons.length > 0 && (
+            <button
+              type="button"
+              className="oj-link-btn"
+              onClick={() => setShowReasons((value) => !value)}
+            >
+              依据
+            </button>
+          )}
+        </td>
+      </tr>
+      {showReasons && (
+        <tr className="oj-reason-row">
+          <td colSpan={7}>
+            <ul>
+              {reasons.map((reason) => (
+                <li key={reason.code}>
+                  {reason.message}（实际 {reason.actual ?? '—'} · 阈值 {reason.threshold ?? '—'}）
+                </li>
+              ))}
+            </ul>
+          </td>
+        </tr>
       )}
-      <h4>裁判意见</h4>
-      <ul>
-        {Object.entries(item.judge).map(([key, value]) => (
-          <li key={key}>
-            <strong>{key}</strong> {value.score ?? '—'}（归一 {value.normalized ?? '—'}）{' '}
-            <span className="muted">{value.reason ?? ''}</span>
-          </li>
-        ))}
-        {Object.keys(item.judge).length === 0 && <li className="muted">未跑语义裁判</li>}
-      </ul>
-      {item.events.length > 0 && (
-        <>
-          <h4>事件</h4>
-          <div className="tag-row">
-            {item.events.map((event) => (
-              <span className="tag-chip" key={event}>
-                {event}
-              </span>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
+    </>
   );
 }
 
 export function OpenJudge() {
+  const queryClient = useQueryClient();
+  const [params, setParams] = useSearchParams();
+  const track = params.get('track') ?? '';
+  const status = params.get('status') ?? '';
+  const subject = params.get('subject') ?? '';
+  const verdictFilter = params.get('verdict') ?? '';
+  const pageSize = parsePageSize(params.get('pageSize'));
+  const onlyFailed = params.get('failed') === '1';
+  const offset = Math.max(0, Number(params.get('offset') ?? 0) || 0);
+
+  const updateParams = useCallback(
+    (changes: Record<string, string>) => {
+      setParams((prev) => {
+        const next = new URLSearchParams(prev);
+        for (const [key, value] of Object.entries(changes)) {
+          if (value) next.set(key, value);
+          else next.delete(key);
+        }
+        if (!Object.prototype.hasOwnProperty.call(changes, 'offset')) next.delete('offset');
+        return next;
+      }, { replace: true });
+    },
+    [setParams],
+  );
+
   const batchesQuery = useQuery({
-    queryKey: ['oj-batches'],
-    queryFn: () => fetchOpenJudgeBatches(20),
+    queryKey: ['oj-batches', verdictFilter],
+    queryFn: () => fetchOpenJudgeBatches(20, verdictFilter || undefined),
   });
-  const list: OjBatch[] = batchesQuery.data?.items ?? [];
+  const batches: OjBatch[] = batchesQuery.data?.items ?? [];
   const [selected, setSelected] = useState<number | null>(null);
-  const activeId = selected ?? list[0]?.id ?? null;
+  const activeId = batches.some((item) => item.id === selected)
+    ? selected
+    : (batches[0]?.id ?? null);
 
   const batchQuery = useQuery({
     queryKey: ['oj-batch', activeId],
     queryFn: () => fetchOpenJudgeBatch(activeId as number),
     enabled: activeId !== null,
   });
-  const [track, setTrack] = useState('');
-  const [onlyFailed, setOnlyFailed] = useState(false);
-  const [offset, setOffset] = useState(0);
-  const [openCase, setOpenCase] = useState<number | null>(null);
-
+  const configQuery = useQuery({
+    queryKey: ['oj-scoring-config'],
+    queryFn: fetchOpenJudgeScoringConfig,
+    staleTime: 5 * 60 * 1000,
+  });
   const casesQuery = useQuery({
-    queryKey: ['oj-cases', activeId, track, onlyFailed, offset],
+    queryKey: ['oj-cases', activeId, track, status, subject, onlyFailed, pageSize, offset],
     queryFn: () =>
       fetchOpenJudgeCases(activeId as number, {
         track: track || undefined,
+        status: status || undefined,
+        subject: subject || undefined,
         passed: onlyFailed ? false : undefined,
-        limit: 50,
+        pageSize,
         offset,
       }),
     enabled: activeId !== null,
@@ -133,352 +161,259 @@ export function OpenJudge() {
     queryFn: () => fetchOpenJudgeCompare(base as number, head as number),
     enabled: compareEnabled,
   });
-
-  const coverageQuery = useQuery({
-    queryKey: ['oj-coverage'],
-    queryFn: fetchOpenJudgeCoverage,
-  });
+  const coverageQuery = useQuery({ queryKey: ['oj-coverage'], queryFn: fetchOpenJudgeCoverage });
   const rubricsQuery = useQuery({ queryKey: ['oj-rubrics'], queryFn: fetchOpenJudgeRubrics });
 
-  const batch = batchQuery.data;
-  const summary = batch?.summary;
-  const tracks = summary?.tracks ?? {};
-  const rows: OjCaseRow[] = casesQuery.data?.items ?? [];
+  const summary = batchQuery.data?.summary;
+  const tracks = useMemo(() => summary?.tracks ?? {}, [summary]);
+  const rows = useMemo<OjCaseRow[]>(() => casesQuery.data?.items ?? [], [casesQuery.data]);
   const total = casesQuery.data?.total ?? 0;
-  const coverage = coverageQuery.data?.coverage ?? {};
   const trackOptions = Object.keys(tracks).sort();
-  const empty = !batchesQuery.isLoading && list.length === 0;
+  const statusOptions = Array.from(
+    new Set(['success', 'failed', 'parked', 'timeout', ...Object.keys(summary?.kpi.status_counts ?? {})]),
+  );
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(pageCount - 1, Math.floor(offset / pageSize));
+  const empty = !batchesQuery.isLoading && batches.length === 0;
+
+  const resultRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [openCase, setOpenCase] = useState<{ id: number; caseId: string } | null>(null);
+  const [initialTab, setInitialTab] = useState<DrawerTab>('basis');
+  const [highlightTrack, setHighlightTrack] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  const onFinished = useCallback(
+    (batchId: number) => {
+      setSelected(batchId);
+      updateParams({});
+      setOpenCase(null);
+      setToast(`批次 #${batchId} 已就绪`);
+      const scroll = () => reveal(resultRef.current);
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(scroll);
+      else scroll();
+    },
+    [updateParams],
+  );
+
+  const locateFailure = useCallback(
+    async (caseId: string, tab?: DrawerTab) => {
+      if (activeId === null) return;
+      let row = rows.find((item) => item.case_id === caseId);
+      if (!row) {
+        try {
+          const all = await fetchOpenJudgeCases(activeId, { limit: 500 });
+          row = all.items.find((item) => item.case_id === caseId);
+        } catch {
+          row = undefined;
+        }
+      }
+      if (!row) {
+        setToast(`未在批次中找到 ${caseId}`);
+        return;
+      }
+      let preferred = tab;
+      if (!preferred) {
+        try {
+          const detail = await queryClient.fetchQuery({
+            queryKey: ['oj-case', activeId, row.id],
+            queryFn: () => fetchOpenJudgeCase(activeId, row.id),
+          });
+          const type = detail.scoring?.failure_type;
+          if (type) preferred = FAILURE_TAB[type];
+        } catch {
+          preferred = undefined;
+        }
+      }
+      setOpenCase({ id: row.id, caseId: row.case_id });
+      setInitialTab(preferred ?? 'basis');
+    },
+    [activeId, rows, queryClient],
+  );
+
+  const copyRepro = useCallback((text: string) => {
+    const clipboard = navigator.clipboard;
+    if (!clipboard?.writeText) {
+      setToast('复制不可用，请手动选择命令');
+      return;
+    }
+    void clipboard
+      .writeText(text)
+      .then(() => setToast('已复制复现命令'))
+      .catch(() => setToast('复制失败，请手动选择命令'));
+  }, []);
+
+  const inspect = (tab: DrawerTab) => {
+    const first = summary?.failures[0];
+    if (first) void locateFailure(first.case_id, tab);
+    else setToast('本批次没有失败用例可下钻');
+  };
+
+  const showReasons = useCallback(
+    (key?: string) => {
+      const target = key ?? Object.keys(tracks)[0] ?? null;
+      if (target) setHighlightTrack(target);
+      reveal(trackRef.current);
+    },
+    [tracks],
+  );
+
+  const goPage = (index: number) =>
+    updateParams({ offset: index === 0 ? '' : String(index * pageSize) });
 
   return (
     <div className="oj-view">
-      <RunBar
-        onFinished={(batchId) => {
-          setSelected(batchId);
-          setOffset(0);
-          setOpenCase(null);
-        }}
-      />
+      <RunBar onFinished={onFinished} />
       <SuitesCard />
 
       {batchesQuery.isLoading && <div className="muted">加载 OpenJudge 批次…</div>}
       {empty && (
         <div className="panel">
           <h2>尚无批次</h2>
-          <p className="muted">
-            在上方发起一次评测，跑完后这里会出现批次结论与逐条明细。
-          </p>
+          <p className="muted">在上方发起一次评测，跑完后这里会出现批次结论与逐条明细。</p>
         </div>
       )}
 
-      {list.length > 0 && (
-        <>
-          <div className="panel">
-            <h2>批次</h2>
-        <div className="tag-row">
-          {list.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`view-tab${item.id === activeId ? ' active' : ''}`}
-              onClick={() => {
-                setSelected(item.id);
-                setOffset(0);
-                setOpenCase(null);
-              }}
-            >
-              #{item.id} · {VERDICT_TEXT[item.verdict] ?? item.verdict} · {item.model || 'unknown'}
-            </button>
-          ))}
-        </div>
-      </div>
+      {batches.length > 0 && (
+        <div ref={resultRef} className="oj-result-anchor">
+          <BatchStrip
+            batches={batches}
+            activeId={activeId}
+            verdict={verdictFilter}
+            onVerdictChange={(value) => updateParams({ verdict: value })}
+            onSelect={(id) => {
+              setSelected(id);
+              setOpenCase(null);
+              updateParams({});
+            }}
+          />
 
-      {summary && (
-        <>
-          <div className="panel-grid">
-            <MetricCard
-              label="用例"
-              value={summary.kpi.cases}
-              hint={`通过 ${summary.kpi.passed}`}
-            />
-            <MetricCard
-              label="通过率"
-              value={percent(summary.kpi.cases ? summary.kpi.passed / summary.kpi.cases : 0)}
-              tone={summary.verdict === 'pass' ? 'good' : 'bad'}
-            />
-            <MetricCard label="安全违规" value={summary.kpi.violations} tone={summary.kpi.violations > 0 ? 'bad' : 'good'} />
-            <MetricCard label="已判分" value={summary.kpi.judge_n} hint="送入语义裁判的用例数" />
-          </div>
+          {summary && (
+            <>
+              <div className="panel-grid">
+                <MetricCard label="用例" value={summary.kpi.cases} hint={`通过 ${summary.kpi.passed}`} />
+                <MetricCard
+                  label="通过率"
+                  value={percent(summary.kpi.cases ? summary.kpi.passed / summary.kpi.cases : 0)}
+                  tone={summary.verdict === 'pass' ? 'good' : 'bad'}
+                />
+                <MetricCard
+                  label="安全违规"
+                  value={summary.kpi.violations}
+                  tone={summary.kpi.violations > 0 ? 'bad' : 'good'}
+                />
+                <MetricCard label="已判分" value={summary.kpi.judge_n} hint="送入语义裁判的用例数" />
+                <MetricCard label="规则失败" value={summary.kpi.rule_failed_cases ?? 0} />
+                <MetricCard label="裁判低分" value={summary.kpi.judge_failed_cases ?? 0} />
+                <MetricCard label="未判分" value={summary.kpi.not_judged_cases ?? 0} />
+              </div>
 
-          <div className="panel">
-            <h2>
-              赛道 <span className={`status-pill ${verdictClass(summary.verdict)}`}>
-                {VERDICT_TEXT[summary.verdict] ?? summary.verdict}
-              </span>
-            </h2>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>赛道</th>
-                  <th>用例</th>
-                  <th>通过</th>
-                  <th>通过率</th>
-                  <th>裁判均分</th>
-                  <th>违规</th>
-                  <th>结论</th>
-                </tr>
-              </thead>
-              <tbody>
-                {trackOptions.map((key) => (
-                  <TrackRow key={key} track={key} stat={tracks[key]} />
-                ))}
-              </tbody>
-            </table>
-          </div>
+              <ScoreFlow
+                key={activeId}
+                summary={summary}
+                config={configQuery.data ?? null}
+                defaultOpen={summary.verdict !== 'pass'}
+                onInspect={inspect}
+                onReasons={() => showReasons()}
+              />
 
-          <div className="panel-grid">
-            <div className="panel">
-              <h2>失败用例</h2>
-              {summary.failures.length === 0 ? (
-                <p className="muted">本批次没有失败用例</p>
-              ) : (
-                <ul>
-                  {summary.failures.map((failure) => (
-                    <li key={failure.case_id}>
-                      <code>{failure.case_id}</code> · {failure.track} · {failure.status}{' '}
-                      <span className="muted">{failure.failed_checks.join(', ')}</span>
-                      <br />
-                      <code className="muted">{failure.repro}</code>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            <div className="panel">
-              <h2>失败归因（Pareto）</h2>
-              {summary.pareto.length === 0 ? (
-                <p className="muted">无</p>
-              ) : (
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>检查项</th>
-                      <th>命中次数</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summary.pareto.map((item) => (
-                      <tr key={item.check}>
-                        <td>
-                          <code>{item.check}</code>
-                        </td>
-                        <td>{item.count}</td>
+              <div ref={trackRef} className="panel">
+                <h2>
+                  赛道{' '}
+                  <span className={`status-pill ${verdictClass(summary.verdict)}`}>
+                    {verdictText(summary.verdict)}
+                  </span>
+                </h2>
+                <div className="table-scroll">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>赛道</th><th>用例</th><th>通过</th><th>通过率</th>
+                        <th>裁判均分</th><th>违规</th><th>结论</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
+                    </thead>
+                    <tbody>
+                      {trackOptions.map((key) => (
+                        <TrackRow
+                          key={key}
+                          track={key}
+                          stat={tracks[key]}
+                          highlighted={highlightTrack === key}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
 
-          <div className="panel">
-            <h2>用例明细</h2>
-            <div className="tag-row">
-              <select
-                value={track}
-                onChange={(event) => {
-                  setTrack(event.target.value);
-                  setOffset(0);
-                }}
-              >
-                <option value="">全部赛道</option>
-                {trackOptions.map((key) => (
-                  <option key={key} value={key}>
-                    {TRACK_LABEL[key] ?? key}
-                  </option>
-                ))}
-              </select>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={onlyFailed}
-                  onChange={(event) => {
-                    setOnlyFailed(event.target.checked);
-                    setOffset(0);
+              <FailureList
+                failures={summary.failures}
+                pareto={summary.pareto}
+                onLocate={(caseId) => void locateFailure(caseId)}
+                onCopy={copyRepro}
+              />
+
+              <div className="panel">
+                <h2>用例明细</h2>
+                <CaseFilters
+                  track={track}
+                  status={status}
+                  subject={subject}
+                  pageSize={pageSize}
+                  onlyFailed={onlyFailed}
+                  trackOptions={trackOptions}
+                  statusOptions={statusOptions}
+                  total={total}
+                  pageCount={pageCount}
+                  currentPage={currentPage}
+                  onChange={updateParams}
+                  onPage={goPage}
+                />
+                <CaseTable
+                  rows={rows}
+                  onOpen={(row) => {
+                    setOpenCase({ id: row.id, caseId: row.case_id });
+                    setInitialTab('basis');
                   }}
-                />{' '}
-                只看失败
-              </label>
-              <span className="muted">共 {total} 条</span>
-            </div>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>用例</th>
-                  <th>赛道</th>
-                  <th>主题</th>
-                  <th>终态</th>
-                  <th>耗时</th>
-                  <th>结论</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => (
-                  <tr
-                    key={row.id}
-                    className={row.passed ? 'case-row' : 'case-row is-failed'}
-                    onClick={() => setOpenCase(row.id)}
-                  >
-                    <td>
-                      <code>{row.case_id}</code>
-                    </td>
-                    <td>{row.track}</td>
-                    <td>{row.subject}</td>
-                    <td>{row.status}</td>
-                    <td>{row.latency_ms}ms</td>
-                    <td>
-                      <span className={`status-pill ${row.passed ? 'is-pass' : 'is-fail'}`}>
-                        {row.passed ? '通过' : '失败'}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="tag-row">
-              <button type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>
-                上一页
-              </button>
-              <button type="button" disabled={offset + 50 >= total} onClick={() => setOffset(offset + 50)}>
-                下一页
-              </button>
-            </div>
-            {openCase !== null && activeId !== null && (
-              <CaseDrawer batchId={activeId} rowId={openCase} />
-            )}
-          </div>
-        </>
-      )}
+                />
+              </div>
 
-      <div className="panel-grid">
-        <div className="panel">
-          <h2>批次对比</h2>
-          <div className="tag-row">
-            <select value={base ?? ''} onChange={(event) => setBase(Number(event.target.value) || null)}>
-              <option value="">基线批次</option>
-              {list.map((item) => (
-                <option key={item.id} value={item.id}>
-                  #{item.id}
-                </option>
-              ))}
-            </select>
-            <select value={head ?? ''} onChange={(event) => setHead(Number(event.target.value) || null)}>
-              <option value="">对比批次</option>
-              {list.map((item) => (
-                <option key={item.id} value={item.id}>
-                  #{item.id}
-                </option>
-              ))}
-            </select>
-          </div>
-          {!compareEnabled && <p className="muted">选两个不同批次查看 delta</p>}
-          {compareQuery.data && (
-            <>
-              {!compareQuery.data.comparable && (
-                <p className="muted">题库或判分方案已变化，diff 仅供参考</p>
-              )}
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>赛道</th>
-                    <th>基线</th>
-                    <th>对比</th>
-                    <th>delta</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(compareQuery.data.tracks).map(([key, stat]) => (
-                    <tr key={key}>
-                      <td>{TRACK_LABEL[key] ?? key}</td>
-                      <td>{percent(stat.base)}</td>
-                      <td>{percent(stat.head)}</td>
-                      <td>{stat.delta === 0 ? '—' : `${(stat.delta * 100).toFixed(1)}pp`}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {compareQuery.data.flips.length > 0 && (
-                <p className="muted">
-                  翻转用例：{compareQuery.data.flips.map((flip) => flip.case_id).join(', ')}
-                </p>
-              )}
+              <ResultsExtras
+                batches={batches}
+                base={base}
+                head={head}
+                onBase={setBase}
+                onHead={setHead}
+                compareEnabled={compareEnabled}
+                compare={compareQuery.data}
+                coverage={coverageQuery.data}
+              />
+              <RubricPanel rubrics={rubricsQuery.data?.items ?? []} />
             </>
           )}
-        </div>
 
-        <div className="panel">
-          <h2>题库覆盖</h2>
-          {coverageQuery.data ? (
-            <>
-              <p className="muted">
-                共 {coverageQuery.data.cases} 条 · suite {coverageQuery.data.suite_sha.slice(0, 12)}
-              </p>
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>赛道</th>
-                    <th>用例</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(coverage.tracks ?? {}).map(([key, count]) => (
-                    <tr key={key}>
-                      <td>{TRACK_LABEL[key] ?? key}</td>
-                      <td>{count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {coverageQuery.data.problems.length > 0 && (
-                <p className="muted">校验问题：{coverageQuery.data.problems.join('；')}</p>
-              )}
-            </>
-          ) : (
-            <p className="muted">加载中…</p>
+          {openCase !== null && activeId !== null && (
+            <CaseDrawer
+              batchId={activeId}
+              rowId={openCase.id}
+              caseId={openCase.caseId}
+              initialTab={initialTab}
+              config={configQuery.data ?? null}
+              failureCaseIds={(summary?.failures ?? []).map((failure) => failure.case_id)}
+              onClose={() => setOpenCase(null)}
+              onNavigate={(caseId, tab) => void locateFailure(caseId, tab)}
+            />
           )}
         </div>
-      </div>
-
-      <div className="panel">
-        <h2>Rubric 工件</h2>
-        {(rubricsQuery.data?.items ?? []).length === 0 ? (
-          <p className="muted">
-            还没有 rubric。运行 <code>python -m devops_agent.openjudge rubric generate</code>
-          </p>
-        ) : (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>版本</th>
-                <th>状态</th>
-                <th>审阅人</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(rubricsQuery.data?.items ?? []).map((item) => (
-                <tr key={`${item.name}@${item.version}`}>
-                  <td>{item.name}</td>
-                  <td>{item.version}</td>
-                  <td>{item.status}</td>
-                  <td>{item.reviewer || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-        </>
       )}
+
+      {toast && <div className="oj-toast" role="status">{toast}</div>}
     </div>
   );
 }

@@ -19,7 +19,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from devops_agent.openjudge import benchmark, run, run_store, service, store
+from devops_agent.openjudge import benchmark, casestore, run, run_store, service, store
 from devops_agent.openjudge.api import router
 
 
@@ -141,6 +141,71 @@ def test_latest_track_stats_skips_batches_without_the_track(db: Path) -> None:
 def test_latest_track_stats_is_none_without_data(db: Path) -> None:
     with store.connect() as conn:
         assert store.latest_track_stats(conn, "A") is None
+
+
+# --------------------------------------------------------------------------- case_ids
+
+
+def test_load_cases_by_ids_keeps_order_and_reports_unknown(
+    monkeypatch: pytest.MonkeyPatch, fake_cases: list[Any]
+) -> None:
+    monkeypatch.setattr(casestore, "load_cases", lambda: fake_cases)
+    picked = casestore.load_cases_by_ids(["a-02", "a-01", "a-02"])
+    assert [case.id for case in picked] == ["a-02", "a-01"]
+    with pytest.raises(ValueError) as exc:
+        casestore.load_cases_by_ids(["a-01", "nope", "missing"])
+    assert "nope" in str(exc.value) and "missing" in str(exc.value)
+
+
+def test_service_case_ids_start_records_actual_total(
+    db: Path, monkeypatch: pytest.MonkeyPatch, fake_cases: list[Any]
+) -> None:
+    monkeypatch.setenv(service.ENV_FLAG, "1")
+    seen: list[list[str]] = []
+
+    def load_by_ids(ids: list[str]) -> list[Any]:
+        seen.append(ids)
+        return [case for case in fake_cases if case.id in ids]
+
+    async def no_execute(*_: Any, **__: Any) -> None:
+        return None
+
+    monkeypatch.setattr(casestore, "load_cases_by_ids", load_by_ids)
+    monkeypatch.setattr(service, "_execute", no_execute)
+    payload = asyncio.run(
+        service.start(
+            track="B", limit=99, case_ids=["a-02", "a-01", "a-02"], judge=False, concurrency=1
+        )
+    )
+    assert payload["total"] == 2
+    assert seen == [["a-02", "a-01"]]
+    with store.connect() as conn:
+        row = run_store.get_run(conn, payload["run_id"])
+    assert row is not None
+    assert row["track"] == "" and row["total"] == 2
+
+
+def test_service_case_ids_unknown_and_limit(
+    db: Path, monkeypatch: pytest.MonkeyPatch, fake_cases: list[Any]
+) -> None:
+    monkeypatch.setenv(service.ENV_FLAG, "1")
+
+    def unknown(ids: list[str]) -> list[Any]:
+        raise ValueError(f"未知用例 id：{ids[0]}")
+
+    monkeypatch.setattr(casestore, "load_cases_by_ids", unknown)
+    with pytest.raises(ValueError, match="未知用例 id"):
+        asyncio.run(service.start(track="", limit=1, case_ids=["nope"]))
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        casestore,
+        "load_cases_by_ids",
+        lambda ids: calls.append(ids) or fake_cases,
+    )
+    with pytest.raises(ValueError, match="最多 30 条"):
+        asyncio.run(service.start(track="", limit=1, case_ids=[f"a-{i}" for i in range(31)]))
+    assert calls == []
 
 
 def test_compare_coverage_flags_regressions() -> None:
@@ -267,6 +332,26 @@ def test_post_run_returns_202(client: TestClient, monkeypatch: pytest.MonkeyPatc
     response = client.post("/api/openjudge/runs", json={"track": "A", "limit": 3})
     assert response.status_code == 202
     assert response.json() == {"run_id": 4, "total": 3}
+
+
+def test_post_run_rejects_track_and_case_ids(client: TestClient) -> None:
+    response = client.post("/api/openjudge/runs", json={"track": "A", "case_ids": ["a-01"]})
+    assert response.status_code == 400
+    assert "二选一" in response.json()["detail"]
+
+
+def test_post_run_forwards_case_ids(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    async def fake_start(**kwargs: Any) -> dict[str, Any]:
+        seen.update(kwargs)
+        return {"run_id": 5, "total": 2}
+
+    monkeypatch.setattr(service, "start", fake_start)
+    response = client.post("/api/openjudge/runs", json={"case_ids": ["a-02", "a-01"]})
+    assert response.status_code == 202
+    assert seen["case_ids"] == ["a-02", "a-01"]
+    assert seen["track"] == ""
 
 
 def test_post_run_conflict_exposes_active_run(

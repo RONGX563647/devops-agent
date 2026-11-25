@@ -23,13 +23,16 @@ from typing import Any
 import yaml
 
 from devops_agent.openjudge.benchmark import Case
+from devops_agent.openjudge.explain import (
+    PASS_JUDGE,
+    fill_remaining_skips,
+    total_score,
+    write_skip_entries,
+)
 from devops_agent.openjudge.rulegate import rule_passed, run_checks, violations
 from devops_agent.openjudge.trace import TraceRecord
 
 PLAN_PATH = Path(__file__).resolve().parents[3] / "eval" / "openjudge" / "plan.yaml"
-
-# 单条用例的语义门槛（见 _finish 里的说明）
-PASS_JUDGE = 0.60
 
 # 工具 schema 的唯一事实来源（ToolSelection / ToolParameter 裁判需要）。
 # 必须与 agentscope 内置工具的真实入参一致：早先手工精简成 4 个参数，
@@ -322,23 +325,13 @@ async def _run_group(
         for index, item in enumerate(items[: len(rows)]):
             score = _score_of(item)
             graded[index][key] = {
+                "status": "scored",
                 "score": score,
                 "normalized": _normalize(score, spec) if score is not None else None,
                 "reason": _reason_of(item),
                 "weight": spec.weight,
             }
     return graded
-
-
-def _total(graded: dict[str, dict[str, Any]]) -> float | None:
-    """按可用 Grader 重新归一化权重求总分（缺项不影响其他项）。"""
-    parts = [item for item in graded.values() if item.get("normalized") is not None]
-    if not parts:
-        return None
-    weight = sum(float(item["weight"]) for item in parts)
-    if weight <= 0:
-        return None
-    return sum(float(item["normalized"]) * float(item["weight"]) for item in parts) / weight
 
 
 async def grade_traces(
@@ -399,7 +392,7 @@ def _finish(results: list[dict[str, Any]]) -> None:
     """
     for result in results:
         judged = result["judge"]
-        result["judge_norm"] = _total(judged) if judged else None
+        result["judge_norm"] = total_score(judged) if judged else None
         result["passed"] = bool(result["rule_passed"]) and (
             result["judge_norm"] is None or result["judge_norm"] >= PASS_JUDGE
         )
@@ -466,7 +459,8 @@ async def _apply_judge(
     buckets: dict[str, tuple[list[dict[str, Any]], list[str]]] = {
         name: ([], []) for name in _JUDGE_GROUPS
     }
-    # step2: 按适用性投四桶
+    # step2: 先写显式 skipped，再按适用性投四桶
+    write_skip_entries(plan, cases, trace_by_id, result_by_id, results)
     for case in cases:
         trace = trace_by_id.get(case.id)
         row = _judge_row(case, result_by_id.get(case.id), trace)
@@ -486,3 +480,5 @@ async def _apply_judge(
         for case_id, item in zip(buckets[name][1], graded, strict=False):
             # 同一用例可能同时被多组判分，合并而不是覆盖
             result_by_id[case_id]["judge"].update(item)
+    # step5: 仍未出现的键补 skipped，判分方案里的六项始终可见
+    fill_remaining_skips(plan, results)

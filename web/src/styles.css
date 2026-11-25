@@ -4834,3 +4834,300 @@ a:hover {
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================================
+ * SPEC-0008 质量页：高度链、滚动容器、固定抽屉与评分证据
+ * 只作用于 .quality-page 与 OpenJudge 专用类，不改全局 .page
+ * ============================================================ */
+.page.quality-page {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+}
+.table-scroll {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+}
+.table-scroll .data-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+.batch-strip {
+  display: grid;
+  gap: 8px;
+  max-height: 160px;
+  padding: 2px;
+  overflow-y: auto;
+}
+.batch-chip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+}
+.batch-chip.active {
+  background: var(--accent-faint);
+  border-color: var(--accent);
+}
+.oj-result-anchor {
+  scroll-margin-top: 12px;
+}
+.oj-library-body > :first-child,
+.oj-library-list {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.oj-editor-text {
+  max-height: 50vh;
+}
+.oj-case-picker {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+.oj-case-picker-list {
+  display: grid;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.oj-case-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.status-pill.is-insufficient {
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn);
+}
+.status-pill.is-warn {
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+  border: 1px dashed var(--warn);
+}
+.status-pill.is-cancelled {
+  color: var(--ink-muted);
+  background: var(--surface-muted);
+}
+.status-pill.is-pending {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+.data-table tbody tr.is-highlight td {
+  background: var(--accent-soft);
+}
+.oj-reason-row td {
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+}
+.oj-link-btn {
+  padding: 0 4px;
+  color: var(--accent-ink);
+  cursor: pointer;
+  background: none;
+  border: 0;
+  font-size: var(--text-xs);
+}
+.oj-failures {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.oj-failures li {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.oj-flow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+@media (max-width: 1100px) {
+  .oj-flow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.oj-flow-stage {
+  position: relative;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+.oj-flow-stage h3 {
+  margin: 4px 0;
+  font-size: var(--text-sm);
+}
+.oj-flow-stage p {
+  margin: 6px 0;
+  font-size: var(--text-2xs);
+}
+.oj-flow-index {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  line-height: 20px;
+  text-align: center;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border-radius: 50%;
+  font-size: var(--text-2xs);
+}
+.oj-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 59;
+  background: rgb(15 23 42 / 42%);
+}
+.oj-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 60;
+  width: min(480px, 94vw);
+  max-height: 85vh;
+  margin-top: 0;
+  overflow-y: auto;
+  box-shadow: -8px 0 28px rgb(15 23 42 / 18%);
+}
+.oj-drawer-head {
+  position: sticky;
+  top: -16px;
+  z-index: 2;
+  margin: -16px -18px 12px;
+  padding: 12px 18px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-soft);
+}
+.oj-drawer-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.oj-stepper {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.oj-step {
+  display: flex;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.oj-step-index {
+  flex: 0 0 22px;
+  height: 22px;
+  line-height: 22px;
+  text-align: center;
+  color: var(--ink-muted);
+  background: var(--surface-muted);
+  border-radius: 50%;
+  font-size: var(--text-2xs);
+}
+.oj-step.is-pass .oj-step-index {
+  color: var(--ok-ink);
+  background: var(--ok-soft);
+}
+.oj-step.is-fail .oj-step-index {
+  color: var(--danger-ink);
+  background: var(--danger-soft);
+}
+.oj-step.is-skip .oj-step-index {
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+}
+.oj-step-value {
+  margin-left: 8px;
+  font-weight: 600;
+}
+.oj-formula {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  margin-top: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+.oj-formula code,
+.oj-raw {
+  font-size: var(--text-2xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.oj-alert {
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  color: var(--danger-ink);
+  background: var(--danger-soft);
+  border-radius: var(--radius-sm);
+}
+.oj-check-group h5 {
+  margin: 10px 0 4px;
+}
+.oj-check-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.oj-check-list li {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.oj-evidence {
+  margin-bottom: 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+}
+.oj-evidence > summary {
+  padding: 8px 10px;
+  cursor: pointer;
+  font-weight: 500;
+}
+.oj-evidence-body {
+  padding: 0 10px 10px;
+}
+.oj-raw {
+  max-height: 240px;
+  padding: 8px;
+  overflow: auto;
+  border-radius: var(--radius-xs);
+  background: var(--surface-muted);
+}
+.oj-raw-text p {
+  font-size: var(--text-2xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.oj-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  z-index: 80;
+  padding: 8px 16px;
+  color: #fff;
+  font-size: var(--text-xs);
+  background: #1f2937;
+  border-radius: var(--radius-pill);
+  transform: translateX(-50%);
+}

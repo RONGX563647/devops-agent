@@ -2,7 +2,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, cancelOpenJudgeRun, fetchOpenJudgeRun, startOpenJudgeRun } from '../../../api/client';
+import {
+  ApiError,
+  cancelOpenJudgeRun,
+  fetchOpenJudgeLibrary,
+  fetchOpenJudgeRun,
+  startOpenJudgeRun,
+} from '../../../api/client';
 import type { OjRun } from '../../../types';
 import { RunBar } from './RunBar';
 
@@ -22,12 +28,14 @@ vi.mock('../../../api/client', () => {
     ApiError: MockApiError,
     startOpenJudgeRun: vi.fn(),
     fetchOpenJudgeRun: vi.fn(),
+    fetchOpenJudgeLibrary: vi.fn(),
     cancelOpenJudgeRun: vi.fn(),
   };
 });
 
 const mockStart = vi.mocked(startOpenJudgeRun);
 const mockRun = vi.mocked(fetchOpenJudgeRun);
+const mockLibrary = vi.mocked(fetchOpenJudgeLibrary);
 const mockCancel = vi.mocked(cancelOpenJudgeRun);
 
 function makeRun(overrides: Partial<OjRun> = {}): OjRun {
@@ -60,9 +68,48 @@ function renderBar(onFinished = vi.fn()) {
 beforeEach(() => {
   mockStart.mockReset();
   mockRun.mockReset();
+  mockLibrary.mockReset();
   mockCancel.mockReset();
   mockStart.mockResolvedValue({ run_id: 11, total: 28 });
   mockRun.mockResolvedValue(makeRun());
+  mockLibrary.mockResolvedValue({
+    items: [
+      {
+        id: 'a-1',
+        track: 'A',
+        risk: 'low',
+        permission: 'readonly',
+        subject: 'repo_qa',
+        fixture: 'python-basic',
+        offline: false,
+        source: 'repo',
+        edited: false,
+      },
+      {
+        id: 'b-07',
+        track: 'B',
+        risk: 'high',
+        permission: 'workspace',
+        subject: 'permission',
+        fixture: 'python-basic',
+        offline: false,
+        source: 'overlay',
+        edited: true,
+      },
+    ],
+    total: 2,
+    suite: { cases: 2, suite_sha: 'abcdef123456', overlay: 1, deleted: 0, dir: '/tmp/x' },
+    thresholds: {},
+    limits: {
+      max_concurrency: 4,
+      min_timeout: 30,
+      max_timeout: 900,
+      max_limit: 30,
+      tracks: ['A', 'B'],
+      risks: ['low', 'high'],
+      permissions: ['readonly', 'workspace'],
+    },
+  });
 });
 
 afterEach(cleanup);
@@ -136,5 +183,35 @@ describe('RunBar', () => {
 
     fireEvent.click(await screen.findByText('取消'));
     await waitFor(() => expect(mockCancel).toHaveBeenCalledWith(11));
+  });
+
+  it('选了用例后只提交 case_ids 与 judge，赛道和条数禁用', async () => {
+    renderBar();
+    fireEvent.click(screen.getByText('选择用例'));
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: /a-1/ }));
+    const track = screen.getByLabelText(/赛道/) as HTMLSelectElement;
+    const limit = screen.getByLabelText(/条数上限/) as HTMLInputElement;
+    expect(track.disabled).toBe(true);
+    expect(limit.disabled).toBe(true);
+    expect(screen.getByText(/已选 1\/30/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText('开始运行'));
+    await waitFor(() =>
+      expect(mockStart).toHaveBeenCalledWith({ case_ids: ['a-1'], judge: false }),
+    );
+  });
+
+  it('多选面板支持搜索与清空', async () => {
+    renderBar();
+    fireEvent.click(screen.getByText('选择用例'));
+
+    await screen.findByRole('checkbox', { name: /a-1/ });
+    fireEvent.change(screen.getByLabelText('搜索用例'), { target: { value: 'b-07' } });
+    expect(screen.queryByRole('checkbox', { name: /a-1/ })).toBeNull();
+    fireEvent.click(await screen.findByRole('checkbox', { name: /b-07/ }));
+    fireEvent.click(screen.getByText('清空'));
+    expect(screen.queryByRole('checkbox', { name: /b-07/ })).toBeTruthy();
+    expect((screen.getByRole('checkbox', { name: /b-07/ }) as HTMLInputElement).checked).toBe(false);
   });
 });

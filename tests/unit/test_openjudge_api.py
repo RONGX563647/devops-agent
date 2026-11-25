@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from devops_agent.openjudge import store
+from devops_agent.openjudge import grade, report, store
 from devops_agent.openjudge.api import router
 
 
@@ -144,3 +144,58 @@ def test_coverage_reads_repo_cases(client: TestClient) -> None:
     assert payload["cases"] == 90
     assert payload["suite_sha"]
     assert payload["coverage"]["tracks"]["A"] == 28
+
+
+def test_scoring_config_matches_single_source(client: TestClient) -> None:
+    payload = client.get("/api/openjudge/scoring-config").json()
+    plan = grade.load_plan()
+    assert payload["plan"]["name"] == plan.name
+    assert payload["plan"]["sha"] == grade.plan_sha(plan)
+    assert payload["pass_judge"] == grade.PASS_JUDGE
+    assert payload["track_rules"] == report.TRACK_RULES
+    judges = {item["key"]: item for item in payload["plan"]["judges"]}
+    assert set(judges) == set(plan.judges)
+    spec = plan.judges["correctness"]
+    assert judges["correctness"]["grader"] == spec.grader
+    assert judges["correctness"]["weight"] == spec.weight
+    assert judges["correctness"]["scale"] == [spec.low, spec.high]
+    # 前端改返回值不能污染服务端规则
+    payload["track_rules"]["A"]["pass_rate"] = 0.0
+    assert report.TRACK_RULES["A"]["pass_rate"] == 0.6
+
+
+def test_case_detail_exposes_scoring_contract(client: TestClient) -> None:
+    batch_id = seed_batch()
+    result = {
+        "case_id": "a-low",
+        "track": "A",
+        "risk": "low",
+        "subject": "repo_qa",
+        "status": "success",
+        "passed": False,
+        "rule_passed": True,
+        "violations": 0,
+        "judge_norm": 0.25,
+        "checks": [{"name": "must_cite", "kind": "fact", "passed": True, "security": False}],
+        "judge": {
+            "correctness": {
+                "status": "scored",
+                "score": 2.0,
+                "normalized": 0.25,
+                "weight": 0.35,
+            }
+        },
+    }
+    with store.connect() as conn:
+        row_id = store.insert_case(conn, batch_id, result=result, trace={})
+
+    case = client.get(f"/api/openjudge/batches/{batch_id}/cases/{row_id}").json()
+    assert case["judge_norm"] == 0.25
+    assert case["rule_passed"] is True
+    assert case["violations"] == 0
+    scoring = case["scoring"]
+    assert scoring["pass_judge"] == grade.PASS_JUDGE
+    assert scoring["failure_type"] == "judge_score"
+    assert scoring["passed"] is False
+    assert "sum(normalized * weight)" in scoring["formula"]
+    assert scoring["judge_failed"][0]["contribution"] == pytest.approx(0.25 * 0.35)

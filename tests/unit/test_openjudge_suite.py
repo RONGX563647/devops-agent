@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from devops_agent.openjudge import benchmark, grade, report, rubric, sandbox
+from devops_agent.openjudge import benchmark, explain, grade, report, rubric, sandbox
 from devops_agent.openjudge.rulegate import rule_passed, run_checks, violations
 from devops_agent.openjudge.trace import ToolCallRecord, TraceRecord, load_traces, prompt_sha
 
@@ -414,9 +414,9 @@ def test_total_and_finish() -> None:
         "a": {"normalized": 1.0, "weight": 0.5},
         "b": {"normalized": None, "weight": 0.5},
     }
-    assert grade._total(graded) == 1.0
-    assert grade._total({}) is None
-    assert grade._total({"a": {"normalized": 0.5, "weight": 0.0}}) is None
+    assert explain.total_score(graded) == 1.0
+    assert explain.total_score({}) is None
+    assert explain.total_score({"a": {"normalized": 0.5, "weight": 0.0}}) is None
 
     results = [
         {"rule_passed": True, "judge": graded, "judge_norm": None, "passed": False},

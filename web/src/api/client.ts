@@ -24,6 +24,7 @@ import type {
   OjRunCreated,
   OjRunList,
   OjRunRequest,
+  OjScoringConfig,
   OjSeries,
   OjSuites,
   PendingState,
@@ -315,13 +316,21 @@ export function fetchOpenJudgeHealth(): Promise<OjHealth> {
   return getJson<OjHealth>('/api/openjudge/health');
 }
 
-/** OpenJudge：批次列表（按时间倒序）。 */
+/** OpenJudge：批次列表（按时间倒序）；verdict 非空时按结论过滤。 */
 export function fetchOpenJudgeBatches(
   limit = 20,
+  verdict?: string,
 ): Promise<{ items: OjBatch[]; total: number }> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (verdict) params.set('verdict', verdict);
   return getJson<{ items: OjBatch[]; total: number }>(
-    `/api/openjudge/batches?limit=${limit}`,
+    `/api/openjudge/batches?${params.toString()}`,
   );
+}
+
+/** OpenJudge：判分方案、门槛与赛道规则（单一来源）。 */
+export function fetchOpenJudgeScoringConfig(): Promise<OjScoringConfig> {
+  return getJson<OjScoringConfig>('/api/openjudge/scoring-config');
 }
 
 /** OpenJudge：单批次详情（含 summary）。 */
@@ -334,6 +343,8 @@ export interface OjCaseQuery {
   status?: string;
   subject?: string;
   passed?: boolean;
+  /** 每页条数；优先于 limit 映射到服务端的 limit。 */
+  pageSize?: number;
   limit?: number;
   offset?: number;
 }
@@ -348,7 +359,7 @@ export function fetchOpenJudgeCases(
   if (params.status) query.set('status', params.status);
   if (params.subject) query.set('subject', params.subject);
   if (params.passed !== undefined) query.set('passed', String(params.passed));
-  query.set('limit', String(params.limit ?? 100));
+  query.set('limit', String(params.pageSize ?? params.limit ?? 100));
   query.set('offset', String(params.offset ?? 0));
   return getJson<OjCaseList>(
     `/api/openjudge/batches/${batchId}/cases?${query.toString()}`,

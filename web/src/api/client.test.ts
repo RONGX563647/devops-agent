@@ -6,8 +6,11 @@ import {
   deleteSecret,
   fetchHealth,
   fetchInputStages,
+  fetchOpenJudgeBatches,
+  fetchOpenJudgeCases,
   fetchOpenJudgeRun,
   fetchOpenJudgeRuns,
+  fetchOpenJudgeScoringConfig,
   fetchOpenJudgeSeries,
   fetchOpenJudgeSuites,
   fetchPending,
@@ -108,6 +111,31 @@ describe('client', () => {
     const spy = mockJson();
     await call();
     expect(spy).toHaveBeenCalledWith(expected);
+  });
+
+  it('fetchOpenJudgeScoringConfig 拉判分方案与门槛', async () => {
+    const spy = mockJson({
+      plan: { name: 'oj-plan-v1', sha: 'abc', judges: [] },
+      pass_judge: 0.6,
+      track_rules: {},
+    });
+    const data = await fetchOpenJudgeScoringConfig();
+    expect(spy).toHaveBeenCalledWith('/api/openjudge/scoring-config');
+    expect(data.pass_judge).toBe(0.6);
+  });
+
+  it('fetchOpenJudgeBatches 把 verdict 拼进查询串', async () => {
+    const spy = mockJson({ items: [], total: 0 });
+    await fetchOpenJudgeBatches(20, 'fail');
+    expect(spy).toHaveBeenCalledWith('/api/openjudge/batches?limit=20&verdict=fail');
+  });
+
+  it('fetchOpenJudgeCases 把 pageSize 映射为 limit 并带上状态与主题', async () => {
+    const spy = mockJson({ items: [], total: 0, limit: 25, offset: 10 });
+    await fetchOpenJudgeCases(3, { status: 'success', subject: 'repo', pageSize: 25, offset: 10 });
+    expect(spy).toHaveBeenCalledWith(
+      '/api/openjudge/batches/3/cases?status=success&subject=repo&limit=25&offset=10',
+    );
   });
 
   it('startOpenJudgeRun POST JSON body 并回传 run_id', async () => {

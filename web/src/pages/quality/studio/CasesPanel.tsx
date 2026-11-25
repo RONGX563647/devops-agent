@@ -17,8 +17,12 @@ const TRACK_LABEL: Record<string, string> = {
   E: 'E 多轮会话',
 };
 
+const PAGE_SIZE = 20;
+
 export function CasesPanel() {
   const [track, setTrack] = useState('');
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   const query = useQuery({
     queryKey: ['oj-library', track],
@@ -29,6 +33,18 @@ export function CasesPanel() {
   if (query.error || !query.data) return <div className="muted">题库不可用</div>;
 
   const { items, total, suite, limits } = query.data;
+  const keyword = search.trim().toLowerCase();
+  const filtered = items.filter(
+    (item) =>
+      !keyword ||
+      item.id.toLowerCase().includes(keyword) ||
+      item.subject.toLowerCase().includes(keyword) ||
+      item.track.toLowerCase().includes(keyword),
+  );
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount - 1);
+  const pageItems = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+  const changePage = (next: number) => setPage(Math.min(pageCount - 1, Math.max(0, next)));
 
   return (
     <section className="panel oj-library">
@@ -61,7 +77,21 @@ export function CasesPanel() {
         ))}
       </div>
 
+      <div className="tag-row">
+        <input
+          type="search"
+          aria-label="搜索题库用例"
+          placeholder="按用例 id / 主题 / 赛道搜索"
+          value={search}
+          onChange={(event) => {
+            setSearch(event.target.value);
+            setPage(0);
+          }}
+        />
+      </div>
+
       <div className="oj-library-body">
+        <div className="table-scroll oj-library-list">
         <table className="data-table">
           <thead>
             <tr>
@@ -73,7 +103,7 @@ export function CasesPanel() {
             </tr>
           </thead>
           <tbody>
-            {items.map((row) => (
+            {pageItems.map((row) => (
               <tr
                 key={row.id}
                 className={selected === row.id ? 'case-row is-selected' : 'case-row'}
@@ -90,15 +120,41 @@ export function CasesPanel() {
                 </td>
               </tr>
             ))}
-            {items.length === 0 && (
+            {pageItems.length === 0 && (
               <tr>
                 <td colSpan={5} className="muted">
-                  这个赛道没有用例
+                  没有匹配的用例
                 </td>
               </tr>
             )}
           </tbody>
         </table>
+        <div className="tag-row oj-pager">
+          <button type="button" disabled={safePage === 0} onClick={() => changePage(0)}>
+            首页
+          </button>
+          <button type="button" disabled={safePage === 0} onClick={() => changePage(safePage - 1)}>
+            上一页
+          </button>
+          <span className="muted">
+            第 {safePage + 1}/{pageCount} 页，共 {filtered.length} 条
+          </span>
+          <button
+            type="button"
+            disabled={safePage >= pageCount - 1}
+            onClick={() => changePage(safePage + 1)}
+          >
+            下一页
+          </button>
+          <button
+            type="button"
+            disabled={safePage >= pageCount - 1}
+            onClick={() => changePage(pageCount - 1)}
+          >
+            末页
+          </button>
+        </div>
+        </div>
 
         {selected && <CaseEditor caseId={selected} onClose={() => setSelected(null)} />}
       </div>

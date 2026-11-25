@@ -10,13 +10,7 @@ import { fetchOpenJudgeSeries, fetchOpenJudgeSuites } from '../../api/client';
 import type { OjSeriesPoint, OjSuites } from '../../types';
 import { TrendChart, type TrendPoint } from './charts';
 import { formatPercent, precisionLimit, signedDelta } from './format';
-
-const VERDICT_TEXT: Record<string, string> = {
-  pass: '通过：全部门禁达标',
-  fail: '未通过：存在硬失败或门禁未达',
-  warn: '回退：指标下降超过精度上限',
-  insufficient: '样本不足，不参与发布门禁',
-};
+import { verdictClass, verdictText } from './labels';
 
 interface Props {
   onShowBatches: () => void;
@@ -58,7 +52,7 @@ function thresholdOf(suites: OjSuites | undefined): number {
 }
 
 function conclusionOf(point: OjSeriesPoint): string {
-  const base = VERDICT_TEXT[point.verdict] ?? point.verdict;
+  const base = verdictText(point.verdict, true);
   return `${base} —— 通过率 ${formatPercent(point.pass_rate)}（n=${point.cases}）`;
 }
 
@@ -97,7 +91,7 @@ export function Overview({ onShowBatches }: Props) {
   const kpis = [
     { label: '通过率', value: formatPercent(latest.pass_rate), detail: `n=${latest.cases}` },
     { label: '用例数', value: latest.cases, detail: '本批次实际执行' },
-    { label: '结论', value: latest.verdict, detail: '批次终态' },
+    { label: '结论', value: verdictText(latest.verdict), detail: '批次终态' },
     {
       label: '完成时间',
       value: latest.finished_at.replace('T', ' ').slice(0, 19),
@@ -110,7 +104,9 @@ export function Overview({ onShowBatches }: Props) {
       <section className="panel quality-conclusion">
         <h2>最近一次评测</h2>
         <p className="quality-conclusion-line">
-          <span className={`badge badge-${latest.verdict}`}>{latest.verdict}</span>
+          <span className={`status-pill ${verdictClass(latest.verdict)}`}>
+            {verdictText(latest.verdict)}
+          </span>
           <strong>{conclusionOf(latest)}</strong>
         </p>
         <p className="hint">批次 #{latest.batch_id} · 完成于 {latest.finished_at}</p>

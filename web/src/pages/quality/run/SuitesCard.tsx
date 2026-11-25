@@ -3,7 +3,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchOpenJudgeSuites } from '../../../api/client';
 import { formatPercent } from '../format';
-import { TRACK_LABEL, VERDICT_TEXT, verdictClass } from '../labels';
+import { TRACK_LABEL, verdictClass, verdictText } from '../labels';
 
 export function SuitesCard() {
   const query = useQuery({ queryKey: ['oj-suites'], queryFn: fetchOpenJudgeSuites });
@@ -58,7 +58,7 @@ export function SuitesCard() {
                     <td>{formatPercent(item.latest.pass_rate)}</td>
                     <td>
                       <span className={`status-pill ${verdictClass(item.latest.verdict)}`}>
-                        {VERDICT_TEXT[item.latest.verdict] ?? item.latest.verdict}
+                        {verdictText(item.latest.verdict)}
                       </span>
                     </td>
                   </>

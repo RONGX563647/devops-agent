@@ -9,6 +9,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ApiError,
   cancelOpenJudgeRun,
+  fetchOpenJudgeLibrary,
   fetchOpenJudgeRun,
   startOpenJudgeRun,
 } from '../../../api/client';
@@ -33,6 +34,7 @@ const STATUS_TEXT: Record<string, string> = {
 /** 默认值刻意保守：10 条、不跑裁判，避免一次误点烧掉额度。 */
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 30;
+const MAX_SELECTED = 30;
 
 function clampLimit(value: number): number {
   if (Number.isNaN(value)) return DEFAULT_LIMIT;
@@ -57,6 +59,70 @@ function conflictRunId(err: unknown): number | null {
   return detail && typeof detail.run_id === 'number' ? detail.run_id : null;
 }
 
+interface CasePickerProps {
+  selected: string[];
+  onToggle: (id: string) => void;
+  onClear: () => void;
+}
+
+/** 题库多选面板：搜索后勾选，选满上限后其余项只读。 */
+function CasePicker({ selected, onToggle, onClear }: CasePickerProps) {
+  const [search, setSearch] = useState('');
+  const query = useQuery({
+    queryKey: ['oj-library', 'run-picker'],
+    queryFn: () => fetchOpenJudgeLibrary(),
+  });
+
+  if (query.isLoading) return <p className="muted">加载题库…</p>;
+  if (query.error || !query.data) return <p className="muted">题库不可用</p>;
+
+  const keyword = search.trim().toLowerCase();
+  const items = query.data.items.filter(
+    (item) =>
+      !keyword ||
+      item.id.toLowerCase().includes(keyword) ||
+      item.subject.toLowerCase().includes(keyword) ||
+      item.track.toLowerCase().includes(keyword),
+  );
+
+  return (
+    <div className="oj-case-picker">
+      <div className="tag-row">
+        <input
+          type="search"
+          aria-label="搜索用例"
+          placeholder="按用例 id / 主题 / 赛道搜索"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+        <span className="muted">
+          已选 {selected.length}/{MAX_SELECTED}
+        </span>
+        <button type="button" disabled={selected.length === 0} onClick={onClear}>
+          清空
+        </button>
+      </div>
+      <div className="oj-case-picker-list">
+        {items.map((item) => {
+          const checked = selected.includes(item.id);
+          return (
+            <label key={item.id} className="oj-case-picker-item">
+              <input
+                type="checkbox"
+                checked={checked}
+                disabled={!checked && selected.length >= MAX_SELECTED}
+                onChange={() => onToggle(item.id)}
+              />
+              <code>{item.id}</code> · {item.track} · {item.subject}
+            </label>
+          );
+        })}
+        {items.length === 0 && <p className="muted">没有匹配的用例</p>}
+      </div>
+    </div>
+  );
+}
+
 interface RunBarProps {
   /** 批次落库后回调：父组件据此切到新批次。 */
   onFinished: (batchId: number) => void;
@@ -67,6 +133,8 @@ export function RunBar({ onFinished }: RunBarProps) {
   const [track, setTrack] = useState('A');
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
   const [judge, setJudge] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [caseIds, setCaseIds] = useState<string[]>([]);
   const [runId, setRunId] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -83,8 +151,23 @@ export function RunBar({ onFinished }: RunBarProps) {
   });
   const run = runQuery.data;
 
+  const hasCases = caseIds.length > 0;
+  const toggleCase = (id: string) =>
+    setCaseIds((prev) =>
+      prev.includes(id)
+        ? prev.filter((item) => item !== id)
+        : prev.length >= MAX_SELECTED
+          ? prev
+          : [...prev, id],
+    );
+
   const start = useMutation({
-    mutationFn: () => startOpenJudgeRun({ track: track || undefined, limit, judge }),
+    mutationFn: () =>
+      startOpenJudgeRun(
+        hasCases
+          ? { case_ids: caseIds, judge }
+          : { track: track || undefined, limit, judge },
+      ),
     onSuccess: (data) => {
       setRunId(data.run_id);
       setStartError(null);
@@ -130,7 +213,11 @@ export function RunBar({ onFinished }: RunBarProps) {
       <div className="tag-row">
         <label>
           赛道{' '}
-          <select value={track} onChange={(event) => setTrack(event.target.value)}>
+          <select
+            value={track}
+            disabled={hasCases}
+            onChange={(event) => setTrack(event.target.value)}
+          >
             {TRACK_OPTIONS.map((item) => (
               <option key={item.value} value={item.value}>
                 {item.label}
@@ -145,6 +232,7 @@ export function RunBar({ onFinished }: RunBarProps) {
             min={1}
             max={MAX_LIMIT}
             value={limit}
+            disabled={hasCases}
             onChange={(event) => setLimit(Number(event.target.value))}
             onBlur={() => setLimit(clampLimit(limit))}
             style={{ width: '5em' }}
@@ -160,6 +248,14 @@ export function RunBar({ onFinished }: RunBarProps) {
         </label>
         <button
           type="button"
+          disabled={start.isPending || active}
+          onClick={() => setPickerOpen((open) => !open)}
+        >
+          {pickerOpen ? '收起用例' : '选择用例'}
+          {hasCases && `（已选 ${caseIds.length}）`}
+        </button>
+        <button
+          type="button"
           className="primary-btn"
           disabled={start.isPending || active}
           onClick={() => start.mutate()}
@@ -172,6 +268,17 @@ export function RunBar({ onFinished }: RunBarProps) {
           </button>
         )}
       </div>
+
+      {hasCases && (
+        <p className="hint">已按所选 {caseIds.length} 条用例发起，赛道与条数上限不生效。</p>
+      )}
+      {pickerOpen && (
+        <CasePicker
+          selected={caseIds}
+          onToggle={toggleCase}
+          onClear={() => setCaseIds([])}
+        />
+      )}
 
       {notice && !startError && <p className="hint">{notice}</p>}
       {startError && <p className="query-error">发起失败：{startError}</p>}

@@ -16,6 +16,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from devops_agent.openjudge import explain, grade, migrations
+
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DB = _REPO_ROOT / "workspace" / "evals" / "openjudge.db"
 
@@ -52,7 +54,10 @@ CREATE TABLE IF NOT EXISTS oj_cases (
     trace_json TEXT NOT NULL DEFAULT '{}',
     events_json TEXT NOT NULL DEFAULT '[]',
     input_stages_json TEXT NOT NULL DEFAULT '[]',
-    workspace_json TEXT NOT NULL DEFAULT '{}'
+    workspace_json TEXT NOT NULL DEFAULT '{}',
+    judge_norm REAL,
+    rule_passed INTEGER,
+    violations INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_oj_cases_batch ON oj_cases(batch_id);
 CREATE TABLE IF NOT EXISTS oj_rubrics (
@@ -112,7 +117,7 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
-    conn.commit()
+    migrations.migrate_case_columns(conn)
 
 
 def json_dumps(value: Any) -> str:
@@ -172,8 +177,9 @@ def insert_case(
         """
         INSERT INTO oj_cases (
             batch_id, case_id, track, risk, subject, status, passed, latency_ms, tokens,
-            checks_json, judge_json, trace_json, events_json, input_stages_json, workspace_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            checks_json, judge_json, trace_json, events_json, input_stages_json, workspace_json,
+            judge_norm, rule_passed, violations
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             batch_id,
@@ -192,6 +198,9 @@ def insert_case(
             json_dumps(trace.get("events", [])),
             json_dumps(trace.get("input_stages", [])),
             json_dumps(trace.get("workspace", {})),
+            result.get("judge_norm"),
+            1 if result.get("rule_passed") else 0,
+            int(result.get("violations", 0) or 0),
         ),
     )
     return int(cursor.lastrowid or 0)
@@ -324,6 +333,8 @@ def get_case(conn: sqlite3.Connection, case_row_id: int) -> dict[str, Any] | Non
             [] if target in ("checks", "events", "input_stages") else {}
         )
     row["passed"] = bool(row["passed"])
+    explain.enrich_case_row(row, grade.load_plan())
+    row["scoring"] = explain.case_scoring(row)
     return row
 
 

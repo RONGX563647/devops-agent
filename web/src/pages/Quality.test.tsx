@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchOpenJudgeBatch,
   fetchOpenJudgeBatches,
+  fetchOpenJudgeCase,
   fetchOpenJudgeCaseDocument,
   fetchOpenJudgeLibrary,
   fetchOpenJudgeSettings,
@@ -13,6 +15,7 @@ import {
   fetchOpenJudgeCoverage,
   fetchOpenJudgeRubrics,
   fetchOpenJudgeRun,
+  fetchOpenJudgeScoringConfig,
   fetchOpenJudgeSeries,
   fetchOpenJudgeSuites,
 } from '../api/client';
@@ -30,6 +33,7 @@ vi.mock('../api/client', () => ({
   fetchOpenJudgeCoverage: vi.fn(),
   fetchOpenJudgeRubrics: vi.fn(),
   fetchOpenJudgeRun: vi.fn(),
+  fetchOpenJudgeScoringConfig: vi.fn(),
   startOpenJudgeRun: vi.fn(),
   cancelOpenJudgeRun: vi.fn(),
   fetchOpenJudgeSettings: vi.fn(),
@@ -50,6 +54,8 @@ const mockCompare = vi.mocked(fetchOpenJudgeCompare);
 const mockCoverage = vi.mocked(fetchOpenJudgeCoverage);
 const mockRubrics = vi.mocked(fetchOpenJudgeRubrics);
 const mockRun = vi.mocked(fetchOpenJudgeRun);
+const mockCase = vi.mocked(fetchOpenJudgeCase);
+const mockScoringConfig = vi.mocked(fetchOpenJudgeScoringConfig);
 const mockSettings = vi.mocked(fetchOpenJudgeSettings);
 const mockLibrary = vi.mocked(fetchOpenJudgeLibrary);
 const mockCaseDoc = vi.mocked(fetchOpenJudgeCaseDocument);
@@ -92,11 +98,75 @@ function makeOjBatch() {
   };
 }
 
+function makeCaseDetail() {
+  return {
+    id: 11,
+    case_id: 'a-fail',
+    track: 'A',
+    subject: 'repo_qa',
+    risk: 'low',
+    status: 'success',
+    passed: false,
+    latency_ms: 1200,
+    tokens: { input: 10, output: 5 },
+    checks: [{ name: 'must_cite:x', kind: 'content', passed: false, detail: '缺少引用' }],
+    judge: {
+      correctness: { status: 'scored' as const, score: 3, normalized: 0.5, weight: 0.35, reason: '引用不足' },
+      loop: { status: 'skipped' as const, skip_reason: 'rule_failed' },
+    },
+    scoring: {
+      rule_passed: false,
+      violations: 0,
+      judge_norm: 0.5,
+      pass_judge: 0.6,
+      passed: false,
+      formula: 'judge_norm = sum(normalized * weight) / sum(weight)',
+      failure_type: 'rule' as const,
+      rule_failed_checks: ['must_cite:x'],
+      judge_failed: [],
+    },
+    events: ['开始', '结束'],
+    input_stages: [{ stage: 'prompt' }],
+    workspace: { states: {}, diff: '', hashes: {} },
+    trace: {
+      status: 'success',
+      error: '',
+      turns: [{ role: 'user', content: '你好' }],
+      tool_calls: [{ name: 'Grep', args: { pattern: 'x' }, state: 'done', result_excerpt: '命中一处' }],
+      events: ['开始'],
+      input_stages: [],
+      workspace: { states: {}, diff: '', hashes: {} },
+      judge_input: {},
+      final_text: '回答',
+    },
+  };
+}
+
+function makeScoringConfig() {
+  return {
+    plan: {
+      name: 'oj-plan-v1',
+      sha: 'plan123456789',
+      judges: [
+        { key: 'correctness', grader: 'CorrectnessGrader', weight: 0.35, scale: [1, 5] as [number, number] },
+        { key: 'relevance', grader: 'RelevanceGrader', weight: 0.15, scale: [1, 5] as [number, number] },
+      ],
+    },
+    pass_judge: 0.6,
+    track_rules: {
+      A: { pass_rate: 0.6, judge: 0.6, min_n: 10 },
+      B: { pass_rate: 0.6, judge: 0.6, min_n: 10, max_violations: 0 },
+    },
+  };
+}
+
 function renderQuality() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <Quality />
+      <MemoryRouter>
+        <Quality />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -116,6 +186,8 @@ beforeEach(() => {
   mockCoverage.mockReset();
   mockRubrics.mockReset();
   mockRun.mockReset();
+  mockCase.mockReset();
+  mockScoringConfig.mockReset();
 
   mockSeries.mockResolvedValue({
     points: [
@@ -157,6 +229,8 @@ beforeEach(() => {
   });
   mockBatches.mockResolvedValue({ items: [makeOjBatch()], total: 1 });
   mockBatch.mockResolvedValue(makeOjBatch());
+  mockCase.mockResolvedValue(makeCaseDetail());
+  mockScoringConfig.mockResolvedValue(makeScoringConfig());
   mockCases.mockResolvedValue({
     items: [
       {
@@ -306,5 +380,39 @@ describe('Quality 三个视图', () => {
     expect((await screen.findAllByText('must_cite:x')).length).toBeGreaterThan(0);
     // 题库卡片：有最近批次的显示通过率，没有的显式提示
     expect(await screen.findByText('尚无批次')).toBeTruthy();
+  });
+
+  it('评分流程可展开，阈值来自 scoring-config', async () => {
+    renderQuality();
+    fireEvent.click(screen.getByText('运行与批次'));
+
+    expect(await screen.findByText('评分流程')).toBeTruthy();
+    fireEvent.click(screen.getByText('展开依据'));
+    expect(await screen.findByText('归一化合成')).toBeTruthy();
+    expect(screen.getByText(/判分方案 oj-plan-v1/)).toBeTruthy();
+    expect(mockScoringConfig).toHaveBeenCalled();
+  });
+
+  it('失败列表可定位到固定抽屉并在四个 Tab 间切换', async () => {
+    renderQuality();
+    fireEvent.click(screen.getByText('运行与批次'));
+
+    fireEvent.click(await screen.findByText('定位'));
+    expect(await screen.findByRole('dialog', { name: '用例诊断' })).toBeTruthy();
+    expect(screen.getByText('判定依据')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '规则断言' }).getAttribute('aria-selected')).toBe('true');
+    fireEvent.click(screen.getByText('语义裁判'));
+    expect(await screen.findByText('CorrectnessGrader')).toBeTruthy();
+    fireEvent.click(screen.getByText('轨迹证据'));
+    expect(await screen.findByText('对话轮次（1）')).toBeTruthy();
+  });
+
+  it('批次结论过滤把 verdict 传给后端', async () => {
+    renderQuality();
+    fireEvent.click(screen.getByText('运行与批次'));
+    await screen.findByText('批次');
+
+    fireEvent.change(screen.getByLabelText('结论'), { target: { value: 'fail' } });
+    await waitFor(() => expect(mockBatches).toHaveBeenCalledWith(20, 'fail'));
   });
 });

@@ -16,7 +16,7 @@ export function Quality() {
   const [view, setView] = useState<QualityView>('overview');
 
   return (
-    <div className="page">
+    <div className="page quality-page">
       <h1>质量评估</h1>
       <p className="subtitle">先看这批能不能用，再看分数从哪来 —— 题和模型都能在这里直接改</p>
 

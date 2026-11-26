@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from devops_agent.gateway.contract import PendingPayload
-from devops_agent.gateway.ports import (
+from devops_agent.gateway.turn.ports import (
     PendingRun,
     PendingStore,
     RuntimeCapabilityError,

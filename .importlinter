@@ -59,28 +59,35 @@ source_modules = devops_agent.gateway
 forbidden_modules = agentscope
 allow_indirect_imports = True
 
-# 网关内部的分层：contract（帧与载荷）与 errors（错误码）是叶子。
-# 它们是前后端契约，改的人只该关心「字段/状态码是否齐」，
+# 网关内部的分层：契约 / 错误码 / 部署设置是叶子。
+# 它们是前后端契约与部署面，改的人只该关心「字段、状态码、策略项是否齐」，
 # 不该被会话锁、编排顺序、持久化细节牵连；反过来，把契约塞进路由模块
 # 会让「改一个帧字段」变成「改五个文件」。
 [importlinter:contract:gateway-contract-is-leaf]
-name = 网关契约与错误码必须是叶子（不得依赖其他网关模块）
+name = 网关叶子层（契约 / 错误码 / 设置）不得依赖其他网关模块
 type = forbidden
 source_modules =
     devops_agent.gateway.contract
     devops_agent.gateway.errors
+    devops_agent.gateway.settings
 forbidden_modules =
     devops_agent.gateway.app
     devops_agent.gateway.bootstrap
-    devops_agent.gateway.confirm
-    devops_agent.gateway.deps
-    devops_agent.gateway.ending
-    devops_agent.gateway.health
-    devops_agent.gateway.input_prep
-    devops_agent.gateway.lease
-    devops_agent.gateway.ports
-    devops_agent.gateway.run
-    devops_agent.gateway.sessions
-    devops_agent.gateway.settings
-    devops_agent.gateway.sse
-    devops_agent.gateway.stream
+    devops_agent.gateway.routes
+    devops_agent.gateway.turn
+
+# 一轮的机制不该知道 HTTP 面存在：turn 里出现 Request / 状态码就说明逻辑放错了层。
+[importlinter:contract:gateway-turn-no-http]
+name = turn 不得依赖路由层与装配根
+type = forbidden
+source_modules = devops_agent.gateway.turn
+forbidden_modules =
+    devops_agent.gateway.app
+    devops_agent.gateway.routes
+
+# 路由只组装：它可以用 turn 与叶子，但不该 import 装配根（否则一 import 就建 app）。
+[importlinter:contract:gateway-routes-no-app]
+name = 路由层不得依赖装配根
+type = forbidden
+source_modules = devops_agent.gateway.routes
+forbidden_modules = devops_agent.gateway.app

@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 import pytest
 
 from devops_agent.config import GatewayStreamPolicy
-from devops_agent.gateway.ending import Ending, RunLimits, decide_ending
+from devops_agent.gateway.turn.ending import Ending, RunLimits, decide_ending
 
 _PENDING = [{"tool_call_id": "c1", "name": "Bash", "input": "rm -rf dist", "risk": "danger"}]
 

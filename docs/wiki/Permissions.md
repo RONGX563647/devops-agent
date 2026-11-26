@@ -1,4 +1,4 @@
-# 权限、确认与续跑
+﻿# 权限、确认与续跑
 
 ## 1. 为什么是「档位」而不是直接暴露 `PermissionMode`
 
@@ -157,7 +157,7 @@ run → 权限引擎判 ASK → pending_calls() 非空
 - **不发 `done`**：前端据此把消息标成「等待确认」而不是「已完成」。
 - **限额与 TTL 是配置**（`config/gateway.yaml` 的 `gateway.stream`）：`ask_limit` /
   `park_ttl_seconds` / `settle_rounds`。本文里的 3 / 600 / 2 就是当前默认值。
-  决策是纯函数 `gateway/ending.decide_ending`，副作用在 `gateway/run.finish_or_park`。
+  决策是纯函数 `gateway/turn/ending.decide_ending`，副作用在 `gateway/turn/orchestrate.finish_or_park`。
 - **TTL 过期**后 confirm 返回 409 `expired`。
 - `GET /run/{run_id}/pending` 必须带 `session_id`，不匹配返回 403 `session_mismatch`
   —— 否则知道 run_id 就能读到别人的命令。

@@ -16,8 +16,8 @@ from devops_agent.config import (
     load_policy,
 )
 from devops_agent.gateway.app import app, create_app
-from devops_agent.gateway.ending import RunLimits
 from devops_agent.gateway.settings import DEFAULT_DOMAIN, ENV_DOMAIN, ENV_MODEL, Settings
+from devops_agent.gateway.turn.ending import RunLimits
 from devops_agent.runtime.runtime import EchoRuntime
 
 

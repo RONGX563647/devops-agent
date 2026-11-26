@@ -9,9 +9,9 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
-from devops_agent.gateway.deps import profile_or_403, registry_of
 from devops_agent.gateway.errors import ErrorCode, http_error
-from devops_agent.gateway.schemas import SessionPermissionRequest
+from devops_agent.gateway.routes.deps import profile_or_403, registry_of
+from devops_agent.gateway.routes.schemas import SessionPermissionRequest
 from devops_agent.governance.presets import available, default_profile
 
 router = APIRouter()

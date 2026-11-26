@@ -11,6 +11,20 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 
+class RunStatus(StrEnum):
+    """一次运行的终态取值。
+
+    存在的唯一理由：这些字符串同时出现在三处 —— 建表 DDL 的 CHECK 约束、
+    `RunRecorder.finish()` 的入参、以及 SSE 的 `RUN_DONE` 帧。手写三份必然漂移
+    （DDL 的 CHECK 在 SQLite 里改不了，加一个新状态时最容易漏的就是它），
+    所以由本枚举生成 DDL（见 repository/db.py 的 `_STATUS_SQL`），代码侧只引用成员。
+    """
+
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
 class EvalDimension(StrEnum):
     """质量评分维度。反馈入口用它拒绝脏值，健康分用它筛 correctness 样本。"""
 
@@ -34,7 +48,7 @@ class RunRecord:
     id: int | None
     session_id: str
     domain: str
-    status: str  # running / success / failed
+    status: str  # 取值见 RunStatus（running / success / failed）
     input: str
     output: str
     started_at: str

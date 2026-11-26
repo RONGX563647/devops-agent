@@ -75,7 +75,7 @@ devops-agent/
 │   │   ├── assembly.py       #   build_agent / build_agentscope_runtime（系统提示、工具、中间件）
 │   │   ├── sessions.py       #   SessionRegistry：LRU + DB 快照重建 + 参数热替换
 │   │   ├── confirm.py        #   确认协议：风险分级、作用域、前缀沉淀规则
-│   │   ├── profile_note.py   #   档位说明 + 联网说明追加在消息末尾（保前缀缓存）
+│   │   ├── profile_note.py   #   档位说明（+ provider 模式的联网说明）追加在消息末尾
 │   │   ├── compression.py    #   压缩中间件 → SSE 帧
 │   │   ├── events.py         #   框架事件 → 普通 dict
 │   │   ├── supervisor.py     #   TeamPipeline / GoalPipeline 装配（仅单测引用）
@@ -146,7 +146,7 @@ uvicorn devops_agent.gateway.app:app --port 8000
 
 ### 接入真实模型（OpenAI 兼容接口）
 
-`.env.example` 复制为 `.env` 并填值（`.env` 已 gitignore）。[env.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/env.py) 用 `override=False` 加载，**已存在的环境变量优先**，CI/容器注入值不会被本地文件覆盖。
+`.env.example` 复制为 `.env` 并填值（`.env` 已 gitignore）。[env.py](file:///e:/code/devops-agent/src/devops_agent/env.py) 用 `override=False` 加载，**已存在的环境变量优先**，CI/容器注入值不会被本地文件覆盖。
 
 ```bash
 cp .env.example .env
@@ -176,39 +176,63 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 | `DEVOPS_AGENT_ATTACHMENT_DIR` | 附件目录，缺省 `workspace/attachments` |
 | `DEVOPS_AGENT_SECRET_KEY` | Fernet 主密钥（base64，优先级最高） |
 | `DEVOPS_AGENT_SECRET_KEY_FILE` | Fernet 主密钥文件，缺省库同目录 `.secret.key` |
-| `DEVOPS_AGENT_ENABLE_SEARCH` | 设为 1 时请求体附 `enable_search=true`（默认关闭） |
-| `DEVOPS_AGENT_SEARCH_MODE` | `forced`（默认，连同 `search_options` 下发）/ `auto`（只授权不强制） |
+| `DEVOPS_AGENT_SEARCH_MODE` | `tool`（默认，注册 `web_search` 工具）/ `provider`（旧请求体模式）/ `off`（禁网） |
+| `DEVOPS_AGENT_SEARCH_ENDPOINT` | 检索服务地址；配置后优先于 provider 后端 |
+| `DEVOPS_AGENT_SEARCH_API_KEY` | 检索服务凭据（Bearer） |
+| `DEVOPS_AGENT_SEARCH_FORCED` | 仅 `provider` 模式：`0` 表示不强制检索，交回模型裁量 |
+| `DEVOPS_AGENT_ENABLE_SEARCH` | 部署默认的联网准入（`1` = 默认开），逐请求开关优先 |
 | `DEVOPS_AGENT_PERMISSION_PROFILES` | 覆盖开放档位（逗号分隔） |
 | `DEVOPS_AGENT_DEFAULT_PROFILE` | 覆盖默认档位 |
 | `DEVOPS_AGENT_JUDGE_MODEL` | 评测裁判模型的兜底值（页面配的 `judge_model` 优先；nightly 用它） |
 | `DEVOPS_AGENT_EVAL_DB_PATH` | 评测库路径 |
 | `DEVOPS_AGENT_OPENJUDGE_OVERLAY` | 题库覆盖层目录，缺省 `workspace/openjudge/cases`（测试靠它隔离） |
 
-### 模型侧联网搜索
+### 联网检索（工具化，SPEC-0011）
 
-`DEVOPS_AGENT_ENABLE_SEARCH=1` 时，模型请求体会附加 `enable_search=true`，由供应商（如 DashScope 兼容接口）执行联网检索。**默认关闭**。这是环境变量层的部署默认；前端另有逐请求的「联网」开关。
+默认 `DEVOPS_AGENT_SEARCH_MODE=tool`：联网是一个真正的工具 `web_search`，模型按需调用。
+前端「联网」开关决定**这一轮是否授予该能力**，而不是「必然检索」—— 关掉时 toolkit 里
+根本没有这个工具，模型想调也调不到。
 
-只有 `enable_search` 是不够的：它只是**授权**模型可以搜，搜不搜由模型自由裁量。实测同一份请求体（system prompt + 4 个工具定义 + 只读提示），带与不带 `enable_search` 的 `prompt_tokens` 完全一致（3150 vs 3150）——模型一次都没检索，用户看到的就是一个按下去没反应的按钮。因此默认还会下发 `search_options = {"forced_search": true, "search_strategy": "standard"}`，由供应商无条件检索并把结果注入上下文（同一请求体升到 4436 tokens）。
+为什么改：旧的 `enable_search` + `forced_search` 是请求体参数，开着按钮就**每轮都检索**
+（改个函数名也付检索费），而且检索发生在供应商服务端，`trace.tool_calls` 里没有任何记录，
+判分归因与成本核算都拆不出检索占比。
 
-- `DEVOPS_AGENT_SEARCH_MODE=forced`（默认）：如上，点了就一定搜。
-- `DEVOPS_AGENT_SEARCH_MODE=auto`：只发 `enable_search`，把裁量权交回模型（省 token，但多数情况下不会搜）。写成其他值一律按 `forced` 处理，避免拼错一个环境变量就把联网退化成空开关。
+| 模式 | 行为 |
+|---|---|
+| `tool`（默认） | 注册 `web_search` 工具，请求体不带任何检索字段 |
+| `provider` | 旧行为：不注册工具，发 `enable_search`（是否强制由 `DEVOPS_AGENT_SEARCH_FORCED` 决定） |
+| `off` | 完全不联网（禁网部署） |
 
-开关实现在 [chat_model.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/chat_model.py) 的 `_search_extra_body()`。
+后端：配了 `DEVOPS_AGENT_SEARCH_ENDPOINT` 就走 HTTP 搜索服务（推荐）；否则复用模型凭据
+调一次非流式请求（`ProviderBackend`，过渡实现 —— 它返回的 URL 是模型复述的，存在幻觉链接）。
+两者都没有时工具不注册，`GET /api/tools/search` 返回 `configured: false` 与原因，
+前端按钮据此置灰 —— 不给「点了没反应」的开关。
 
-开启联网的那一轮，末条消息会追加一段说明：检索结果**若存在**，会以带来源的引用块出现在上下文里，看到就用、看不到就直说没有检索到；并明确「不需要再用工具抓网页，同一地址失败两次就停」。这句话与档位说明一样放在消息末尾而不是系统提示里——系统提示在请求最前面，改一个字后面的工具 schema 与整段历史全部缓存失效。
+`web_search(query)` 的约束：只接受 query 不接受 URL（不开 SSRF 口子）；单轮最多 5 次；
+单次 15s 超时；结果只保留 http/https 链接，且第一行是不可信输入声明。
 
-之所以写成「若存在」而不是「已附带」：应用侧拿不到供应商到底有没有检索的证据（框架不透出 `search_info`，事件流里也没有检索 span），写死「已附带」会让模型去核对一段它无法辨认的内容，反而触发「我得自己抓一遍」的验证循环。
+**轨迹里的形态**（这是工具化最直接的收益）：
 
-前端输入框下方另有「联网」开关：网页端**每次都显式表态**（开 → 带 `web_search: true`，关 → `false`），所以界面上的「关」在开了环境变量的部署里也真的关得掉。只有直接调 API 时省略该字段才表示「按部署默认」。这样不必为了偶尔查资料把整个部署的检索打开。
+```
+trace.tool_calls[] = {
+  "name": "web_search",
+  "args": {"query": "python 3.12 release"},
+  "state": "success",
+  "result_excerpt": "[web_search] backend=http hits=5 elapsed=812ms\n以下为外部网页内容…"
+}
+```
 
-- 检索发生在供应商侧，事件流里没有工具调用 span，只能看到最终回答，无法审计检索了哪些页面。
-- 供应商或模型不支持该参数时可能直接返回 400；关掉开关即可回退。
-- 检索通常按次计费，开启前请确认额度与共享环境的影响。
+批次汇总的 `summary.searches` 由这些记录投影而来：`calls` / `empty` / `failed` /
+`budget_exhausted` / `cases` / `queries`。超限的第 6 次调用同样产出一条 tool_result
+（`skipped=budget-exhausted`），否则轨迹里看不出「模型想搜但被拦住」。
+
+前端「联网」按钮在检索后端不可用时 `disabled`，title 直接写缺哪个环境变量。
+开关只在两轮之间可切：跑到一半改会让前后半段的能力集不一致。
 
 ## 权限：5 个档位
 
 档位不是直接暴露 `PermissionMode` —— 只切 mode 而工具集不动，会出现「切了档什么都没变」。
-所以一个档位 = **mode + 工具集 + 越界兜底动作**，三者一起换（[profiles.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/governance/profiles.py#L50-L99)）：
+所以一个档位 = **mode + 工具集 + 越界兜底动作**，三者一起换（[profiles.py](file:///e:/code/devops-agent/src/devops_agent/governance/model.py#L62-L112)）：
 
 | 档位 | 标签 | mode | 工具集 | 越界兜底 | 说明 |
 |---|---|---|---|---|---|
@@ -219,17 +243,17 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 | `unrestricted` | 全放开 | `bypass` | 只读 + write/edit | `hard_deny` | 不逐次询问，只剩 deny_rules；**默认不在可用集** |
 
 - `DEFAULT_AVAILABLE = ("readonly", "workspace", "execute", "auto")`；默认档为 `workspace`（`config/policy.yaml`）。
-- 工具名的唯一事实源是 [catalog.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/tools/catalog.py#L41-L43)：`READONLY_TOOL_NAMES = ("bash","read","glob","grep")`、`WRITE_TOOL_NAMES = ("write","edit")`。
+- 工具名的唯一事实源是 [catalog.py](file:///e:/code/devops-agent/src/devops_agent/tools/names.py)：`READONLY_TOOL_NAMES = ("bash","read","glob","grep")`、`WRITE_TOOL_NAMES = ("write","edit")`。
   `build_toolkit_for(names, workdir, middlewares)` 是档位切换唯一入口，未知工具名抛 `ValueError`（静默跳过会把「放开档少了写工具」表现成「权限切了但模型还是不写文件」）。
 - 每个工具**独占一个 `LocalBackend(workdir=cwd)`**：不给 backend 时框架自建 `workdir=None` 的实例，相对路径会回落到**服务进程 cwd**，表现为「Grep/Glob 不传 path 就搜错地方」。
 - builtin deny 对所有档位无条件生效（`Bash`/`Write`/`Edit` 匹配 `.git/`，`Bash` 匹配 `.env`）——否则 `auto` 档能直接读密钥。
 - 请求里的档位未开放或不存在 → **403 `permission_not_available`**，不静默降级。
 
-**定位要说明白**：这套档位是防误操作的 UX 层，不是安全隔离。真正的隔离靠容器、只读挂载、网络策略、非 root 运行；`deny_rules` 只是点防御，`Bash` 走子串/前缀匹配，挡不住 `python -c "shutil.rmtree(...)"`。设计取舍见 [ADR-0002](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/docs/adr/0002-permission-model.md)。
+**定位要说明白**：这套档位是防误操作的 UX 层，不是安全隔离。真正的隔离靠容器、只读挂载、网络策略、非 root 运行；`deny_rules` 只是点防御，`Bash` 走子串/前缀匹配，挡不住 `python -c "shutil.rmtree(...)"`。设计取舍见 [ADR-0002](file:///e:/code/devops-agent/docs/adr/0002-permission-model.md)。
 
 ### 档位说明为什么追加在消息末尾
 
-[profile_note.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/profile_note.py#L1-L10) 把「本会话权限：…」作为最后一条 user 消息下发，而不是写进系统提示：前缀缓存按字节比对，系统提示改一个字会让后面的工具 schema 与整段历史全部作废。同一段 10 轮历史实测，跨档缓存命中从约 21% 提升到约 96%。这条说明不写入历史快照，因此不会逐轮累积。
+[profile_note.py](file:///e:/code/devops-agent/src/devops_agent/runtime/profile_note.py#L1-L10) 把「本会话权限：…」作为最后一条 user 消息下发，而不是写进系统提示：前缀缓存按字节比对，系统提示改一个字会让后面的工具 schema 与整段历史全部作废。同一段 10 轮历史实测，跨档缓存命中从约 21% 提升到约 96%。这条说明不写入历史快照，因此不会逐轮累积。
 
 ### 确认挂起与续跑
 
@@ -238,7 +262,7 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 3. 前端回 `POST /run/{run_id}/confirm`，只传 `tool_call_id + confirmed + scope`；
 4. 服务端用权威副本重建事件并 `resume()`，同一个 run 继续。
 
-三条硬约束（[confirm.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/confirm.py#L1-L10)）：
+三条硬约束（[confirm.py](file:///e:/code/devops-agent/src/devops_agent/runtime/confirm.py#L1-L10)）：
 
 - **客户端永远不回传命令原文**，否则等于允许客户端改写将要执行的命令；
 - 一个 run 最多打扰 **3 次**（`ASK_LIMIT`），超限自动全部拒绝，让模型换思路；
@@ -248,7 +272,7 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 
 ### 会话隔离
 
-[runtime/sessions.py](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/sessions.py) 的 `SessionRegistry`：每 session 一份 Agent，`max_entries=16`。
+[runtime/sessions.py](file:///e:/code/devops-agent/src/devops_agent/runtime/sessions.py) 的 `SessionRegistry`：每 session 一份 Agent，`max_entries=16`。
 三条独立理由足以说明为什么必须隔离：规则串味（A 会话点「本会话允许」会放行 B）、挂起互斥（两个会话同时 ASKING 无法分辨该答哪个）、历史串味。
 
 - 命中复用；**档位或联网开关变了就重建**；未命中从 `session_states` 快照重建 → 「回收不等于丢失」，不需要粘性会话。
@@ -261,7 +285,7 @@ curl -N -X POST http://127.0.0.1:8000/run/stream \
 
 ## 输入管线：7 个阶段
 
-[runtime 之前的 `input/prepare()`](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/input/pipeline.py) 把用户输入整理成「真正进模型的那段文本」，过程作为 SSE 帧推给前端画轨迹（也落 `input_stages` 表）：
+[runtime 之前的 `input/prepare()`](file:///e:/code/devops-agent/src/devops_agent/input/pipeline.py) 把用户输入整理成「真正进模型的那段文本」，过程作为 SSE 帧推给前端画轨迹（也落 `input_stages` 表）：
 
 | 阶段 | 名称 | 做什么 |
 |---|---|---|
@@ -336,7 +360,7 @@ model:
 - `api_key` / `base_url` / `stream` 只展示不可改：凭据不该经 HTTP 往返，关掉流式会让前端退化为一次性渲染。
 - 改动写进 `runs.model_params`（只存非默认值），并计入 `prompt_factors()` 的 `params_sha` —— 参数变过的批次在评测对比中标为不可直接比较。
 
-设计见 [SPEC-0001](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/docs/specs/0001-model-parameter-config.md) 与 [ADR-0003](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/docs/adr/0003-model-parameter-config.md)。
+设计见 [SPEC-0001](file:///e:/code/devops-agent/docs/specs/0001-model-parameter-config.md) 与 [ADR-0003](file:///e:/code/devops-agent/docs/adr/0003-model-parameter-config.md)。
 
 ---
 
@@ -354,7 +378,7 @@ model:
 | POST | `/run/{run_id}/confirm` | 带决策续跑；用条件更新保证只执行一次 |
 
 `POST /run/stream` 请求体：`{"session_id", "user_input", "attachments": [], "permission": null, "web_search": null}`。
-`web_search` 省略或传 `null` = 按部署默认（`DEVOPS_AGENT_ENABLE_SEARCH`）；显式 `true`/`false` = 这一轮就按它来。默认值不能写 `False` —— 那样「没带字段」会被当成「关」，环境变量永远不生效。
+`web_search` 省略或传 `null` = 按「档位 `net` → 部署默认」解析；显式 `true`/`false` = 这一轮就按它来。它的语义是**是否注册 `web_search` 工具**（授予能力），不是「必然检索」：工具注册后调不调由模型判断。默认值不能写 `False` —— 那样「没带字段」会被当成「关」，档位与部署默认永远不生效。
 
 SSE 帧约定：
 
@@ -408,7 +432,7 @@ shell 一律用内置 `Bash` 而不是按平台切 `PowerShell`：`Bash` 会按�
 
 ## 可观测性
 
-后端在事件流上同步落库，前端把「运行好坏」画成量化画像。设计见 [ADR-0001](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/docs/adr/0001-agent-observability-frontend.md)。
+后端在事件流上同步落库，前端把「运行好坏」画成量化画像。设计见 [ADR-0001](file:///e:/code/devops-agent/docs/adr/0001-agent-observability-frontend.md)。
 
 SQLite 8 张表：`runs`、`spans`、`input_stages`、`eval_scores`、`session_states`、`settings`（`observability/repository/`）与 `secrets`（`secrets/vault.py`，同库不同模块）。评测批次不进这张库：`oj_batches` / `oj_cases` / `oj_rubrics` / `oj_runs` 在独立的 `workspace/evals/openjudge.db`，因为「删旧批次」在生产库里是高风险操作。
 
@@ -611,7 +635,7 @@ PYTHONPATH=src E:/code/devops-agent/.venv/Scripts/python.exe -m pytest --cov=dev
 | 项目排期 | schedule | 需求拆解、依赖排期、资源/人力、风险预警、进度同步 |
 | Bug 测试定位 | debug | 测试生成、失败定位（证据 `file:line`）、修复建议 |
 
-共用装配入口 [build_agent(name, system_prompt, model, toolkit, middlewares, max_iters, max_retries, context_config, state)](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/src/devops_agent/runtime/assembly.py)。
+共用装配入口 [build_agent(name, system_prompt, model, toolkit, middlewares, max_iters, max_retries, context_config, state)](file:///e:/code/devops-agent/src/devops_agent/runtime/assembly.py)。
 但**各域的 system_prompt 与真实业务工具函数尚未实现**：目前每次对话用的都是一个通用 Agent，
 `TeamPipeline` / `GoalPipeline` 只被单测调用，没有接到 `gateway/app.py` 的请求链路上。
 
@@ -629,7 +653,7 @@ PYTHONPATH=src E:/code/devops-agent/.venv/Scripts/python.exe -m pytest --cov=dev
 
 ## 仓库约定
 
-- **一切改动走 worktree 分支 + PR**：`main` 受分支保护，禁止直推、禁止强推、禁止 `--no-verify`。流程细则见 [AGENTS.md](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/AGENTS.md)。
+- **一切改动走 worktree 分支 + PR**：`main` 受分支保护，禁止直推、禁止强推、禁止 `--no-verify`。流程细则见 [AGENTS.md](file:///e:/code/devops-agent/AGENTS.md)。
 - 运行态写 `workspace/`（已 gitignore），源码改动才进 git。
 - 全仓库 LF（`.gitattributes`），CI 有专门的行尾门禁。
-- 设计文档：[docs/adr](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/docs/adr)、[docs/specs](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/docs/specs)；分层讲解见 [docs/wiki](file:///e:/code/devops-agent/workspace/worktrees/readme-wiki-refresh/docs/wiki/Home.md)。
+- 设计文档：[docs/adr](file:///e:/code/devops-agent/docs/adr)、[docs/specs](file:///e:/code/devops-agent/docs/specs)；分层讲解见 [docs/wiki](file:///e:/code/devops-agent/docs/wiki/Home.md)。

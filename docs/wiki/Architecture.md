@@ -155,23 +155,50 @@ shell 统一用 `Bash`：`Bash` 会按命令判定只读（`ls`/`cat`/`git statu
 `attachments.py`：`MAX_UPLOAD_BYTES = 10MB`、`MAX_ATTACH_CHARS = 40_000`、
 `MAX_ATTACHMENTS = 8`、`RETENTION_DAYS = 7`。
 
-### 模型侧联网搜索
+### 联网检索（工具化）
 
-`agent.build_chat_model(enable_search=...)` 组装 `extra_body`，逻辑在 `_search_extra_body()`：
+`DEVOPS_AGENT_SEARCH_MODE` 的三种取值由 `search_mode.py` 统一解读（零依赖：
+模型请求体、工具注册、提示词三处都要读它，分散读环境变量会出现「请求里没检索、
+提示词却说已联网」）。
 
-- `enable_search` 入参显式给出时优先于环境变量 —— 前端逐请求的「联网」开关走这条路；
-  传 `None` 才回落到 `DEVOPS_AGENT_ENABLE_SEARCH`。
-- `DEVOPS_AGENT_SEARCH_MODE=forced`（默认）额外下发
-  `search_options = {"forced_search": true, "search_strategy": "standard"}`；
-  `auto` 只发 `enable_search`，由模型裁量（实测多数情况不检索）。
+| 模式 | 请求体 | 工具 |
+|---|---|---|
+| `tool`（默认） | 不带任何检索字段 | 注册 `web_search` |
+| `provider` | `enable_search`（+ `forced_search`） | 不注册 |
+| `off` | 不带 | 不注册 |
 
-只发 `enable_search` 时它只是「授权」，实测同一请求体的 `prompt_tokens` 与不带时一致
-（3150 vs 3150），补上 `forced_search` 后变成 4436 —— 说明默认不开强制检索时，
-前端那个开关按下去没有实际效果。
+装配链路：
 
-联网那一轮的说明文字由 `ProfileNoteMiddleware` 追加在消息末尾（`set_web_search()`），
-写的是「检索结果**若存在**」：应用侧拿不到供应商是否真的检索了（框架不透出
-`search_info`，事件流里没有检索 span），写死「已附带」会诱发模型自己去抓一遍。
+```
+web_search: bool|None（请求）
+  → assembly 解析：请求 → profile.net → DEVOPS_AGENT_ENABLE_SEARCH
+  → _build_search_tool：tool 模式 + 后端可用才建 WebSearchTool
+  → build_toolkit_for(profile.tools + ("web_search",), extra={...})
+  → 模型调用 → SearchBackend（HttpBackend / ProviderBackend）→ ToolChunk
+```
+
+`WebSearchTool` 的实例由运行时持有（`_search_tool`），因为预算要按 run `reset()`；
+每轮新建会让「第 6 次调用」永远不触发。
+
+`build_toolkit_for(..., extra=)` 是给「已构造好的实例」留的口子：`web_search`
+不能每次装配都 new，否则预算对象与 toolkit 里的不是同一个。
+
+### 轨迹里的检索
+
+`web_search` 走正常 Toolkit 调用，所以自动进 Agent 的 `state.context` →
+`harness._absorb_block` → `trace.tool_calls`（`name` / `args.query` / `state` /
+`result_excerpt`）。工具输出首行是 `backend=… hits=… elapsed=…`，因此 200 字符的
+摘要也保留了「这次检索发生了什么」。
+
+`openjudge/metrics.search_stats` 从这些记录投影出 `summary.searches`
+（`calls` / `empty` / `failed` / `budget_exhausted` / `cases` / `queries`），
+判分与成本核算不必再翻每条 tool_call。它按首行契约做字符串判定，
+两侧改格式必须一起改 —— `test_web_search_tool.py` 覆盖。
+
+`provider` 模式的联网说明仍由 `ProfileNoteMiddleware` 追加在消息末尾（`tool`
+模式不追加：工具描述已经说明何时调用，多一条尾部消息只会让前缀缓存每轮失效）。
+说明写的是「检索结果**若存在**」：应用侧拿不到供应商是否真的检索了，写死「已附带」
+会诱发模型自己去抓一遍。
 
 ### secrets/
 

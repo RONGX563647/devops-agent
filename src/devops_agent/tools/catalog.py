@@ -21,7 +21,7 @@ shell/read/glob/grep 四个只读工具，`Edit` / `Write` 属写入组，不得
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from agentscope.tool import (
@@ -51,6 +51,16 @@ WRITE_TOOL_NAMES: tuple[str, ...] = WRITE_NAMES
 Middlewares = Sequence[ToolMiddlewareBase] | None
 
 
+def _constant(tool: ToolBase) -> Callable[[], ToolBase]:
+    """把「已构造好的实例」包成工厂。用闭包而不是 lambda 默认参数：
+    mypy 在循环里推断 `lambda tool=tool:` 的参数类型会失败。"""
+
+    def make() -> ToolBase:
+        return tool
+
+    return make
+
+
 class _WorkdirBackend(LocalBackend):
     """把 `getcwd()` 锚定到工作区的本地 backend。
 
@@ -69,7 +79,12 @@ class _WorkdirBackend(LocalBackend):
         return self._cwd_root
 
 
-def _factories(cwd: str, middlewares: Middlewares, scope: str) -> dict[str, Callable[[], ToolBase]]:
+def _factories(
+    cwd: str,
+    middlewares: Middlewares,
+    scope: str,
+    extra: Mapping[str, ToolBase] | None = None,
+) -> dict[str, Callable[[], ToolBase]]:
     """工具名 → 构造器。用惰性构造避免为没选中的工具白建 backend。
 
     middlewares 必须逐工具挂 —— 框架把它挂在 ToolBase 上，
@@ -81,6 +96,9 @@ def _factories(cwd: str, middlewares: Middlewares, scope: str) -> dict[str, Call
     **服务进程的当前目录**——那是部署目录，不是档位要操作的 workdir。
     表现是「Grep/Glob 不传 path 就搜错地方」，而且 bash 的 cd 与工具的
     相对路径各算各的，人很难把两件事联系起来。
+
+    `extra` 是调用方已构造好的工具实例（目前只有 `web_search`）：它的预算要跨轮
+    `reset()`，所以不能每次装配都 new 一个新的，必须由运行时持有同一个对象。
     """
 
     def backend() -> LocalBackend:
@@ -90,7 +108,7 @@ def _factories(cwd: str, middlewares: Middlewares, scope: str) -> dict[str, Call
     # 守卫在最外层：先判路径，命中就短路，后面的密钥注入与工具执行都不跑。
     # 这里是它唯一的挂载点 —— 由调用方记得传等于迟早漏挂。
     mws: list[ToolMiddlewareBase] = [build_guard(cwd, scope), *(middlewares or [])]
-    return {
+    factories: dict[str, Callable[[], ToolBase]] = {
         "bash": lambda: Bash(cwd=cwd, middlewares=mws, backend=backend()),
         "read": lambda: Read(middlewares=mws, backend=backend()),
         "glob": lambda: Glob(middlewares=mws, backend=backend()),
@@ -98,6 +116,9 @@ def _factories(cwd: str, middlewares: Middlewares, scope: str) -> dict[str, Call
         "write": lambda: Write(middlewares=mws, backend=backend()),
         "edit": lambda: Edit(middlewares=mws, backend=backend()),
     }
+    for name, tool in (extra or {}).items():
+        factories[name] = _constant(tool)
+    return factories
 
 
 def build_toolkit_for(
@@ -106,6 +127,7 @@ def build_toolkit_for(
     middlewares: Middlewares = None,
     *,
     scope: str = "workspace",
+    extra: Mapping[str, ToolBase] | None = None,
 ) -> Toolkit:
     """按名字装配工具集（档位切换的唯一入口）。
 
@@ -114,7 +136,7 @@ def build_toolkit_for(
     `scope` 决定敏感路径守卫是否把「工作区内」当硬边界（只有 readonly 档是）。
     """
     cwd = str(Path(workdir).resolve())
-    factories = _factories(cwd, middlewares, scope)
+    factories = _factories(cwd, middlewares, scope, extra)
     unknown = [name for name in names if name not in factories]
     if unknown:
         raise ValueError(f"未知工具: {', '.join(unknown)}")

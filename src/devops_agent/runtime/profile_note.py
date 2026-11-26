@@ -20,6 +20,7 @@ from agentscope.message import Msg, UserMsg
 from agentscope.middleware import MiddlewareBase
 
 from devops_agent.governance.model import PermissionProfile
+from devops_agent.search_mode import search_mode
 
 # 按档位改写的约束句：只读档说「没有写权限」，其余档说边界在哪。
 # 这条不同步改的话，切到放开档模型仍然不会写文件，表现为「权限切了但毫无变化」。
@@ -79,8 +80,14 @@ _SEARCH_ON_NOTE = (
 
 
 def search_note(web_search: bool) -> str:
-    """联网开关的一句话说明；关闭时返回空串（不占末尾位置，不动请求形状）。"""
-    return _SEARCH_ON_NOTE if web_search else ""
+    """联网开关的一句话说明；关闭时返回空串（不占末尾位置，不动请求形状）。
+
+    `tool` 模式下不追加：`web_search` 工具的描述已经说明「什么时候调、什么时候别调」，
+    多一条尾部消息只会让每轮请求的末尾都不同，前缀缓存只能命中到倒数第二条。
+    """
+    if not web_search or search_mode() != "provider":
+        return ""
+    return _SEARCH_ON_NOTE
 
 
 class ProfileNoteMiddleware(MiddlewareBase):

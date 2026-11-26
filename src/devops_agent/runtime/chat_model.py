@@ -12,6 +12,10 @@ from pydantic import SecretStr
 
 from devops_agent.model_settings import ModelParams, effective_params
 
+# 常量用 `as` 形式再导出：既有调用点与测试都从本模块取它，挪一次实现不改一圈 import。
+from devops_agent.search_mode import SEARCH_MODE_ENV as SEARCH_MODE_ENV
+from devops_agent.search_mode import forced_on, search_mode
+
 # 决定「怎么发一次模型请求」的参数：只有这些变了才重建模型对象。
 # 压缩比例、迭代上限只影响调度，热改字段即可。
 MODEL_WIRE_KEYS: tuple[str, ...] = (
@@ -26,19 +30,12 @@ MODEL_WIRE_KEYS: tuple[str, ...] = (
     "parallel_tool_calls",
 )
 
-# 联网检索「让谁决定搜不搜」：
-# 供应商的 `enable_search` 只是**授权**模型可以搜，搜不搜由模型自由裁量。
-# 实测同一份请求体（system prompt + 4 个工具定义 + 只读提示）：
-# 带 enable_search 与不带，prompt_tokens 完全一致（3150 vs 3150），
-# 即模型一次都没检索；补上 `search_options.forced_search` 后才变成 4436。
-# 也就是说只发 enable_search 时，前端的「联网」按钮是个空开关 —— 最糟的中间态。
-SEARCH_MODE_ENV = "DEVOPS_AGENT_SEARCH_MODE"
-
-# forced：无条件检索，结果由供应商塞进上下文（默认，符合「点了就该生效」）；
-# auto：把裁量权交回模型（省 token，但实测常常不搜）。
-_SEARCH_MODE_FORCED = "forced"
-_SEARCH_MODE_AUTO = "auto"
-
+# 联网的三种模式（SPEC-0011）：
+# - tool（默认）：检索由 `web_search` 工具承担，这里**不发**任何检索字段。
+#   否则会变成「供应商强制检索一次 + 模型又调工具搜一次」，重复计费且结果可能冲突。
+# - provider：旧行为，把 enable_search / forced_search 写进请求体，服务端搜完注入上下文。
+# - off：完全不联网（禁网部署）。
+# 模式与「是否强制」的唯一解读点是 `devops_agent.search_mode`，本模块只管发不发。
 _SEARCH_OPTIONS = {"forced_search": True, "search_strategy": "standard"}
 
 
@@ -51,11 +48,11 @@ def _search_extra_body(enable_search: bool | None) -> dict[str, Any] | None:
         enable_search = os.environ.get("DEVOPS_AGENT_ENABLE_SEARCH") == "1"
     if not enable_search:
         return None
+    # 默认的 tool 模式由工具承担检索，请求体保持原样。
+    if search_mode() != "provider":
+        return None
     body: dict[str, Any] = {"enable_search": True}
-    # 只有显式写 auto 才放弃强制检索；其余取值（含未设置）一律按 forced，
-    # 避免拼错一个环境变量就把「联网」退化成空开关且无人察觉。
-    mode = (os.environ.get(SEARCH_MODE_ENV) or _SEARCH_MODE_FORCED).strip().lower()
-    if mode != _SEARCH_MODE_AUTO:
+    if forced_on():
         body["search_options"] = dict(_SEARCH_OPTIONS)
     return body
 

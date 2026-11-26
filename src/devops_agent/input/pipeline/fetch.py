@@ -102,6 +102,28 @@ def _is_textual(content_type: str) -> bool:
     return any(hint in head for hint in _TEXTUAL_HINTS)
 
 
+def _is_blocked(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """非公网地址：内网 / 回环 / 链路本地 / 保留 / 组播（任一条命中即拒）。"""
+    return any(
+        (
+            address.is_private,
+            address.is_loopback,
+            address.is_link_local,
+            address.is_reserved,
+            address.is_multicast,
+        )
+    )
+
+
+def _resolve_addresses(host: str, port: int) -> list[str]:
+    """解析主机名；解析失败折成一句可读原因，不把 gaierror 抛给上层。"""
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise ValueError(f"DNS 解析失败：{host}") from exc
+    return [str(info[4][0]) for info in infos]
+
+
 def _guard_url(url: str, policy: InputPolicy) -> None:
     """抓取前的地址守卫：只允许 http(s)，且默认拒绝非公网地址。
 
@@ -118,19 +140,9 @@ def _guard_url(url: str, policy: InputPolicy) -> None:
     if policy.allow_private_addresses:
         return
     port = parts.port or (443 if parts.scheme == "https" else 80)
-    try:
-        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-    except socket.gaierror as exc:
-        raise ValueError(f"DNS 解析失败：{host}") from exc
-    for info in infos:
-        address = ipaddress.ip_address(str(info[4][0]))
-        if (
-            address.is_private
-            or address.is_loopback
-            or address.is_link_local
-            or address.is_reserved
-            or address.is_multicast
-        ):
+    for raw in _resolve_addresses(host, port):
+        address = ipaddress.ip_address(raw)
+        if _is_blocked(address):
             raise ValueError(f"拒绝访问非公网地址：{address}")
 
 

@@ -1,17 +1,13 @@
-"""线协议契约 —— SSE 帧与挂起载荷的唯一定义。
+"""线协议契约：SSE 帧、传输常量、挂起载荷。
 
-**本模块是叶子**：不 import 任何其他 gateway 模块（由 .importlinter 的
-`contract-is-leaf` 契约强制）。理由：帧长什么样是前后端契约，改它的人只该关心
-「字段是否齐」，不该被会话锁、编排顺序、持久化细节干扰。
+叶子模块（`.importlinter` 强制）：只被 import，不 import 兄弟模块 —— 改帧字段的人
+不必读会话锁与编排顺序。三条不变的约定：
 
-内容分三类：
-
-1. 传输常量：媒体类型、响应头、心跳帧、请求号头名。之前 `": ping\\n\\n"` 散在
-   三个文件、`text/event-stream` 两份、响应头被 `confirm.py` 以下划线名 import。
-2. 帧渲染：`done` / `parked` / `error`。字段拼装只在这里，调用方不再手写 dict ——
-   `RUN_DONE` 的四个 token 字段曾经只靠一行注释守护，漏一个就是命中率算错。
-3. 挂起载荷：`PendingPayload` 是「写」(`_park`) 与「读」(`GET /run/{id}/pending`)
-   共用的结构，两边 JSON 形状必须逐字一致，否则刷新后重建不出确认卡片。
+1. 帧只有两种 event 名（done / parked），其余靠 data 里的 `type` 分派；
+2. `RUN_DONE` 必须同时给 input 与两个 cache 字段：只给 input 时，前端拿最后一次
+   命中除以整轮输入，命中率会被低估「调用次数」倍；
+3. 挂起载荷的写（park）与读（GET pending）共用 `PendingPayload` —— 形状一旦分叉，
+   刷新后就重建不出确认卡片。
 """
 
 from __future__ import annotations
@@ -23,13 +19,13 @@ from typing import Any, Final
 
 from devops_agent.observability.models import RunStatus
 
-# --- 1. 传输常量 ---------------------------------------------------------
+# --- 传输常量 ------------------------------------------------------------
 
 SSE_MEDIA_TYPE: Final = "text/event-stream"
 # 幂等键：重试同一请求不会写入重复 run（runs.request_id 有唯一索引兜底）
 REQUEST_ID_HEADER: Final = "X-Request-ID"
-# 三个响应头缺一不可：no-cache 防中间层缓存整段；keep-alive 保长连接；
-# X-Accel-Buffering: no 关掉 nginx 缓冲，否则整段流会攒到结束才下发。
+# 三个响应头缺一不可：no-cache 防中间层缓存、keep-alive 保长连接、
+# X-Accel-Buffering 关掉 nginx 缓冲（否则整段流攒到结束才下发）
 SSE_HEADERS: Final[Mapping[str, str]] = {
     "Cache-Control": "no-cache",
     "Connection": "keep-alive",
@@ -38,7 +34,7 @@ SSE_HEADERS: Final[Mapping[str, str]] = {
 # 心跳帧（SSE 注释行）：模型首 token 前先有字节，别让代理把空窗当空闲连接
 PING_FRAME: Final = ": ping\n\n"
 
-# 带 event 名的帧只有三个：前端按它们切换消息状态（done=完成 / parked=等待确认）
+# 带 event 名的帧：前端按它切换消息状态（done=完成 / parked=等待确认）
 EVENT_DONE: Final = "done"
 EVENT_PARKED: Final = "parked"
 
@@ -51,11 +47,11 @@ FRAME_RUN_ERROR: Final = "RUN_ERROR"
 PENDING_TOOL_CALLS: Final = "tool_calls"
 PENDING_EXPIRES_AT: Final = "expires_at"
 
-# GET /run/{run_id}/pending 响应里的状态标记（前端按它决定渲染确认卡片）
+# GET /run/{run_id}/pending 响应里的状态标记（前端按它渲染确认卡片）
 PENDING_STATUS: Final = "parked"
 
 
-# --- 2. 帧编码 -----------------------------------------------------------
+# --- 帧编码 --------------------------------------------------------------
 
 
 def sse_frame(payload: Mapping[str, Any]) -> str:
@@ -79,11 +75,7 @@ class TokenUsage:
 
 
 def done_frame(*, run_id: int | None, text: str, usage: TokenUsage) -> str:
-    """正常结束帧：run_id、用量汇总与最终文本。
-
-    缓存用量必须与 input 同时给：只给 input 时前端拿最后一次命中除以整轮输入，
-    命中率会被系统性低估「调用次数」倍。
-    """
+    """正常结束帧：run_id、用量汇总与最终文本（用量必须成组给，见模块约定 2）。"""
     return named_frame(
         EVENT_DONE,
         {
@@ -106,7 +98,7 @@ def parked_frame(
     expires_at: str,
     tool_calls: Sequence[Mapping[str, Any]],
 ) -> str:
-    """挂起帧：这一条流正常结束，但**不发 done** —— 前端据此标「等待确认」。"""
+    """挂起帧：流正常结束但不发 done，前端据此标「等待确认」。"""
     return named_frame(
         EVENT_PARKED,
         {
@@ -120,26 +112,25 @@ def parked_frame(
 
 
 def error_frame(message: str) -> str:
-    """失败帧：generate() 里捕获到的异常都在这里转成前端可读的一条。"""
+    """失败帧：`run._guarded` 捕获的异常在这里转成前端可读的一条。"""
     return sse_frame({"type": FRAME_RUN_ERROR, "error": message})
 
 
-# --- 3. 挂起载荷 ---------------------------------------------------------
+# --- 挂起载荷 ------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class PendingPayload:
-    """挂起中的待确认调用（写入 runs.pending_json，读回来重建确认卡片）。
+    """挂起载荷：写入 `runs.pending_json`，读侧必须容忍脏数据。
 
-    读侧必须容忍脏数据：老记录可能没有字段、或被手工改坏。空载荷比抛异常好 ——
-    一张空卡片至少能让人重新发一条消息。
+    空载荷优于抛异常 —— 一张空卡片至少能让人重新发一条消息。
     """
 
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     expires_at: str = ""
 
     def to_json(self) -> str:
-        """序列化成列值（ensure_ascii=False 是为了库里能直接读中文命令）。"""
+        """序列化成列值（ensure_ascii=False 让库里直接可读中文命令）。"""
         return json.dumps(
             {PENDING_TOOL_CALLS: self.tool_calls, PENDING_EXPIRES_AT: self.expires_at},
             ensure_ascii=False,

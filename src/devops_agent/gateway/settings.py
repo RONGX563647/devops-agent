@@ -1,16 +1,12 @@
-"""网关部署设置 —— 环境变量名与策略对象的唯一入口。
+"""网关部署设置：环境变量名与策略对象的唯一入口。
 
-两类值的处置方式不同，这是刻意的：
+两类值刻意分开处置 ——
+- **策略**（限额 / TTL / 心跳）来自 `config/gateway.yaml`，装配期读成不可变的
+  `GatewayPolicy`：可整体注入，单测不必 monkeypatch 模块常量；
+- **环境变量**（domain / model / 凭据）按请求读取：`/health` 要反映当前进程环境，
+  测试也逐个用例 patch 它，import 期冻结会同时破坏这两点。
 
-- **策略**（ask_limit / TTL / 心跳间隔…）来自 config/gateway.yaml，在装配期读成
-  不可变的 `GatewayPolicy`，随 `app.state.settings` 注入。理由是它必须能在单测里替换：
-  `Settings(policy=GatewayPolicy(stream=...))` 一行就能测「上限改成 1 会怎样」，
-  不再靠 monkeypatch 模块常量。
-- **环境变量**（domain / model / 凭据）按请求读取。理由是既有语义：`/health` 要反映
-  当前进程的环境，测试也会逐个用例 monkeypatch 它。把它们在 import 期冻结会同时
-  破坏这两点，收益只是一个更好看的对象图。
-
-所有 env 名都集中在这里：改名时只改这一处，靠 grep 找不到漏网的第二份。
+env 名集中在这里，改名只改一处。
 """
 
 from __future__ import annotations

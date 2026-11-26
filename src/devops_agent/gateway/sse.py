@@ -1,36 +1,30 @@
-"""SSE 帧编码与心跳泵：把运行时事件流翻译成前端可直接消费的帧。"""
+"""SSE 保活 —— 把运行时事件流翻成帧，并在静默期补心跳。
+
+职责只有一个：**让连接始终有字节流动**，不要被代理或前端 watchdog 判成假死。
+帧长什么样在 contract.py（本模块不拼字段，只搬帧）。
+
+为什么是「pump + heartbeat 双任务 + 队列」而不是
+`asyncio.wait_for(source.__anext__(), timeout=...)`：
+后者超时会取消上游生成器的 `__anext__`，可能永久打断 AgentScope 的事件流。
+心跳是「补帧」而不是「超时重试」，两者语义完全不同。
+"""
 
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+from devops_agent.gateway.contract import PING_FRAME, sse_frame
 from devops_agent.observability.recorder import RunRecorder
 
-# 队列元素：（类型标记, 负载）。异常用单独标记传回并在下游重新抛出，
-# 保持「上游异常冒泡给 generate()」的原语义。
+# 队列元素：（类型标记, 负载）。异常用单独标记回传并在下游重新抛出，
+# 保持「上游异常冒泡给调用方」的原语义。
 _Chunk = tuple[str, Any]
 
-# 心跳间隔：静默超过该秒数仍在流中时补一帧注释，避免前端 watchdog 误判假死。
-SSE_HEARTBEAT_S = 15
-
-_SSE_HEADERS = {
-    "Cache-Control": "no-cache",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no",
-}
-
-
-def _sse_frame(payload: dict[str, Any]) -> str:
-    """把一个 dict 包装成标准 SSE data 帧。"""
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-
-def _named_frame(name: str, payload: dict[str, Any]) -> str:
-    """带 event 名的 SSE 帧（done / parked）。"""
-    return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+# 心跳间隔的模块级默认值：调用方（run.py）通常显式传 limits.heartbeat_seconds，
+# 这里保留一份默认，便于 sse 单测与「只想要个帧流」的脚本直接调用。
+DEFAULT_HEARTBEAT_S = 15.0
 
 
 async def _pump_events(
@@ -40,18 +34,18 @@ async def _pump_events(
     try:
         async for event in source:
             recorder.consume(event)
-            await queue.put(("frame", _sse_frame(event)))
-    except BaseException as exc:  # 透传给下游重新抛出，不能静默吞掉
+            await queue.put(("frame", sse_frame(event)))
+    except BaseException as exc:  # noqa: BLE001 - 透传给下游重新抛出，不能静默吞掉
         await queue.put(("error", exc))
     finally:
         await queue.put(("done", None))
 
 
 async def _heartbeat(queue: asyncio.Queue[_Chunk], interval: float) -> None:
-    """静默补帧：每隔 interval 投一帧 SSE 注释，让连接始终有字节流动。"""
+    """静默补帧：每隔 interval 投一帧 SSE 注释。"""
     while True:
         await asyncio.sleep(interval)
-        await queue.put(("frame", ": ping\n\n"))
+        await queue.put(("frame", PING_FRAME))
 
 
 async def _drain(queue: asyncio.Queue[_Chunk]) -> AsyncIterator[str]:
@@ -65,7 +59,7 @@ async def _drain(queue: asyncio.Queue[_Chunk]) -> AsyncIterator[str]:
         yield payload
 
 
-async def _frames(
+async def frames(
     source: AsyncIterator[dict[str, Any]],
     recorder: RunRecorder,
     *,
@@ -73,17 +67,12 @@ async def _frames(
 ) -> AsyncIterator[str]:
     """把运行时事件流翻译成 SSE 帧，同时喂给 recorder 落库。
 
-    用独立的 pump/heartbeat 双任务 + 队列，而不是
-    `wait_for(source.__anext__(), timeout=...)`：后者超时会取消上游生成器的
-    `__anext__`，可能永久打断 AgentScope 的事件流。
-
     1) 起两个后台任务：pump 转帧、heartbeat 在静默期补注释帧；
     2) 消费队列，逐帧下发（异常在 _drain 里重新抛出）；
-    3) finally 取消并回收两个任务，避免上游结束或客户端断开时泄漏。
-
-    `heartbeat` 省略时用模块级 `SSE_HEARTBEAT_S`；显式传入供调用方自定义间隔。
+    3) finally 取消并回收两个任务，避免上游结束或客户端断开时泄漏
+       —— 客户端断连抛的是 GeneratorExit / CancelledError，只有 finally 能兜住。
     """
-    interval = SSE_HEARTBEAT_S if heartbeat is None else heartbeat
+    interval = DEFAULT_HEARTBEAT_S if heartbeat is None else heartbeat
     queue: asyncio.Queue[_Chunk] = asyncio.Queue()
     pump_task = asyncio.create_task(_pump_events(source, recorder, queue))
     beat_task = asyncio.create_task(_heartbeat(queue, interval))

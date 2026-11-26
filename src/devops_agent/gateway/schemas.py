@@ -1,4 +1,13 @@
-"""网关请求体模型：只描述 HTTP 契约，不含业务逻辑。"""
+"""HTTP 请求体模型 —— 只描述契约，不含业务逻辑。
+
+两处刻意**不做** Literal 强类型，理由都是「配置可能扩展」：
+
+- `permission`：档位白名单来自 `DEVOPS_AGENT_PERMISSION_PROFILES` / policy.yaml，
+  部署可以加档位；写成 Literal 会在 pydantic 层 422，把「未开放」和「不存在」
+  两种语义混成一种。让 `deps.profile_or_403` 统一给 403 更准确。
+- `scope`：非法值必须**降级为 once**（最窄），不能整条请求失败 —— 一个拼错的作用域
+  不该让用户重发。降级逻辑在 `runtime.confirm.parse_decisions`，那里是唯一入口。
+"""
 
 from __future__ import annotations
 
@@ -6,11 +15,13 @@ from pydantic import BaseModel, Field
 
 
 class RunRequest(BaseModel):
+    """一轮对话的输入。"""
+
     session_id: str
     user_input: str
     # 附件 id 列表（由 POST /api/attachments 返回）：正文留服务端，只在这里带 id
     attachments: list[str] = Field(default_factory=list)
-    # 权限档位；省略用服务端默认档
+    # 权限档位；省略 = 服务端默认档。字符串而非枚举：档位集由部署配置决定
     permission: str | None = None
     # 逐请求的联网搜索开关：省略 = 按部署默认（DEVOPS_AGENT_ENABLE_SEARCH），
     # 显式 true/false = 这一轮就按它来。默认值不能写 False ——
@@ -23,14 +34,16 @@ class ConfirmItem(BaseModel):
 
     tool_call_id: str
     confirmed: bool
-    # once / exact / prefix，非法值在 parse_decisions 里降级为 once
+    # once / exact / prefix；非法值在 parse_decisions 里降级为 once
     scope: str = "once"
 
 
 class ConfirmRequest(BaseModel):
+    """确认续跑的请求体。"""
+
     session_id: str
     results: list[ConfirmItem] = Field(default_factory=list)
-    # 用户在确认卡片上切过档时带当前档位；确认续跑按它执行，不再锁死发起轮。
+    # 用户在确认卡片上切过档时带当前档位；确认续跑按它执行，不再锁死发起轮
     permission: str | None = None
 
 

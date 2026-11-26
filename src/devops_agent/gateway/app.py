@@ -1,133 +1,100 @@
-"""FastAPI 应用装配：实例、路由挂载与启动期告警。
+"""FastAPI 应用装配（composition root）—— 只做注入与挂载。
 
 本模块最后装配：各路由模块不 import 它，依赖方向始终是「路由 → app」。
+
+为什么有 `create_app()`：进程级单例（运行时、设置、会话注册表）应该由装配根注入，
+而不是靠 import 期的模块副作用。之前测试只能 `app.state.runtime = ...` 再手工复位
+三个 state 键，一旦漏复位就污染后续用例；现在测试可以 `create_app(runtime=...)`
+拿一个干净实例，生产入口仍是模块级 `app = create_app()`。
+
+三处刻意的顺序约束：
+1. `load_env()` 只在这里调一次，且必须在选运行时之前 —— 否则凭据读不到；
+2. 不把 `load_env()` 放进 `select_runtime()` 内部 —— 否则测试里 monkeypatch.delenv
+   会被 .env 重新填回来；
+3. 启动告警在挂完路由之后，失败不影响服务可用。
 """
 
 from __future__ import annotations
 
-import logging
-import os
 from typing import Any
 
-from fastapi import APIRouter, FastAPI
+from fastapi import FastAPI
 
 from devops_agent.env import load_env
+from devops_agent.gateway import health as health_module
+from devops_agent.gateway.bootstrap import (
+    describe_runtime,
+    select_runtime,
+    warn_missing_tools,
+    warn_runtime,
+)
 from devops_agent.gateway.confirm import router as confirm_router
 from devops_agent.gateway.sessions import router as session_router
+from devops_agent.gateway.settings import Settings
 from devops_agent.gateway.stream import router as stream_router
 from devops_agent.input.api import router as attachments_router
 from devops_agent.model_api import router as model_config_router
 from devops_agent.observability.api import router as observability_router
 from devops_agent.openjudge.api import router as openjudge_router
 from devops_agent.openjudge.api_edit import router as openjudge_edit_router
-from devops_agent.runtime.assembly import build_agentscope_runtime
-from devops_agent.runtime.runtime import AgentRuntime, EchoRuntime
+from devops_agent.runtime.runtime import AgentRuntime
 from devops_agent.secrets.api import router as secrets_router
 from devops_agent.tools.api import router as tools_router
 from devops_agent.tools.context_api import router as context_router
-from devops_agent.tools.preflight import health_payload, missing_tools
 
-router = APIRouter()
-
-
-def select_runtime() -> AgentRuntime:
-    """按环境变量选择运行时：配齐凭据用真实模型，否则回退 Echo（便于自检/测试）。"""
-    if os.environ.get("DEVOPS_AGENT_API_KEY"):
-        return build_agentscope_runtime()
-    return EchoRuntime()
+APP_TITLE = "devops-agent"
 
 
-app = FastAPI(title="devops-agent")
-# runtime 挂在 app.state（FastAPI 标准注入容器）而非裸模块变量：
-# 测试 / 部署可替换 app.state.runtime，无需改环境变量或重启进程。
-# 只在进程启动时加载一次 .env；放在 select_runtime 之前保证凭据就绪。
-# 不放进 select_runtime 内部——否则测试里 monkeypatch.delenv 会被 .env 重新填回。
-load_env()
-app.state.runtime = select_runtime()
-# 会话注册表懒建：单测替换 app.state.runtime 后，下一次请求自然用新实例做工厂
-app.state.sessions = None
-app.state.sessions_base = None
+def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
+    """装配一个应用实例。
+
+    1) 加载 .env（进程内只生效一次；显式传 runtime 时跳过选择，但 env 仍要加载，
+       因为观测库路径等配置也走 env）；
+    2) 选定运行时并挂到 `app.state`（测试/部署可整体替换这个键）；
+    3) 挂网关设置（策略来自 gateway.yaml）与会话注册表占位（懒建）；
+    4) 挂路由：业务模块先、网关的 HTTP 面后；
+    5) 启动期告警：缺外部工具、降级到 Echo。
+    """
+    # 1) .env 只加载一次，且早于任何「读 env 做决定」的代码
+    load_env()
+    # 2) 运行时：显式注入优先，否则按凭据选择（配了 key 走真模型，否则 Echo）
+    application = FastAPI(title=APP_TITLE)
+    application.state.runtime = runtime if runtime is not None else select_runtime()
+    # 3) 策略与会话注册表：注册表懒建 —— 替换 runtime 后下一次请求自然用新工厂
+    application.state.settings = Settings.load()
+    application.state.sessions = None
+    application.state.sessions_base = None
+    # 4) 路由：外部能力模块在前，网关自己的 HTTP 面在后（/health 先于流式端点）
+    for business_router in (
+        observability_router,
+        openjudge_router,
+        openjudge_edit_router,
+        attachments_router,
+        secrets_router,
+        tools_router,
+        context_router,
+        # 模型参数三层可配（SPEC-0001）：部署默认 / 会话覆盖 / 只读凭据
+        model_config_router,
+    ):
+        application.include_router(business_router)
+    application.include_router(health_module.router)
+    application.include_router(stream_router)
+    application.include_router(confirm_router)
+    application.include_router(session_router)
+    # 5) 启动告警：只喊一次，且不 fail-fast（缺 rg 不该拒绝启动）
+    warn_missing_tools()
+    warn_runtime(application.state.runtime)
+    return application
+
+
+app = create_app()
 
 
 def runtime_status(runtime: AgentRuntime | None = None) -> dict[str, str]:
-    """当前运行时的自述，供 `/health` 与前端横幅使用。
+    """当前运行时的自述（兼容入口）。
 
-    为什么必须暴露：Echo 兜底的回复是 `[<session>] <输入>`，看起来「像在回答
-    但答非所问」。没有这个字段时，「没配 key」和「agent 坏了」在界面上完全
-    无法区分，用户只能反复重试（实测就因此产生了同一条输入的两个 run）。
+    省略参数时读模块级 `app` 的运行时 —— 测试会替换 `app.state.runtime` 再断言这里。
+    真正的实现只有 `bootstrap.describe_runtime` 一份，避免两处话术漂移。
     """
-    current = app.state.runtime if runtime is None else runtime
-    if isinstance(current, EchoRuntime):
-        return {
-            "kind": "echo",
-            "model": "",
-            "notice": "未配置模型凭据（DEVOPS_AGENT_API_KEY），当前回复只是回显输入，不会调用模型",
-        }
-    return {
-        "kind": "agentscope",
-        "model": os.environ.get("DEVOPS_AGENT_MODEL", ""),
-        "notice": "",
-    }
-
-
-logger = logging.getLogger(__name__)
-
-
-def _warn_missing_tools() -> None:
-    """启动时把缺失的外部依赖喊出来。
-
-    只在进程启动说一次，而不是等每次调用失败才说：模型看到的是工具报错，
-    运维看到的是这条日志，两边说的是同一件事，总得有人先把它讲清楚。
-    不要把这件事做成 fail-fast —— 缺 `rg` 只影响一个工具，没必要拒绝启动。
-    """
-    missing = missing_tools()
-    if missing:
-        logger.warning(
-            "外部依赖缺失，以下工具会持续失败：%s；安装方式见 GET /api/tools/preflight",
-            ", ".join(missing),
-        )
-
-
-_warn_missing_tools()
-
-
-def _warn_runtime() -> None:
-    """降级到 Echo 只打日志，不拒绝启动 —— 自检和测试都要用 Echo。
-
-    但绝不能一声不响：这条 warning 是排查「agent 突然变傻」时唯一的线索。
-    """
-    status = runtime_status()
-    if status["kind"] == "echo":
-        logger.warning("%s", status["notice"])
-
-
-_warn_runtime()
-
-
-@router.get("/health")
-def health() -> dict[str, Any]:
-    """存活 + 运行时模式 + 工具外部依赖就绪状态。
-
-    缺依赖**不返回 5xx**：探针看到 5xx 会重启容器，而重启治不好缺少的可执行
-    文件，只会把一次可诊断的降级放大成重启循环。所以状态放在 body 的
-    `tools` 里，由调用方判断要不要报警。
-
-    `runtime.kind` 是同一套逻辑的另一半：跑的是真模型还是 Echo 回显，
-    必须能从响应里看出来，否则前端只能把回显当成「模型答非所问」。
-    """
-    return {"status": "ok", "runtime": runtime_status(), **health_payload()}
-
-
-app.include_router(observability_router)
-app.include_router(openjudge_router)
-app.include_router(openjudge_edit_router)
-app.include_router(attachments_router)
-app.include_router(secrets_router)
-app.include_router(tools_router)
-app.include_router(context_router)
-# 模型参数三层可配（SPEC-0001）：部署默认 / 会话覆盖 / 只读凭据
-app.include_router(model_config_router)
-app.include_router(router)
-app.include_router(stream_router)
-app.include_router(confirm_router)
-app.include_router(session_router)
+    current: Any = app.state.runtime if runtime is None else runtime
+    return describe_runtime(current)

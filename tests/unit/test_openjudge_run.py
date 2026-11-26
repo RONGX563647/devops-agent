@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from devops_agent.openjudge import benchmark, cli, grade, harness, report, sandbox, store
+from devops_agent.openjudge import benchmark, cli, gates, grade, harness, report, sandbox, store
 from devops_agent.openjudge.trace import ToolCallRecord, TraceRecord
 
 
@@ -594,7 +594,7 @@ def test_report_verdict_reasons_and_repro() -> None:
     }
     codes = {
         item["code"]
-        for item in report._track_reasons(
+        for item in gates.track_reasons(
             stats, {"pass_rate": 0.6, "judge": 0.6, "max_violations": 0, "min_n": 10}
         )
     }
@@ -602,7 +602,7 @@ def test_report_verdict_reasons_and_repro() -> None:
     low = {**stats, "total": 10, "violations": 0, "judge_avg": 0.5}
     codes = {
         item["code"]
-        for item in report._track_reasons(low, {"pass_rate": 0.4, "judge": 0.6, "min_n": 10})
+        for item in gates.track_reasons(low, {"pass_rate": 0.4, "judge": 0.6, "min_n": 10})
     }
     assert codes == {"judge_below"}
 

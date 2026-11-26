@@ -28,6 +28,9 @@ from devops_agent.openjudge import (
 )
 from devops_agent.openjudge.trace import load_traces
 
+#: `build_parser` 里的子命令变量叫 run，会遮蔽模块，先把边界值固定下来。
+MAX_TRIALS = run.MAX_TRIALS
+
 DEFAULT_BASELINE = casestore.REPO_CASES.parent / "coverage.json"
 
 
@@ -91,6 +94,7 @@ async def _run(args: argparse.Namespace) -> int:
         judge=not args.no_judge,
         concurrency=args.concurrency,
         timeout=args.timeout,
+        trials=getattr(args, "trials", 1),
         plan=_optional_path(args.plan),
         db=_optional_path(args.db),
         out_dir=_optional_path(args.out_dir),
@@ -116,21 +120,42 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 async def _grade(args: argparse.Namespace) -> int:
+    from devops_agent.openjudge import settings
+
     cases = _load(args.cases)
     traces = load_traces(Path(args.traces))
     plan = grade.load_plan(_optional_path(args.plan))
     judge_model = args.judge_model or ""
     if judge_model:
         print(f"裁判模型：{judge_model}")
+    # 重判也要读校准档位：否则同一批判分结果在 CLI 里永远 unvalidated。
+    with store.connect(_optional_path(args.db)) as conn:
+        store.init_db(conn)
+        calibration = store.calibration_gate(
+            conn,
+            metrics=list(plan.judges),
+            judge_model=judge_model or settings.resolved()["judge_model"],
+            rubric_sha=grade.rubric_sha(plan),
+        )
     try:
         results = await grade.grade_traces(
-            cases, traces, plan=plan, judge=not args.no_judge, judge_model_name=judge_model
+            cases,
+            traces,
+            plan=plan,
+            judge=not args.no_judge,
+            judge_model_name=judge_model,
+            judge_level=str(calibration.get("level", "off")),
         )
     except grade.ConfigError as exc:
         print(f"配置错误：{exc}", file=sys.stderr)
         return 2
     suite = benchmark.suite_sha(cases)
-    summary = report.summarize(cases, traces, results, meta=run.meta_of(cases, plan, suite))
+    summary = report.summarize(
+        cases,
+        traces,
+        results,
+        meta=run.meta_of(cases, plan, suite, calibration=calibration),
+    )
     out_dir = Path(args.out_dir) if args.out_dir else Path("workspace/evals/openjudge/regrade")
     run.write_artifacts(out_dir, traces, summary)
     print(f"verdict={summary['verdict']} out={out_dir}")
@@ -262,6 +287,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--limit", type=int, default=0)
     run.add_argument("--concurrency", type=int, default=4)
     run.add_argument("--timeout", type=float, default=180.0)
+    run.add_argument(
+        "--trials",
+        type=int,
+        default=1,
+        help=f"每条用例重复次数（1..{MAX_TRIALS}）；>1 才能区分稳定通过",
+    )
     run.add_argument("--plan")
     run.add_argument("--db")
     run.add_argument("--out-dir")
@@ -284,6 +315,9 @@ def build_parser() -> argparse.ArgumentParser:
     regrade.add_argument("--cases")
     regrade.add_argument("--plan")
     regrade.add_argument("--out-dir")
+    regrade.add_argument(
+        "--db", help="评测库（读取裁判校准档位；默认 workspace/evals/openjudge.db）"
+    )
     regrade.add_argument("--no-judge", action="store_true")
     regrade.add_argument("--judge-model", default="", help="裁判模型（默认取界面里的值）")
     regrade.set_defaults(func=lambda args: asyncio.run(_grade(args)))

@@ -64,6 +64,7 @@ async def start(
     limit: int,
     judge: bool | None = None,
     concurrency: int | None = None,
+    trials: int = 1,
     case_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """占用运行槽并起后台任务。
@@ -71,6 +72,9 @@ async def start(
     `judge` / `concurrency` 省略时取界面里存的默认值（`oj_settings`）——「点一下就
     跑」和「按上次配置再跑」必须用同一套参数，否则两次结果没法比。传 `case_ids`
     时按 id 精确选例，忽略 `track` / `limit`，但仍守 `MAX_LIMIT`。
+
+    `trials` 让同一条用例重复跑 k 次：单次通过率分不清「稳定」与「碰巧」，
+    这是 SPEC-0008 P1 的核心口径。上限由 `run.MAX_TRIALS` 兜住。
 
     返回 `{"run_id", "total"}`；已有任务时返回 `{"busy": run_id}`（由接口层转 409）。
     """
@@ -84,12 +88,18 @@ async def start(
     active_judge = bool(defaults["judge"]) if judge is None else judge
     requested = int(defaults["concurrency"]) if concurrency is None else concurrency
     workers = max(1, min(requested, MAX_CONCURRENCY))
+    repeat = max(1, min(int(trials), run.MAX_TRIALS))
     # step2: 清幽灵任务 + 抢 DB 单飞槽
     with closing(store.connect()) as conn:
         store.init_db(conn)
         run_store.reap_stale_runs(conn)
         run_id = run_store.claim_run(
-            conn, track=active_track, total=len(cases), judge=active_judge, concurrency=workers
+            conn,
+            track=active_track,
+            total=len(cases),
+            judge=active_judge,
+            concurrency=workers,
+            trials=repeat,
         )
         if run_id is None:
             active = run_store.active_run(conn)
@@ -103,9 +113,10 @@ async def start(
             judge=active_judge,
             concurrency=workers,
             timeout=float(defaults["timeout"]),
+            trials=repeat,
         )
     )
-    return {"run_id": run_id, "total": len(cases)}
+    return {"run_id": run_id, "total": len(cases), "trials": repeat}
 
 
 async def _execute(
@@ -115,6 +126,7 @@ async def _execute(
     judge: bool,
     concurrency: int,
     timeout: float = 180.0,
+    trials: int = 1,
 ) -> None:
     """后台跑一条流水线，把结果落成任务终态。"""
 
@@ -124,7 +136,7 @@ async def _execute(
         with closing(store.connect()) as conn:
             run_store.update_progress(conn, run_id, done)
 
-    opts = run.RunOptions(judge=judge, concurrency=concurrency, timeout=timeout)
+    opts = run.RunOptions(judge=judge, concurrency=concurrency, timeout=timeout, trials=trials)
     # step2: 取消/配置错/其余异常分别落终态
     try:
         result = await run.execute(

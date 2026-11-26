@@ -136,7 +136,7 @@ describe('client', () => {
   it('fetchOpenJudgeBatches 把 verdict 拼进查询串', async () => {
     const spy = mockJson({ items: [], total: 0 });
     await fetchOpenJudgeBatches(20, 'fail');
-    expect(spy).toHaveBeenCalledWith('/api/openjudge/batches?limit=20&verdict=fail');
+    expect(spy).toHaveBeenCalledWith('/api/openjudge/batches?limit=20&offset=0&verdict=fail');
   });
 
   it('fetchOpenJudgeCases 把 pageSize 映射为 limit 并带上状态与主题', async () => {

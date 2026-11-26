@@ -121,6 +121,9 @@ def list_cases() -> list[dict[str, Any]]:
                 "subject": str(raw.get("subject", "")),
                 "fixture": str(raw.get("fixture", "")),
                 "offline": bool(raw.get("offline", False)),
+                # 分层要出现在列表里：只在 JSON 里能看到的话，没人会发现
+                # 自己新增的那条默认进了必过集。
+                "tier": str(raw.get("tier", benchmark.DEFAULT_TIER)),
                 "source": "overlay" if case_id in overlay else "repo",
                 "edited": case_id in overlay and case_id in base,
             }

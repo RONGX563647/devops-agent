@@ -16,8 +16,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from devops_agent.openjudge import calibration, explain, grade, migrations
 from devops_agent.openjudge import compare as compare_lib
+from devops_agent.openjudge import explain, grade, migrations
 from devops_agent.openjudge.calibration import (
     MIN_CALIBRATION_N as MIN_CALIBRATION_N,
 )
@@ -33,86 +33,10 @@ from devops_agent.openjudge.calibration import (
 from devops_agent.openjudge.calibration import (
     insert_calibration as insert_calibration,
 )
+from devops_agent.openjudge.schema import SCHEMA
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DB = _REPO_ROOT / "workspace" / "evals" / "openjudge.db"
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS oj_batches (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    suite_sha TEXT NOT NULL,
-    refs_sha TEXT NOT NULL DEFAULT '',
-    plan_sha TEXT NOT NULL DEFAULT '',
-    rubric_sha TEXT NOT NULL DEFAULT '',
-    prompt_sha TEXT NOT NULL DEFAULT '',
-    calibration_id INTEGER,
-    model TEXT NOT NULL DEFAULT '',
-    oj_version TEXT NOT NULL DEFAULT '',
-    config_id TEXT NOT NULL DEFAULT '',
-    started_at TEXT NOT NULL,
-    finished_at TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'done',
-    verdict TEXT NOT NULL DEFAULT 'insufficient',
-    summary_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE TABLE IF NOT EXISTS oj_cases (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    batch_id INTEGER NOT NULL,
-    case_id TEXT NOT NULL,
-    track TEXT NOT NULL,
-    risk TEXT NOT NULL,
-    subject TEXT NOT NULL,
-    status TEXT NOT NULL,
-    passed INTEGER NOT NULL,
-    latency_ms INTEGER NOT NULL DEFAULT 0,
-    tokens INTEGER NOT NULL DEFAULT 0,
-    checks_json TEXT NOT NULL DEFAULT '[]',
-    judge_json TEXT NOT NULL DEFAULT '{}',
-    trace_json TEXT NOT NULL DEFAULT '{}',
-    events_json TEXT NOT NULL DEFAULT '[]',
-    input_stages_json TEXT NOT NULL DEFAULT '[]',
-    workspace_json TEXT NOT NULL DEFAULT '{}',
-    judge_norm REAL,
-    rule_passed INTEGER,
-    violations INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_oj_cases_batch ON oj_cases(batch_id);
-CREATE TABLE IF NOT EXISTS oj_rubrics (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    version TEXT NOT NULL,
-    sha TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'draft',
-    reviewer TEXT NOT NULL DEFAULT '',
-    reviewed_at TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    meta_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE TABLE IF NOT EXISTS oj_runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    status TEXT NOT NULL DEFAULT 'pending',
-    track TEXT NOT NULL DEFAULT '',
-    total INTEGER NOT NULL DEFAULT 0,
-    done INTEGER NOT NULL DEFAULT 0,
-    judge INTEGER NOT NULL DEFAULT 0,
-    concurrency INTEGER NOT NULL DEFAULT 1,
-    batch_id INTEGER,
-    error TEXT NOT NULL DEFAULT '',
-    started_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    finished_at TEXT NOT NULL
-);
--- 单飞：任何时刻只允许一个未完成任务。部分唯一索引在多进程下同样生效，
--- 内存标志位做不到这一点（uvicorn 多 worker 时会各放行一个）。
-CREATE UNIQUE INDEX IF NOT EXISTS idx_oj_runs_active
-    ON oj_runs(status) WHERE status IN ('pending', 'running');
--- 评测的可配置项（被测模型 / 裁判模型 / 默认开关）。单行表：配置是整体，不是集合。
-CREATE TABLE IF NOT EXISTS oj_settings (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    payload_json TEXT NOT NULL DEFAULT '{}',
-    updated_at TEXT NOT NULL DEFAULT ''
-);
-""" + calibration.SCHEMA
 
 
 def now_iso() -> str:
@@ -199,8 +123,8 @@ def insert_case(
         INSERT INTO oj_cases (
             batch_id, case_id, track, risk, subject, status, passed, latency_ms, tokens,
             checks_json, judge_json, trace_json, events_json, input_stages_json, workspace_json,
-            judge_norm, rule_passed, violations
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            judge_norm, rule_passed, violations, trial, tier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             batch_id,
@@ -222,6 +146,8 @@ def insert_case(
             result.get("judge_norm"),
             1 if result.get("rule_passed") else 0,
             int(result.get("violations", 0) or 0),
+            int(result.get("trial", trace.get("trial", 0)) or 0),
+            str(result.get("tier", "must_pass") or "must_pass"),
         ),
     )
     return int(cursor.lastrowid or 0)
@@ -263,13 +189,8 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple[Any, ...] = ()) -> lis
     return [dict(row) for row in conn.execute(sql, args).fetchall()]
 
 
-def list_batches(
-    conn: sqlite3.Connection,
-    *,
-    verdict: str = "",
-    plan_sha: str = "",
-    limit: int = 50,
-) -> list[dict[str, Any]]:
+def _batch_filter(verdict: str, plan_sha: str) -> tuple[str, list[Any]]:
+    """批次过滤条件：列表与计数必须用同一份，否则「共 N 批」和列表对不上。"""
     clauses: list[str] = []
     args: list[Any] = []
     if verdict:
@@ -278,15 +199,33 @@ def list_batches(
     if plan_sha:
         clauses.append("plan_sha = ?")
         args.append(plan_sha)
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), args
+
+
+def list_batches(
+    conn: sqlite3.Connection,
+    *,
+    verdict: str = "",
+    plan_sha: str = "",
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    where, args = _batch_filter(verdict, plan_sha)
     rows = _rows(
         conn,
-        f"SELECT * FROM oj_batches {where} ORDER BY id DESC LIMIT ?",
-        (*args, max(1, min(limit, 200))),
+        f"SELECT * FROM oj_batches {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+        (*args, max(1, min(limit, 200)), max(0, offset)),
     )
     for row in rows:
         row["summary"] = json.loads(row.pop("summary_json", "{}") or "{}")
     return rows
+
+
+def count_batches(conn: sqlite3.Connection, *, verdict: str = "", plan_sha: str = "") -> int:
+    """满足条件的真实批次数；分页控件据此算页数，不能用本页条数代替。"""
+    where, args = _batch_filter(verdict, plan_sha)
+    row = conn.execute(f"SELECT COUNT(*) FROM oj_batches {where}", tuple(args)).fetchone()
+    return int(row[0]) if row else 0
 
 
 def get_batch(conn: sqlite3.Connection, batch_id: int) -> dict[str, Any] | None:
@@ -330,7 +269,7 @@ def list_cases(
     rows = _rows(
         conn,
         f"SELECT id, batch_id, case_id, track, risk, subject, status, passed, latency_ms, tokens, "
-        f"judge_json FROM oj_cases WHERE {where} ORDER BY id LIMIT ? OFFSET ?",
+        f"tier, trial, judge_json FROM oj_cases WHERE {where} ORDER BY id LIMIT ? OFFSET ?",
         (*args, max(1, min(limit, 500)), max(0, offset)),
     )
     for row in rows:
@@ -385,10 +324,19 @@ def _passed_rows(conn: sqlite3.Connection, batch_id: int) -> list[dict[str, Any]
 
 
 def health(conn: sqlite3.Connection) -> dict[str, Any]:
-    """最近批次、违例与干扰项概览；校准/锚点没有数据时显式返回 None。"""
+    """最近批次、违例与校准档位；校准这里真算一次，不再写死 None。
+
+    原来 `calibration` 恒为 None，同一页面一边显示「校准有效」一边显示「未知」。
+    """
+    calibration = _health_calibration(conn)
     latest = _rows(conn, "SELECT * FROM oj_batches ORDER BY id DESC LIMIT 1")
     if not latest:
-        return {"has_data": False, "latest_batch": None, "calibration": None, "anchors": None}
+        return {
+            "has_data": False,
+            "latest_batch": None,
+            "calibration": calibration,
+            "anchors": None,
+        }
     row = latest[0]
     summary = json.loads(row.pop("summary_json", "{}") or "{}")
     return {
@@ -400,10 +348,29 @@ def health(conn: sqlite3.Connection) -> dict[str, Any]:
             "judge_n": summary.get("kpi", {}).get("judge_n", 0),
             "violations": summary.get("kpi", {}).get("violations", 0),
         },
-        "calibration": None,
+        "calibration": calibration,
         "anchors": None,
         "flake": None,
     }
+
+
+def _health_calibration(conn: sqlite3.Connection) -> dict[str, Any] | None:
+    """按当前判分方案与裁判模型算校准档位；算不出来就返回 None（显示「未知」）。
+
+    `settings` 依赖本模块，所以只能函数内导入；模块级导入会成环。
+    """
+    from devops_agent.openjudge import settings as settings_lib
+
+    try:
+        plan = grade.load_plan()
+        return calibration_gate(
+            conn,
+            metrics=list(plan.judges),
+            judge_model=settings_lib.resolved()["judge_model"],
+            rubric_sha=grade.rubric_sha(plan),
+        )
+    except (sqlite3.Error, OSError, KeyError, ValueError, AttributeError):
+        return None
 
 
 # --------------------------------------------------------------------------- 趋势与赛道

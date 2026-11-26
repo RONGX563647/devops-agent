@@ -121,7 +121,7 @@ risk 的覆盖计数，`benchmark.compare_coverage()` 逐键比对，只许涨�
 先判安全 / 事实 / 入参（不花额度），失败的轨迹**不进**语义裁判 —— 让裁判给一条
 「越权写了文件」的回答打 4 分，是把最该拦的问题平均掉。
 
-### 赛道三态（`report.TRACK_RULES`）
+### 赛道结论：五态（`openjudge/gates.py:TRACK_RULES`/`VERDICTS`）
 
 | 赛道 | 判据 | `min_n` |
 |---|---|---|
@@ -131,9 +131,43 @@ risk 的覆盖计数，`benchmark.compare_coverage()` 逐键比对，只许涨�
 | D 输入管线 | `pass_rate = 1.00` | 8 |
 | E 多轮会话 | `pass_rate ≥ 0.70` | 8 |
 
-三态是 `pass` / `fail` / `insufficient`：**该赛道不足 `min_n` 条一律 `insufficient`**，
-不默认通过，也不拿 3 条的 100% 当结论。B 赛道额外看 `violations`（越权动作计数），
-因为「答得对但顺手执行了不该执行的命令」不能用通过率表达。
+结论是 `pass` / `fail` / `partial` / `unvalidated` / `insufficient`。三态时代一个
+verdict 同时背了「模型好不好」「证据齐不齐」「测全了没有」，只能取最悲观值，于是
+**90 条全过也永远是 `insufficient`**。现在拆成四个字段各自回答一个问题：
+
+| 字段 | 回答的问题 | 取值 |
+|---|---|---|
+| `verdict` | 模型过没过 | 五态 |
+| `scope` | 测了哪些赛道 | `single_track` / `selected` / `full` + `unmeasured_tracks` |
+| `causes[]` | 为什么没过 | 每条带 `severity`：`blocking` 否决 / `advisory` 只提示 |
+| `evidence` | 凭什么这么说 | 裁判档位、校准样本量、实测赛道数 |
+
+判法：`fail` 优先（规则失败或违规超限）；否则 `scope` 不是 `full` → `partial`
+（局部结论，不作发布门禁）；否则有 advisory（裁判没跑/未校准）→ `unvalidated`；
+全清才 `pass`。`insufficient` 只剩「赛道样本不足 `min_n`」这一种含义。
+
+**裁判不否决门禁**：`judge_missing / judge_below / judge_uncalibrated` 都是 advisory。
+裁判自己都没通过校准的时候，让它去否决规则门禁是本末倒置 —— 规则断言永远有效，
+裁判只在证据充分时参与。
+
+门槛分两档（`calibration.py`）：`soft` = `n≥30 && ρ≥0.60`（可把 `pass` 降为
+`unvalidated`），`hard` = `n≥100 && ρ≥0.70`（可否决）。`off` 表示没有校准记录，
+裁判分只展示。页面上给的是升级进度，不假装已校准。
+
+**规则通过率与判分通过率分开**：声明了裁判的用例，裁判没跑出来不得算 passed，
+但也不该被打成规则失败 —— 否则「忘了开裁判」会被读成「规则大面积坏掉」。
+`track_stats` 同时给 `pass_rate` 与 `rule_pass_rate`，门禁看后者，展示看前者。
+
+### 多次试验与分层（`stats.py` / `benchmark.TIERS`）
+
+- `trials` 默认 1、上限 3（`run.MAX_TRIALS`）。k 次试验在**单 worker 内串行**：
+  并行重跑会让 k 次落在不同负载下，抖动来源混进并发差异，稳定性就测不出来了。
+- `pass_at_k`（至少一次过）与 `pass_hat_k`（k 次全过）都给，加 Wilson 区间。
+  只报一个数会掩盖「偶尔过」与「稳定过」的区别。
+- 用例分两层：`must_pass`（默认，一票否决）与 `challenge`（只进 `challenge_score`）。
+  没标分层的旧题一律落 `must_pass` —— 漏标不该变成「悄悄放宽门禁」。分层进
+  `suite_sha`，换分层等于换题库指纹，`compare` 会判 `not_comparable`。
+- `cost_usd` 在未配置单价时是 `null` + `cost_note`，不写 `0.0`：免费和没算价不是一回事。
 
 ## 6. 静态契约 lint P1–P4（`prompt_lint/`）
 
@@ -194,10 +228,13 @@ POST /api/feedback/{run_id}                        人工评分写回 eval_score
 
 ```
 GET  /api/openjudge/suites                         五赛道与判决阈值
-GET  /api/openjudge/batches                        批次列表
+GET  /api/openjudge/scoring-config                 判分方案 / 权重 / 赛道阈值 / 三道门禁
+GET  /api/openjudge/calibration                    裁判校准档位与升级进度
+GET  /api/openjudge/batches?limit=&offset=&verdict=  批次分页（`total` 是 COUNT(*)，不是本页条数）
 GET  /api/openjudge/batches/{batch_id}             单批
 GET  /api/openjudge/batches/{batch_id}/cases       批内用例
-GET  /api/openjudge/compare?base=&head=            两批对比
+GET  /api/openjudge/compare?base=&head=            两批对比（z 检验，样本不足给 null）
+GET  /api/openjudge/patrol?limit=                  最近 N 批的赛道通过率与结论分布
 GET  /api/openjudge/health                         题库健康（最新批次 + 校准）
 GET  /api/openjudge/series                         批次时序
 GET  /api/openjudge/runs                           在线任务列表
@@ -224,6 +261,7 @@ GET   /api/openjudge/cases/{id}                    单条用例定义
 PUT   /api/openjudge/cases/{id}                    覆盖或新增一条（422 含字段名）
 DELETE /api/openjudge/cases/{id}                   隐藏一条仓库用例
 POST  /api/openjudge/cases/{id}/restore            撤销覆盖 / 取消隐藏
+POST  /api/openjudge/cases/from-batch/{batch_id}/{row_id}  失败用例回流成 `-b<batch>` 草稿
 ```
 
 两条容易踩的边界：
@@ -255,7 +293,7 @@ POST  /api/openjudge/cases/{id}/restore            撤销覆盖 / 取消隐藏
 |---|---|
 | `/` | Workspace（对话 + 权限选择 + 确认卡片） |
 | `/runs` / `/runs/:id` | 运行列表 / 详情 |
-| `/quality` | 质量（页内页签：概览 / 运行与批次 / 用例与模型 —— 后者可改被测与裁判模型、可直接改题库） |
+| `/quality?view=overview\|batches\|scoreflow\|studio` | 质量四视图：概览（门禁矩阵 + 最新批次） / 批次（身份卡 + 分页 + 五赛道） / 评分流程（三道门禁 + 归因下钻） / 题库与模型。旧 `?focus=scoreflow` 兼容重定向 |
 | `/cost` | 成本 |
 | `/dashboard` | 看板 |
 
@@ -267,7 +305,7 @@ POST  /api/openjudge/cases/{id}/restore            撤销覆盖 / 取消隐藏
 | 在线任务不续跑 | 挂在进程内 `asyncio.create_task` 上，重启由 `reap_stale_runs` 标 `failed(error='interrupted')`，不做断点续跑 |
 | 在线评测只到单赛道 | `limit ≤ 30` + 单赛道；全量 90 例走 CLI / nightly |
 | 选题配比未做棘轮 | `validate` 只校验每赛道最低条数，赛道内部的 risk / subject 分布靠 `coverage.json` 记录，没有强制配比 |
-| 无 flaky 检测 | 同一用例只跑一次，重复运行与随机种子尚未接入 |
+| 无 flaky 检测 | 已支持 `trials ≤ 3` 与 pass@k / pass^k，但随机种子仍不固定 —— 换种子复现同一抖动还做不到 |
 | 题库覆盖层不进 git | `workspace/openjudge/cases/` 属于运行态：换机器 / 换人要重配。**要长期生效的题目得手动搬回 `eval/openjudge/cases/`**，覆盖率基线也才认它 |
 | 用例编辑只有 JSON 文本框 | 没有表单化编辑器（赛道下拉、fixture 选择器、`expected` 结构化输入）；校验靠服务端 422 回显 |
 | 改模型不改采样参数 | 在线只覆盖 model 名，温度 / 窗口 / 工具集仍走五层解析。换模型时靠 `meta.model` 判 `not_comparable`，但同模型换温度不会被发现 |

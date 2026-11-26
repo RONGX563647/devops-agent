@@ -215,6 +215,15 @@ def test_list_cases_endpoint_marks_source(client: TestClient) -> None:
     assert payload["suite"]["cases"] == payload["total"]
 
 
+def test_list_cases_carries_tier(client: TestClient) -> None:
+    """分层要能出现在列表里，否则只能翻 JSON 才知道一条题会不会否决门禁。"""
+    payload = client.get("/api/openjudge/cases").json()
+    tiers = {row["tier"] for row in payload["items"]}
+    assert tiers <= {"must_pass", "challenge"}
+    # 没标分层的旧题必须落到必过集，不能被当成「不参与门禁」。
+    assert "must_pass" in tiers
+
+
 def test_write_case_endpoint_and_read_back(client: TestClient) -> None:
     response = client.put("/api/openjudge/cases/a-new-01", json=_case_raw())
     assert response.status_code == 200

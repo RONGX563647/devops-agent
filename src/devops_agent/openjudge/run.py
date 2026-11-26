@@ -19,6 +19,8 @@ from devops_agent.openjudge import benchmark, grade, report, settings, store
 from devops_agent.openjudge.trace import TraceRecord, prompt_sha
 
 DEFAULT_OUT_DIR = Path("workspace/evals/openjudge/latest")
+#: 单条用例最多重复几次。上限 3 是成本闸门：trials 让模型调用次数线性翻倍。
+MAX_TRIALS = 3
 
 #: (已完成, 总数, 刚跑完的用例 id)
 Progress = Callable[[int, int, str], None]
@@ -35,6 +37,8 @@ class RunOptions:
     judge: bool = True
     concurrency: int = 4
     timeout: float = 180.0
+    #: 每条用例重复次数；1 表示单次试验，>1 才能区分「稳定通过」与「碰巧通过」。
+    trials: int = 1
     plan: Path | None = None
     db: Path | None = None
     out_dir: Path | None = None
@@ -60,11 +64,17 @@ async def _capture(
     progress: Progress | None,
     should_stop: StopCheck | None,
     target_model: str = "",
+    trials: int = 1,
 ) -> list[TraceRecord]:
-    """固定并发抓轨迹。取消只在两条用例之间检查，不打断已开始的那一条。"""
+    """固定并发抓轨迹。取消只在两条用例之间检查，不打断已开始的那一条。
+
+    `trials` 在单个 worker 内串行重复同一条用例：并行重跑会让「同一条用例的 k 次
+    试验」跑在不同负载下，抖动来源就混进了并发差异。
+    """
     from devops_agent.openjudge.harness import run_case
 
     total = len(cases)
+    repeat = max(1, min(int(trials), MAX_TRIALS))
     traces: list[TraceRecord] = []
     cursor = 0
     done = 0
@@ -78,8 +88,14 @@ async def _capture(
             case = cases[cursor]
             cursor += 1
             # step2: 单例失败由 run_case 写 status，不外抛
-            trace = await run_case(case, suite=suite, timeout=timeout, target_model=target_model)
-            traces.append(trace)
+            for trial in range(repeat):
+                if should_stop is not None and should_stop():
+                    return
+                trace = await run_case(
+                    case, suite=suite, timeout=timeout, target_model=target_model
+                )
+                trace.trial = trial
+                traces.append(trace)
             done += 1
             if progress is not None:
                 progress(done, total, case.id)
@@ -125,6 +141,7 @@ async def execute(
         progress=progress,
         should_stop=should_stop,
         target_model=models["target_model"] if opts.target_model else "",
+        trials=opts.trials,
     )
     if should_stop is not None and should_stop():
         raise RunCancelled
@@ -135,9 +152,16 @@ async def execute(
         plan=plan,
         judge=opts.judge,
         judge_model_name=models["judge_model"],
-        judge_gate=calibration["valid"],
+        judge_level=str(calibration.get("level", "off")),
     )
-    meta = meta_of(cases, plan, suite, models=models, calibration=calibration)
+    meta = meta_of(
+        cases,
+        plan,
+        suite,
+        models=models,
+        calibration=calibration,
+        trials=max(1, min(int(opts.trials), MAX_TRIALS)),
+    )
     summary = report.summarize(cases, traces, results, meta=meta)
     out_dir = opts.out_dir or DEFAULT_OUT_DIR
     write_artifacts(out_dir, traces, summary)
@@ -153,10 +177,12 @@ def meta_of(
     *,
     models: dict[str, str] | None = None,
     calibration: dict[str, Any] | None = None,
+    trials: int = 1,
 ) -> dict[str, Any]:
     """批次可比性元数据：题库/计划/Rubric/模型任一变化都应让两次结果不可直接比较。
 
     `models` 省略时读界面配置 + 环境变量 —— CLI 与在线跑因而不会记出两套模型名。
+    `trials` 也进元数据：k=1 与 k=3 的「通过率」口径不同，不能直接比。
     """
     from importlib.metadata import version
 
@@ -165,7 +191,14 @@ def meta_of(
     except Exception:  # pragma: no cover - 可选依赖
         oj_version = ""
     active = models or settings.resolved()
-    status = calibration or {"checked": False, "valid": True, "missing": [], "calibration_ids": []}
+    # 没有做校准检查时不能默认「已校准」：那是把未知当好消息。
+    status = calibration or {
+        "checked": False,
+        "valid": False,
+        "level": "off",
+        "missing": [],
+        "calibration_ids": [],
+    }
     ids = status.get("calibration_ids") or []
     return {
         "suite_sha": suite,
@@ -174,6 +207,7 @@ def meta_of(
         "rubric_sha": grade.rubric_sha(plan),
         "calibration": status,
         "calibration_id": ids[0] if ids else None,
+        "trials": trials,
         "refs_sha": "",
         "prompt_sha": prompt_sha(""),
         "model": active["target_model"],

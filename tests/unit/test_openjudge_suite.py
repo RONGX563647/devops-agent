@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from devops_agent.openjudge import benchmark, explain, grade, report, rubric, sandbox, store
+from devops_agent.openjudge import benchmark, explain, gates, grade, report, rubric, sandbox, store
 from devops_agent.openjudge.rulegate import rule_passed, run_checks, violations
 from devops_agent.openjudge.trace import ToolCallRecord, TraceRecord, load_traces, prompt_sha
 
@@ -367,7 +367,8 @@ def test_report_summarize_and_markdown() -> None:
     assert summary["kpi"]["cases"] == 2
     assert summary["kpi"]["judge_n"] == 1
     assert summary["tracks"]["A"]["verdict"] in ("fail", "insufficient")
-    assert summary["pareto"][0] == {"check": "tool_forbidden:Write", "count": 1}
+    assert summary["pareto"]["rule"][0] == {"check": "tool_forbidden:Write", "count": 1}
+    assert summary["pareto"]["judge"] == []
     assert summary["failures"][0]["case_id"] == "b"
     markdown = report.render_markdown(summary)
     assert "OpenJudge 评测报告" in markdown and "tool_forbidden:Write" in markdown
@@ -389,13 +390,14 @@ def test_report_verdicts_three_states() -> None:
         }
 
     gate = result("A", True) | {"case_id": "g1"}
-    processed = report._track_stats([gate] * 10)
-    assert report._verdict("A", processed["A"], report.TRACK_RULES["A"]) == "pass"
-    missing_judge = report._track_stats([result("A", True, judge=None)] * 10)
-    assert report._verdict("A", missing_judge["A"], report.TRACK_RULES["A"]) == "insufficient"
-    noisy = report._track_stats([result("B", True, violations=1)] * 10)
-    assert report._verdict("B", noisy["B"], report.TRACK_RULES["B"]) == "fail"
-    assert report._verdict("B", None, report.TRACK_RULES["B"]) == "insufficient"
+    processed = gates.track_stats([gate] * 10)
+    assert gates.verdict_of("A", processed["A"], gates.TRACK_RULES["A"]) == "pass"
+    missing_judge = gates.track_stats([result("A", True, judge=None)] * 10)
+    # 裁判没跑不等于模型差：结论是「未证实」，不是「样本不足」。
+    assert gates.verdict_of("A", missing_judge["A"], gates.TRACK_RULES["A"]) == "unvalidated"
+    noisy = gates.track_stats([result("B", True, violations=1)] * 10)
+    assert gates.verdict_of("B", noisy["B"], gates.TRACK_RULES["B"]) == "fail"
+    assert gates.verdict_of("B", None, gates.TRACK_RULES["B"]) == "insufficient"
 
 
 def test_plan_loading_and_scoring(tmp_path: Path) -> None:
@@ -481,7 +483,11 @@ def test_build_grader_rejects_unfrozen_rubric(
         "demo", "v1", spec={"name": "demo"}, rubrics=[{"text": "事实正确"}], model="m"
     )
     spec = grade.JudgeSpec(
-        key="correctness", grader="CorrectnessGrader", weight=1.0, low=1, high=5,
+        key="correctness",
+        grader="CorrectnessGrader",
+        weight=1.0,
+        low=1,
+        high=5,
         rubric="demo@v1",
     )
     with pytest.raises(grade.ConfigError, match="未冻结"):
@@ -526,9 +532,7 @@ def test_rubric_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     )
     grader = grade._build_grader(spec, object())
     prompt = "".join(
-        message.content
-        for messages in grader.template.messages.values()
-        for message in messages
+        message.content for messages in grader.template.messages.values() for message in messages
     )
     assert "审核过的评分细则" in prompt
 
@@ -582,6 +586,7 @@ def test_calibration_gate_reads_active_record(
 
 
 def test_uncalibrated_judge_is_report_only() -> None:
+    """未校准：裁判不否决，但结论只能是「未证实」或「局部」，不能是 pass/insufficient。"""
     results = [
         {
             "track": "A",
@@ -597,23 +602,56 @@ def test_uncalibrated_judge_is_report_only() -> None:
         [],
         [],
         results,
-        meta={"calibration": {"checked": True, "valid": False, "missing": ["correctness"]}},
+        meta={
+            "calibration": {
+                "checked": True,
+                "valid": False,
+                "level": "off",
+                "missing": ["correctness"],
+            }
+        },
     )
-    assert summary["verdict"] == "insufficient"
-    assert any(
-        item["code"] == "judge_uncalibrated" for item in summary["tracks"]["A"]["reasons"]
-    )
+    assert summary["verdict"] in ("partial", "unvalidated")
+    assert summary["tracks"]["A"]["verdict"] == "unvalidated"
+    assert any(item["code"] == "judge_uncalibrated" for item in summary["tracks"]["A"]["reasons"])
+    assert summary["evidence"]["judge_level"] == "off"
 
 
-def test_judge_gate_can_be_disabled() -> None:
+def test_judge_level_off_downgrades_instead_of_failing() -> None:
+    """off/soft 档的裁判只能把用例降级为 unvalidated，不能判 fail。"""
     results = [
         {
+            "case_id": "a-1",
             "rule_passed": True,
             "judge": {"correctness": {"normalized": 0.1, "weight": 1.0}},
             "judge_norm": 0.1,
             "passed": False,
         }
     ]
-    grade._finish(results, judge_gate=False)
-    assert results[0]["passed"] is True
+    grade._finish(results, judge_level="off", declared={"a-1"})
+    assert results[0]["passed"] is False
+    assert results[0]["outcome"] == "unvalidated"
     assert results[0]["judge_norm"] == 0.1
+
+    hard = [
+        {
+            "case_id": "a-1",
+            "rule_passed": True,
+            "judge": {"correctness": {"normalized": 0.1, "weight": 1.0}},
+            "judge_norm": 0.1,
+            "passed": True,
+        }
+    ]
+    grade._finish(hard, judge_level="hard", declared={"a-1"})
+    assert hard[0]["outcome"] == "failed"
+
+
+def test_judge_missing_is_not_passed() -> None:
+    """声明了 judge 却没有分数：不得算通过（旧实现直接放行）。"""
+    results = [
+        {"case_id": "a-1", "rule_passed": True, "judge": {}, "judge_norm": None, "passed": True}
+    ]
+    grade._finish(results, judge_level="hard", declared={"a-1"})
+    assert results[0]["passed"] is False
+    assert results[0]["outcome"] == "unvalidated"
+    assert results[0]["judge_missing"] is True

@@ -27,8 +27,11 @@ def migrate_case_columns(conn: sqlite3.Connection) -> None:
             ("judge_norm", "REAL"),
             ("rule_passed", "INTEGER"),
             ("violations", "INTEGER"),
+            ("trial", "INTEGER NOT NULL DEFAULT 0"),
+            ("tier", "TEXT NOT NULL DEFAULT 'must_pass'"),
         ),
     )
     _add_columns(conn, "oj_rubrics", (("reviewed_at", "TEXT NOT NULL DEFAULT ''"),))
     _add_columns(conn, "oj_batches", (("calibration_id", "INTEGER"),))
+    _add_columns(conn, "oj_runs", (("trials", "INTEGER NOT NULL DEFAULT 1"),))
     conn.commit()

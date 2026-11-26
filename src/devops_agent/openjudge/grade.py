@@ -15,11 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
-
-import yaml
 
 from devops_agent.openjudge.benchmark import Case
 from devops_agent.openjudge.explain import (
@@ -29,14 +25,30 @@ from devops_agent.openjudge.explain import (
     write_skip_entries,
 )
 from devops_agent.openjudge.judge_model import judge_model as judge_model
+from devops_agent.openjudge.plan import (
+    PLAN_PATH as PLAN_PATH,
+)
+from devops_agent.openjudge.plan import (
+    ConfigError as ConfigError,
+)
+from devops_agent.openjudge.plan import (
+    JudgeSpec as JudgeSpec,
+)
+from devops_agent.openjudge.plan import (
+    Plan as Plan,
+)
+from devops_agent.openjudge.plan import (
+    load_plan as load_plan,
+)
+from devops_agent.openjudge.plan import (
+    plan_sha as plan_sha,
+)
 from devops_agent.openjudge.rubric_gate import frozen_rubric_items as _frozen_rubric_items
 from devops_agent.openjudge.rubric_gate import rubric_gate as rubric_gate
 from devops_agent.openjudge.rubric_gate import rubric_sha as rubric_sha
 from devops_agent.openjudge.rubric_gate import rubric_template as _rubric_template
 from devops_agent.openjudge.rulegate import rule_passed, run_checks, violations
 from devops_agent.openjudge.trace import TraceRecord
-
-PLAN_PATH = Path(__file__).resolve().parents[3] / "eval" / "openjudge" / "plan.yaml"
 
 # 工具 schema 的唯一事实来源（ToolSelection / ToolParameter 裁判需要）。
 # 必须与 agentscope 内置工具的真实入参一致：早先手工精简成 4 个参数，
@@ -110,61 +122,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
 ]
-
-
-class ConfigError(RuntimeError):
-    """判分环境不完整（缺模型凭据 / 未装 py-openjudge）。"""
-
-
-@dataclass(frozen=True, slots=True)
-class JudgeSpec:
-    key: str
-    grader: str
-    weight: float
-    low: float
-    high: float
-    rubric: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class Plan:
-    name: str
-    judges: dict[str, JudgeSpec] = field(default_factory=dict)
-
-    @property
-    def weights(self) -> dict[str, float]:
-        return {key: spec.weight for key, spec in self.judges.items()}
-
-
-def load_plan(path: Path | None = None) -> Plan:
-    """读 plan.yaml；权重和必须为 1（否则「归一化总分」不可比）。"""
-    target = path or PLAN_PATH
-    raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
-    judges: dict[str, JudgeSpec] = {}
-    for key, spec in (raw.get("judges") or {}).items():
-        scale = spec.get("scale") or [0, 1]
-        judges[str(key)] = JudgeSpec(
-            key=str(key),
-            grader=str(spec["grader"]),
-            weight=float(spec.get("weight", 0)),
-            low=float(scale[0]),
-            high=float(scale[1]),
-            rubric=str(spec.get("rubric", "")),
-        )
-    total = sum(spec.weight for spec in judges.values())
-    if abs(total - 1.0) > 1e-6:
-        raise ValueError(f"plan 权重和必须为 1，当前 {total}")
-    return Plan(name=str(raw.get("plan", "unnamed")), judges=judges)
-
-
-def plan_sha(plan: Plan) -> str:
-    import hashlib
-
-    blob = json.dumps(
-        {key: (s.grader, s.weight, s.low, s.high, s.rubric) for key, s in plan.judges.items()},
-        sort_keys=True,
-    )
-    return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
 def _build_grader(spec: JudgeSpec, model: Any) -> Any:
@@ -333,9 +290,13 @@ async def grade_traces(
     model: Any | None = None,
     judge: bool = True,
     judge_model_name: str = "",
-    judge_gate: bool = True,
+    judge_level: str = "hard",
 ) -> list[dict[str, Any]]:
-    """对轨迹逐条判分；`judge=False` 只跑规则门禁（离线 PR 用）。"""
+    """对轨迹逐条判分；`judge=False` 只跑规则门禁（离线 PR 用）。
+
+    `judge_level` 决定裁判能否否决单条用例（off/soft 只能降级为 unvalidated）。
+    `declared` 从用例声明推出：声明了 judge 却拿不到分数的用例不得算通过。
+    """
     active_plan = plan or load_plan()
     by_id = {case.id: case for case in cases}
     results: list[dict[str, Any]] = []
@@ -348,9 +309,11 @@ async def grade_traces(
         results.append(
             {
                 "case_id": trace.case_id,
+                "trial": trace.trial,
                 "track": case.track,
                 "risk": case.risk,
                 "subject": case.subject,
+                "tier": case.tier,
                 "status": trace.status,
                 "rule_passed": rule_passed(checks),
                 "violations": violations(checks),
@@ -360,9 +323,10 @@ async def grade_traces(
             }
         )
 
+    declared = {case.id for case in cases if case.judge}
     # step2: judge=False 到此为止
     if not judge:
-        _finish(results, judge_gate=judge_gate)
+        _finish(results, judge_level="off", declared=declared)
         return results
 
     # step3: 需裁判则构造模型，缺配置抛 ConfigError
@@ -370,27 +334,43 @@ async def grade_traces(
         model = judge_model(judge_model_name)
     # step4: 语义分并回后算 passed
     await _apply_judge(active_plan, model, cases, traces, results)
-    _finish(results, judge_gate=judge_gate)
+    _finish(results, judge_level=judge_level, declared=declared)
     return results
 
 
-def _finish(results: list[dict[str, Any]], *, judge_gate: bool = True) -> None:
-    """合并规则与语义结论，得出单条用例是否通过。
+def _finish(
+    results: list[dict[str, Any]],
+    *,
+    judge_level: str = "hard",
+    declared: set[str] | None = None,
+) -> None:
+    """合并规则与语义结论，得出单条用例的 outcome。
 
     单条门槛 0.60 而不是 0.75：裁判与被测模型同源（deepseek-v4.1-flash），
     1–5 分制下「正确但略有增补」普遍落在 3–4 分，归一化后 0.5–0.75；
     把门槛钉在 0.75 等于要求近乎满分，会把正确回答判失败。
-    赛道级 judge 均值门槛仍单独由 report.TRACK_RULES 控制。
+
+    E4 修复：声明了 judge 的用例，裁判没跑出来不得算 passed —— 原来
+    `judge_norm is None` 直接放行，等于「没做语义检查」= 「质量合格」。
+    `declared=None` 表示调用方没有用例声明信息，按旧行为放行（仅兼容手工调用）。
     """
+    declared_ids = declared or set()
     for result in results:
         judged = result["judge"]
-        result["judge_norm"] = total_score(judged) if judged else None
-        judge_ok = (
-            not judge_gate
-            or result["judge_norm"] is None
-            or result["judge_norm"] >= PASS_JUDGE
-        )
-        result["passed"] = bool(result["rule_passed"]) and judge_ok
+        norm = total_score(judged) if judged else None
+        result["judge_norm"] = norm
+        result["judge_missing"] = False
+        rule_ok = bool(result["rule_passed"])
+        outcome = "passed" if rule_ok else "failed"
+        if rule_ok and str(result.get("case_id", "")) in declared_ids:
+            if norm is None:
+                outcome = "unvalidated"
+                result["judge_missing"] = True
+            elif norm < PASS_JUDGE:
+                # 只有 hard 档的裁判有否决权；soft/off 只把结论降级为「未证实」。
+                outcome = "failed" if judge_level == "hard" else "unvalidated"
+        result["outcome"] = outcome
+        result["passed"] = outcome == "passed"
 
 
 _JUDGE_GROUPS = ("content", "instruction", "tool", "loop")

@@ -4,3 +4,4 @@ export * from './run';
 export * from './health';
 export * from './model';
 export * from './openjudge';
+export * from './openjudge-edit';

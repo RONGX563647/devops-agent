@@ -12,7 +12,6 @@ import {
   CartesianGrid,
   Line,
   LineChart,
-  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -53,12 +52,17 @@ export interface TrendPoint {
 
 interface TrendChartProps {
   points: TrendPoint[];
-  threshold: number;
   caption: string;
 }
 
-/** 通过率趋势 + 阈值参考线。少于 2 个点时不画线（一个点画不出趋势）。 */
-export function TrendChart({ points, threshold, caption }: TrendChartProps) {
+/**
+ * 通过率趋势。
+ *
+ * 刻意不画阈值参考线：五个赛道的门槛互不相同（B 是零违例，A 是 60% 通过率），
+ * 一条线只能代表其中一个，画在合并曲线上会被读成「所有人的门禁」。
+ * 阈值与实际值对照见概览的「赛道门禁矩阵」。少于 2 个点时不画线（一个点画不出趋势）。
+ */
+export function TrendChart({ points, caption }: TrendChartProps) {
   if (points.length < 2) {
     return (
       <Figure
@@ -80,7 +84,6 @@ export function TrendChart({ points, threshold, caption }: TrendChartProps) {
               tickFormatter={(value: number) => `${Math.round(value * 100)}%`}
             />
             <Tooltip />
-            <ReferenceLine y={threshold} stroke={TONE.bad} strokeDasharray="4 4" />
             <Line
               type="monotone"
               dataKey="passRate"

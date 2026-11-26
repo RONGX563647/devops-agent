@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 from agentscope.agent import Agent, ContextConfig
 from agentscope.middleware import MiddlewareBase
@@ -146,33 +146,25 @@ class CompressionMiddleware(MiddlewareBase):
             }
         )
         trigger = "context_threshold"
-        if self._memory is not None:
-            self._memory.sink.emit(
-                memory_events.frame(
-                    memory_events.MEMORY_COMPRESS_START,
-                    layer="episodic",
-                    trigger=trigger,
-                    tokens_before=before,
-                    budget=threshold,
-                )
-            )
+        self._emit_memory(
+            memory_events.MEMORY_COMPRESS_START,
+            trigger=trigger,
+            tokens_before=before,
+            budget=threshold,
+        )
         try:
             await next_handler()
         except Exception as exc:
             # 压缩失败保留旧摘要与旧卡片，本轮继续（由调用方决定是否吞掉）
-            if self._memory is not None:
-                self._memory.sink.emit(
-                    memory_events.frame(
-                        memory_events.MEMORY_COMPRESS_END,
-                        layer="episodic",
-                        state="error",
-                        reason=f"{type(exc).__name__}: {exc}",
-                        trigger=trigger,
-                        tokens_before=before,
-                        tokens_after=before,
-                        budget=threshold,
-                    )
-                )
+            self._emit_memory(
+                memory_events.MEMORY_COMPRESS_END,
+                state="error",
+                reason=f"{type(exc).__name__}: {exc}",
+                trigger=trigger,
+                tokens_before=before,
+                tokens_after=before,
+                budget=threshold,
+            )
             raise
         after = await count_context_tokens(agent)
         summary_now = getattr(agent.state, "summary", "") or ""
@@ -187,6 +179,26 @@ class CompressionMiddleware(MiddlewareBase):
                 "summary_chars": len(_summary_text(summary_now)),
             }
         )
+        self._after_compress(compressed, summary_now, before, after, threshold, trigger)
+
+    def _emit_memory(self, kind: str, **fields: object) -> None:
+        """记忆层可选：没有运行时就不发，压缩观测不受影响。"""
+        if self._memory is None:
+            return
+        self._memory.sink.emit(
+            memory_events.frame(kind, layer="episodic", **cast(dict[str, Any], fields))
+        )
+
+    def _after_compress(
+        self,
+        compressed: bool,
+        summary_now: object,
+        before: int,
+        after: int,
+        threshold: int,
+        trigger: str,
+    ) -> None:
+        """真正压缩才写新版本；否则只记一条 skipped，避免误以为压过。"""
         if self._memory is None:
             return
         if compressed:
@@ -197,16 +209,13 @@ class CompressionMiddleware(MiddlewareBase):
                 threshold=threshold,
                 trigger=trigger,
             )
-        else:
-            self._memory.sink.emit(
-                memory_events.frame(
-                    memory_events.MEMORY_COMPRESS_END,
-                    layer="episodic",
-                    state="skipped",
-                    reason="below_threshold",
-                    trigger=trigger,
-                    tokens_before=before,
-                    tokens_after=after,
-                    budget=threshold,
-                )
-            )
+            return
+        self._emit_memory(
+            memory_events.MEMORY_COMPRESS_END,
+            state="skipped",
+            reason="below_threshold",
+            trigger=trigger,
+            tokens_before=before,
+            tokens_after=after,
+            budget=threshold,
+        )

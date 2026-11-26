@@ -112,16 +112,9 @@ class MemoryMiddleware(MiddlewareBase):
         )
         card, hits = await self._runtime.recall(query)
         marker = self._runtime.marker(card, hits, reply)
-        middle = getattr(agent.state, "middle_context", {}) or {}
-        previous = middle.get("memory") or {}
-        unchanged = (
-            previous.get("episodic_version") == marker["episodic_version"]
-            and previous.get("long_term_hash") == marker["long_term_hash"]
-            and previous.get("reply_id") != reply
-        )
+        unchanged = self._unchanged(agent, marker, reply)
         note = "" if unchanged else self._runtime.note(card, hits)
-        middle["memory"] = marker
-        agent.state.middle_context = middle
+        self._remember(agent, marker)
         state = "skipped" if unchanged else ("hit" if note else "miss")
         reason = "unchanged" if unchanged else ("" if note else "no_memory")
         meta = {
@@ -142,6 +135,24 @@ class MemoryMiddleware(MiddlewareBase):
             )
         )
         return note, meta
+
+    @staticmethod
+    def _unchanged(agent: Agent, marker: dict[str, Any], reply: str) -> bool:
+        """同一版本、同一批命中且不是同一 reply：视为已经注入过，不再重复。"""
+        middle = getattr(agent.state, "middle_context", {}) or {}
+        previous = middle.get("memory") or {}
+        return (
+            previous.get("episodic_version") == marker["episodic_version"]
+            and previous.get("long_term_hash") == marker["long_term_hash"]
+            and previous.get("reply_id") != reply
+        )
+
+    @staticmethod
+    def _remember(agent: Agent, marker: dict[str, Any]) -> None:
+        """把版本/命中标记写回 middle_context；只存短标记，不存 note 全文。"""
+        middle = getattr(agent.state, "middle_context", {}) or {}
+        middle["memory"] = marker
+        agent.state.middle_context = middle
 
     def _emit_assembled(
         self,

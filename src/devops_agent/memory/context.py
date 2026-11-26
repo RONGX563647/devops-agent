@@ -29,23 +29,27 @@ def _bullets(items: list[str], limit: int) -> str:
     return "\n".join(f"- {clip(item, limit)}" for item in items)
 
 
-def format_episodic(card: dict[str, Any], *, max_chars: int, summary_preview_chars: int) -> str:
-    """把中期卡渲染成一段；text 是权威摘要，其余字段只做补充。"""
+# 卡片里除摘要外的三个补充段；空段不渲染，避免每轮多出空标题
+_CARD_SECTIONS = (("产物", "artifacts"), ("未决", "pending"), ("错误", "errors"))
+
+
+def _card_sections(card: dict[str, Any], max_chars: int, summary_preview_chars: int) -> list[str]:
     version = int(card.get("version", 0) or 0)
     parts = [EPISODIC_HEADER.format(version=version)]
     text = str(card.get("text") or "").strip()
     if text:
         parts.append(clip(text, summary_preview_chars))
-    artifacts = [str(item) for item in card.get("artifacts") or []]
-    pending = [str(item) for item in card.get("pending") or []]
-    errors = [str(item) for item in card.get("errors") or []]
-    if artifacts:
-        parts.append("产物：\n" + _bullets(artifacts, max_chars))
-    if pending:
-        parts.append("未决：\n" + _bullets(pending, max_chars))
-    if errors:
-        parts.append("错误：\n" + _bullets(errors, max_chars))
-    return clip("\n".join(parts), max_chars)
+    for label, key in _CARD_SECTIONS:
+        items = [str(item) for item in card.get(key) or []]
+        if items:
+            parts.append(f"{label}：\n" + _bullets(items, max_chars))
+    return parts
+
+
+def format_episodic(card: dict[str, Any], *, max_chars: int, summary_preview_chars: int) -> str:
+    """把中期卡渲染成一段；text 是权威摘要，其余字段只做补充。"""
+    sections = _card_sections(card, max_chars, summary_preview_chars)
+    return clip("\n".join(sections), max_chars)
 
 
 def format_long_term(hits: list[dict[str, Any]], *, top_k: int, max_chars: int) -> str:

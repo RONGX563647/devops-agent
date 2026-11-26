@@ -88,38 +88,51 @@ def _truncate_blocks(msg: Msg, policy: ShortTermPolicy, report: TrimReport) -> M
     return _with_blocks(msg, blocks) if touched else msg
 
 
-def _dedupe_reads(messages: list[Msg], report: TrimReport) -> list[Msg]:
-    """同一份工具返回只留最后一次：中间那些重复读取只占窗口不提供新信息。"""
+def _read_keys(messages: list[Msg]) -> dict[tuple[str, int], int]:
+    """记录每份工具返回最后出现的位置；短输出不参与（信息量太小）。"""
     seen: dict[tuple[str, int], int] = {}
     for index, msg in enumerate(messages):
         for block in msg.content if isinstance(msg.content, list) else []:
             if not _is_tool_result(block):
                 continue
             text = _output_text(getattr(block, "output", ""))
-            if len(text) < _MIN_TOOL_CHARS:
-                continue
-            seen[(str(getattr(block, "name", "")), hash(text))] = index
+            if len(text) >= _MIN_TOOL_CHARS:
+                seen[(str(getattr(block, "name", "")), hash(text))] = index
+    return seen
+
+
+def _dedupe_message(
+    msg: Msg, index: int, seen: dict[tuple[str, int], int], report: TrimReport
+) -> Msg | None:
+    """把非最后出现的重复读取替换成占位；没有改动返回 None。"""
+    if not isinstance(msg.content, list):
+        return None
+    blocks: list[Any] = []
+    touched = False
+    for block in msg.content:
+        if not _is_tool_result(block):
+            blocks.append(block)
+            continue
+        text = _output_text(getattr(block, "output", ""))
+        key = (str(getattr(block, "name", "")), hash(text))
+        if len(text) >= _MIN_TOOL_CHARS and seen.get(key) != index:
+            report.deduped_reads += 1
+            report.reclaimed_chars += max(0, len(text) - len(_OMITTED))
+            blocks.append(block.model_copy(update={"output": _OMITTED}))
+            touched = True
+        else:
+            blocks.append(block)
+    return _with_blocks(msg, blocks) if touched else None
+
+
+def _dedupe_reads(messages: list[Msg], report: TrimReport) -> list[Msg]:
+    """同一份工具返回只留最后一次：中间那些重复读取只占窗口不提供新信息。"""
+    seen = _read_keys(messages)
     out = list(messages)
     for index, msg in enumerate(messages):
-        if not isinstance(msg.content, list):
-            continue
-        blocks: list[Any] = []
-        touched = False
-        for block in msg.content:
-            if not _is_tool_result(block):
-                blocks.append(block)
-                continue
-            text = _output_text(getattr(block, "output", ""))
-            key = (str(getattr(block, "name", "")), hash(text))
-            if len(text) >= _MIN_TOOL_CHARS and seen.get(key) != index:
-                report.deduped_reads += 1
-                report.reclaimed_chars += max(0, len(text) - len(_OMITTED))
-                blocks.append(block.model_copy(update={"output": _OMITTED}))
-                touched = True
-            else:
-                blocks.append(block)
-        if touched:
-            out[index] = _with_blocks(msg, blocks)
+        replaced = _dedupe_message(msg, index, seen, report)
+        if replaced is not None:
+            out[index] = replaced
     return out
 
 

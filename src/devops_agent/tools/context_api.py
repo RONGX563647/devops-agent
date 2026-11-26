@@ -115,22 +115,32 @@ def _session_facts(session: str | None) -> dict[str, Any]:
             memory["long_term_entries"] = repo.count_long_term(
                 conn, policy.long_term.scope, scope_id
             )
-        if active:
-            memory["episodic_version"] = int(active["version"])
-        if saved:
-            state_json = str(saved[0] or "")
-            snapshot["chars"] = len(state_json)
-            parsed = json.loads(state_json) if state_json else {}
-            middle = parsed.get("middle_context") or {}
-            snapshot["version"] = int(middle.get("snapshot_version", 1))
-            snapshot["messages"] = len(parsed.get("context") or [])
-            snapshot["summary_chars"] = len(str(parsed.get("summary") or ""))
-            memory["episodic_version"] = int(
-                (middle.get("memory") or {}).get("episodic_version", memory["episodic_version"])
-            )
     except Exception:  # noqa: BLE001 - 存储故障只让这一块显示为零值
         logger.warning("读取上下文事实失败: %s", session, exc_info=True)
+        return {"snapshot": snapshot, "memory": memory}
+    if active:
+        memory["episodic_version"] = int(active["version"])
+    if saved:
+        _read_snapshot(str(saved[0] or ""), snapshot, memory)
     return {"snapshot": snapshot, "memory": memory}
+
+
+def _read_snapshot(state_json: str, snapshot: dict[str, Any], memory: dict[str, Any]) -> None:
+    """解析快照的版本、消息数与注入标记；坏 JSON 只记录体积。"""
+    snapshot["chars"] = len(state_json)
+    if not state_json:
+        return
+    try:
+        parsed = json.loads(state_json)
+    except ValueError:
+        return
+    middle = parsed.get("middle_context") or {}
+    snapshot["version"] = int(middle.get("snapshot_version", 1))
+    snapshot["messages"] = len(parsed.get("context") or [])
+    snapshot["summary_chars"] = len(str(parsed.get("summary") or ""))
+    memory["episodic_version"] = int(
+        (middle.get("memory") or {}).get("episodic_version", memory["episodic_version"])
+    )
 
 
 @router.get("/context")

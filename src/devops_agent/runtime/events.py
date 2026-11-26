@@ -203,19 +203,21 @@ def _confirm_calls(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def _copy_fields(raw: dict[str, Any], data: dict[str, Any], keys: tuple[str, ...]) -> None:
+    """按 key 白名单复制非 None 字段；标量与记忆字段共用同一规则。"""
+    for key in keys:
+        value = raw.get(key)
+        if value is not None:
+            data[key] = value
+
+
 def _project(raw: dict[str, Any]) -> dict[str, Any]:
     """把任意来源的字段字典投影成稳定的输出 key 集合。"""
     data: dict[str, Any] = {"type": str(raw.get("type", "UNKNOWN"))}
     for key in ("created_at", "session_id", "reply_id"):
         data[key] = raw.get(key, "") or ""
-    for key in _SCALAR_FIELDS:
-        value = raw.get(key)
-        if value is not None:
-            data[key] = value
-    for key in _MEMORY_FIELDS:
-        value = raw.get(key)
-        if value is not None:
-            data[key] = value
+    _copy_fields(raw, data, _SCALAR_FIELDS)
+    _copy_fields(raw, data, _MEMORY_FIELDS)
     if "tool_call_name" not in data:
         names = _tool_call_names(raw)
         if names:

@@ -137,6 +137,8 @@ beforeEach(() => {
               status: 'failed',
               violations: 0,
               failed_checks: [],
+              judge_dims: [],
+              failure_type: 'rule',
               repro: '',
             },
             {
@@ -145,14 +147,18 @@ beforeEach(() => {
               status: 'failed',
               violations: 0,
               failed_checks: [],
+              judge_dims: [],
+              failure_type: 'rule',
               repro: '',
             },
           ],
-          pareto: [],
+          pareto: { rule: [], judge: [] },
         },
       },
     ],
     total: 1,
+    limit: 20,
+    offset: 0,
   });
 });
 
@@ -291,14 +297,18 @@ describe('RunBar', () => {
                 status: 'failed',
                 violations: 0,
                 failed_checks: [],
+                judge_dims: [],
+                failure_type: 'rule',
                 repro: '',
               },
             ],
-            pareto: [],
+            pareto: { rule: [], judge: [] },
           },
         },
       ],
       total: 1,
+      limit: 20,
+      offset: 0,
     });
     renderBar();
     fireEvent.click(screen.getByText('选择用例'));

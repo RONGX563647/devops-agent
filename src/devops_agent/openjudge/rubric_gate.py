@@ -43,16 +43,26 @@ def rubric_gate(plan: Plan) -> dict[str, Any]:
     refs = sorted({spec.rubric for spec in plan.judges.values() if spec.rubric})
     if not refs:
         return {
-            "ref": "", "name": "", "version": "", "sha": "",
-            "status": "none", "reviewer": "", "ready": True,
+            "ref": "",
+            "name": "",
+            "version": "",
+            "sha": "",
+            "status": "none",
+            "reviewer": "",
+            "ready": True,
         }
     name, version = parse_rubric_ref(refs[0])
     try:
         meta = rubric.load(name, version)["meta"]
     except (OSError, ValueError):
         return {
-            "ref": refs[0], "name": name, "version": version, "sha": "",
-            "status": "missing", "reviewer": "", "ready": False,
+            "ref": refs[0],
+            "name": name,
+            "version": version,
+            "sha": "",
+            "status": "missing",
+            "reviewer": "",
+            "ready": False,
         }
     return {
         "ref": refs[0],

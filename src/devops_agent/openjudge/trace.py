@@ -43,12 +43,26 @@ class ToolCallRecord:
         }
 
 
+def _calls_from(raw: dict[str, Any]) -> list[ToolCallRecord]:
+    return [
+        ToolCallRecord(
+            name=str(item.get("name", "")),
+            args=dict(item.get("args") or {}),
+            state=str(item.get("state", "")),
+            result_excerpt=str(item.get("result_excerpt", "")),
+        )
+        for item in raw.get("tool_calls", [])
+    ]
+
+
 @dataclass(slots=True)
 class TraceRecord:
     """一条用例的执行轨迹（SPEC §5 的字段超集，空值也保留 key）。"""
 
     case_id: str
     run_id: str = field(default_factory=new_run_id)
+    #: 第几次试验（从 0 开始）；trials=1 时恒为 0。
+    trial: int = 0
     config_id: str = "default"
     suite_sha: str = ""
     prompt_sha: str = ""
@@ -89,6 +103,7 @@ class TraceRecord:
         return {
             "case_id": self.case_id,
             "run_id": self.run_id,
+            "trial": self.trial,
             "config_id": self.config_id,
             "suite_sha": self.suite_sha,
             "prompt_sha": self.prompt_sha,
@@ -112,25 +127,17 @@ class TraceRecord:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> TraceRecord:
-        tool_calls = [
-            ToolCallRecord(
-                name=str(item.get("name", "")),
-                args=dict(item.get("args") or {}),
-                state=str(item.get("state", "")),
-                result_excerpt=str(item.get("result_excerpt", "")),
-            )
-            for item in raw.get("tool_calls", [])
-        ]
         return cls(
             case_id=str(raw.get("case_id", "")),
             run_id=str(raw.get("run_id", "")),
+            trial=int(raw.get("trial", 0) or 0),
             config_id=str(raw.get("config_id", "default")),
             suite_sha=str(raw.get("suite_sha", "")),
             prompt_sha=str(raw.get("prompt_sha", "")),
             model=str(raw.get("model", "")),
             status=str(raw.get("status", "success")),
             turns=list(raw.get("turns") or []),
-            tool_calls=tool_calls,
+            tool_calls=_calls_from(raw),
             events=[str(x) for x in raw.get("events", [])],
             input_stages=list(raw.get("input_stages") or []),
             workspace=dict(raw.get("workspace") or {}),

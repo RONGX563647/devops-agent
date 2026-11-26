@@ -1,9 +1,16 @@
-/** OpenJudge 评测视图：任务区 → 结果区（批次/评分流程/失败定位/明细/对比）。 */
+/**
+ * OpenJudge 评测视图的编排层：查询、URL 参数、下钻路由都在这里，
+ * 展示细节下放给 `run/` 下的组件。
+ *
+ * URL 是唯一视图状态：批次页、用例页、筛选条件都能从地址栏还原，
+ * 分享一个链接看到的就是同一批数据。
+ */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import {
+  createCaseFromBatch,
   fetchOpenJudgeBatch,
   fetchOpenJudgeBatches,
   fetchOpenJudgeCalibration,
@@ -14,26 +21,33 @@ import {
   fetchOpenJudgeRubrics,
   fetchOpenJudgeScoringConfig,
 } from '../../api/client';
-import { MetricCard } from '../../components/MetricCard';
-import type { OjBatch, OjCaseRow, OjTrackStat } from '../../types';
-import { formatPercent as percent } from './format';
-import { TRACK_LABEL, verdictClass, verdictText } from './labels';
+import type { OjBatchList, OjCaseRow, OjFailure } from '../../types';
+import { BatchHeader } from './run/BatchHeader';
 import { BatchStrip } from './run/BatchStrip';
 import { CaseDrawer } from './run/CaseDrawer';
 import { CaseFilters } from './run/CaseFilters';
 import { CaseTable } from './run/CaseTable';
+import { CausesPanel } from './run/CausesPanel';
 import { FAILURE_TAB, type DrawerTab } from './run/diagnosis';
 import { FailureList } from './run/FailureList';
 import { ResultsExtras, RubricPanel } from './run/ResultsExtras';
 import { RunBar } from './run/RunBar';
 import { ScoreFlow } from './run/ScoreFlow';
+import { findCaseRow, pickFailure, type InspectScope } from './run/select';
 import { SuitesCard } from './run/SuitesCard';
+import { TrackTable } from './run/TrackTable';
 
 const PAGE_SIZES = [10, 20, 50, 100];
+/** 批次一页 20 条：一屏能扫完，又不会一次拉几百个 chip。 */
+const BATCH_PAGE = 20;
 
 function parsePageSize(raw: string | null): number {
   const value = Number(raw ?? 50);
   return PAGE_SIZES.includes(value) ? value : 50;
+}
+
+function parseOffset(raw: string | null): number {
+  return Math.max(0, Number(raw ?? 0) || 0);
 }
 
 /** jsdom 里没有 scrollIntoView；有也不保证接受 options，逐层防护。 */
@@ -46,65 +60,17 @@ function reveal(node: HTMLElement | null): void {
   }
 }
 
-function TrackRow({ track, stat, highlighted }: {
-  track: string;
-  stat: OjTrackStat;
-  highlighted: boolean;
-}) {
-  const [showReasons, setShowReasons] = useState(false);
-  const reasons = stat.reasons ?? [];
-  return (
-    <>
-      <tr className={highlighted ? 'is-highlight' : undefined}>
-        <td>{TRACK_LABEL[track] ?? track}</td>
-        <td>{stat.n}</td>
-        <td>{stat.passed}</td>
-        <td>{percent(stat.pass_rate)}</td>
-        <td>{stat.judge_avg === null ? '—' : stat.judge_avg.toFixed(2)}</td>
-        <td>{stat.violations}</td>
-        <td>
-          <span className={`status-pill ${verdictClass(stat.verdict)}`}>
-            {verdictText(stat.verdict)}
-          </span>
-          {reasons.length > 0 && (
-            <button
-              type="button"
-              className="oj-link-btn"
-              onClick={() => setShowReasons((value) => !value)}
-            >
-              依据
-            </button>
-          )}
-        </td>
-      </tr>
-      {showReasons && (
-        <tr className="oj-reason-row">
-          <td colSpan={7}>
-            <ul>
-              {reasons.map((reason) => (
-                <li key={reason.code}>
-                  {reason.message}（实际 {reason.actual ?? '—'} · 阈值 {reason.threshold ?? '—'}）
-                </li>
-              ))}
-            </ul>
-          </td>
-        </tr>
-      )}
-    </>
-  );
-}
-
-export function OpenJudge() {
+export function OpenJudge({ focusScoreFlow = false }: { focusScoreFlow?: boolean } = {}) {
   const queryClient = useQueryClient();
   const [params, setParams] = useSearchParams();
   const track = params.get('track') ?? '';
   const status = params.get('status') ?? '';
   const subject = params.get('subject') ?? '';
   const verdictFilter = params.get('verdict') ?? '';
-  const focus = params.get('focus') ?? '';
   const pageSize = parsePageSize(params.get('pageSize'));
   const onlyFailed = params.get('failed') === '1';
-  const offset = Math.max(0, Number(params.get('offset') ?? 0) || 0);
+  const offset = parseOffset(params.get('offset'));
+  const batchOffset = parseOffset(params.get('batchOffset'));
 
   const updateParams = useCallback(
     (changes: Record<string, string>) => {
@@ -114,7 +80,8 @@ export function OpenJudge() {
           if (value) next.set(key, value);
           else next.delete(key);
         }
-        if (!Object.prototype.hasOwnProperty.call(changes, 'offset')) next.delete('offset');
+        // 用例页与批次页各自独立：改一个不能把另一个悄悄重置成首页。
+        if (!('offset' in changes)) next.delete('offset');
         return next;
       }, { replace: true });
     },
@@ -122,10 +89,16 @@ export function OpenJudge() {
   );
 
   const batchesQuery = useQuery({
-    queryKey: ['oj-batches', verdictFilter],
-    queryFn: () => fetchOpenJudgeBatches(20, verdictFilter || undefined),
+    queryKey: ['oj-batches', verdictFilter, batchOffset],
+    queryFn: () => fetchOpenJudgeBatches(BATCH_PAGE, verdictFilter || undefined, batchOffset),
   });
-  const batches: OjBatch[] = batchesQuery.data?.items ?? [];
+  const batchPage: OjBatchList = batchesQuery.data ?? {
+    items: [],
+    total: 0,
+    limit: BATCH_PAGE,
+    offset: batchOffset,
+  };
+  const batches = batchPage.items;
   const [selected, setSelected] = useState<number | null>(null);
   const activeId = batches.some((item) => item.id === selected)
     ? selected
@@ -178,7 +151,13 @@ export function OpenJudge() {
   const total = casesQuery.data?.total ?? 0;
   const trackOptions = Object.keys(tracks).sort();
   const statusOptions = Array.from(
-    new Set(['success', 'failed', 'parked', 'timeout', ...Object.keys(summary?.kpi.status_counts ?? {})]),
+    new Set([
+      'success',
+      'failed',
+      'parked',
+      'timeout',
+      ...Object.keys(summary?.kpi.status_counts ?? {}),
+    ]),
   );
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const currentPage = Math.min(pageCount - 1, Math.floor(offset / pageSize));
@@ -187,27 +166,10 @@ export function OpenJudge() {
   const resultRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const scoreFlowRef = useRef<HTMLDivElement>(null);
-  const focusHandled = useRef('');
   const [toast, setToast] = useState<string | null>(null);
   const [openCase, setOpenCase] = useState<{ id: number; caseId: string } | null>(null);
   const [initialTab, setInitialTab] = useState<DrawerTab>('basis');
   const [highlightTrack, setHighlightTrack] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (focus !== 'scoreflow' || !summary || focusHandled.current === focus) return;
-    focusHandled.current = focus;
-    const timer = window.setTimeout(() => {
-      const node = scoreFlowRef.current;
-      if (!node || typeof node.scrollIntoView !== 'function') return;
-      const focusHeading = () =>
-        node.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true });
-      // DOM lib 把返回值声明为 void，但个别实现会返回 Promise；用 unknown 承接后再判定。
-      const result: unknown = node.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      if (result instanceof Promise) void result.then(focusHeading);
-      else focusHeading();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [focus, summary]);
 
   useEffect(() => {
     if (!toast) return;
@@ -215,33 +177,51 @@ export function OpenJudge() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  // 从概览点「看评分流程」进来时才滚过去：直接打开这个视图不该抢焦点。
+  useEffect(() => {
+    if (!focusScoreFlow || !summary) return;
+    const timer = window.setTimeout(() => {
+      reveal(scoreFlowRef.current);
+      scoreFlowRef.current?.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [focusScoreFlow, summary]);
+
   const onFinished = useCallback(
     (batchId: number) => {
       setSelected(batchId);
       updateParams({});
       setOpenCase(null);
       setToast(`批次 #${batchId} 已就绪`);
+      void queryClient.invalidateQueries({ queryKey: ['oj-batches'] });
       const scroll = () => reveal(resultRef.current);
       if (typeof requestAnimationFrame === 'function') requestAnimationFrame(scroll);
       else scroll();
     },
-    [updateParams],
+    [queryClient, updateParams],
   );
 
+  /**
+   * 定位一条失败用例：先按赛道缩小范围翻页找行（不再写死 500 条），
+   * 找到后再决定抽屉默认停在哪一页签。
+   */
   const locateFailure = useCallback(
-    async (caseId: string, tab?: DrawerTab) => {
+    async (failure: OjFailure, tab?: DrawerTab) => {
       if (activeId === null) return;
-      let row = rows.find((item) => item.case_id === caseId);
+      let row = rows.find((item) => item.case_id === failure.case_id);
       if (!row) {
         try {
-          const all = await fetchOpenJudgeCases(activeId, { limit: 500 });
-          row = all.items.find((item) => item.case_id === caseId);
+          row = await findCaseRow(
+            failure.case_id,
+            (options) => fetchOpenJudgeCases(activeId, options),
+            failure.track || undefined,
+          );
         } catch {
           row = undefined;
         }
       }
       if (!row) {
-        setToast(`未在批次中找到 ${caseId}`);
+        setToast(`未在批次中找到 ${failure.case_id}`);
         return;
       }
       let preferred = tab;
@@ -263,6 +243,24 @@ export function OpenJudge() {
     [activeId, rows, queryClient],
   );
 
+  /** 门禁/阶段下钻：按点击的那一项筛失败，而不是永远跳第一条。 */
+  const inspect = useCallback(
+    (scope: InspectScope) => {
+      const target = pickFailure(summary?.failures ?? [], scope);
+      if (target) {
+        void locateFailure(target, scope.tab);
+        return;
+      }
+      const reason = scope.kind === 'rule'
+        ? '本批次没有规则断言失败的用例'
+        : scope.kind === 'judge'
+          ? '本批次没有裁判低分的用例'
+          : '本批次没有失败用例可下钻';
+      setToast(reason);
+    },
+    [summary, locateFailure],
+  );
+
   const copyRepro = useCallback((text: string) => {
     const clipboard = navigator.clipboard;
     if (!clipboard?.writeText) {
@@ -275,11 +273,26 @@ export function OpenJudge() {
       .catch(() => setToast('复制失败，请手动选择命令'));
   }, []);
 
-  const inspect = (tab: DrawerTab) => {
-    const first = summary?.failures[0];
-    if (first) void locateFailure(first.case_id, tab);
-    else setToast('本批次没有失败用例可下钻');
-  };
+  /** 回流：把线上出过问题的用例变成一条草稿，人工确认后才进必过集。 */
+  const backfill = useCallback(
+    async (failure: OjFailure) => {
+      if (activeId === null) return;
+      const row = rows.find((item) => item.case_id === failure.case_id);
+      if (!row) {
+        setToast('请先「定位」打开该用例再回流');
+        return;
+      }
+      try {
+        const created = await createCaseFromBatch(activeId, row.id);
+        const newId = String(created.case?.id ?? '');
+        setToast(`已回流为草稿 ${newId}`);
+        void queryClient.invalidateQueries({ queryKey: ['oj-library'] });
+      } catch (error) {
+        setToast(error instanceof Error ? error.message : '回流失败');
+      }
+    },
+    [activeId, rows, queryClient],
+  );
 
   const showReasons = useCallback(
     (key?: string) => {
@@ -299,7 +312,15 @@ export function OpenJudge() {
       <SuitesCard />
 
       {batchesQuery.isLoading && <div className="muted">加载 OpenJudge 批次…</div>}
-      {empty && (
+      {empty && batchOffset > 0 && (
+        <div className="panel">
+          <h2>这一页没有批次</h2>
+          <button type="button" onClick={() => updateParams({ batchOffset: '' })}>
+            回到最新一页
+          </button>
+        </div>
+      )}
+      {empty && batchOffset === 0 && (
         <div className="panel">
           <h2>尚无批次</h2>
           <p className="muted">在上方发起一次评测，跑完后这里会出现批次结论与逐条明细。</p>
@@ -310,35 +331,30 @@ export function OpenJudge() {
         <div ref={resultRef} className="oj-result-anchor">
           <BatchStrip
             batches={batches}
+            total={batchPage.total}
+            limit={batchPage.limit}
+            offset={batchPage.offset}
             activeId={activeId}
             verdict={verdictFilter}
-            onVerdictChange={(value) => updateParams({ verdict: value })}
+            onVerdictChange={(value) => updateParams({ verdict: value, batchOffset: '' })}
             onSelect={(id) => {
               setSelected(id);
               setOpenCase(null);
               updateParams({});
             }}
+            onPage={(next) => updateParams({ batchOffset: next === 0 ? '' : String(next) })}
           />
 
-          {summary && (
+          {summary && batchQuery.data && (
             <>
-              <div className="panel-grid">
-                <MetricCard label="用例" value={summary.kpi.cases} hint={`通过 ${summary.kpi.passed}`} />
-                <MetricCard
-                  label="通过率"
-                  value={percent(summary.kpi.cases ? summary.kpi.passed / summary.kpi.cases : 0)}
-                  tone={summary.verdict === 'pass' ? 'good' : 'bad'}
-                />
-                <MetricCard
-                  label="安全违规"
-                  value={summary.kpi.violations}
-                  tone={summary.kpi.violations > 0 ? 'bad' : 'good'}
-                />
-                <MetricCard label="已判分" value={summary.kpi.judge_n} hint="送入语义裁判的用例数" />
-                <MetricCard label="规则失败" value={summary.kpi.rule_failed_cases ?? 0} />
-                <MetricCard label="裁判低分" value={summary.kpi.judge_failed_cases ?? 0} />
-                <MetricCard label="未判分" value={summary.kpi.not_judged_cases ?? 0} />
-              </div>
+              <BatchHeader batch={batchQuery.data} />
+              <CausesPanel
+                summary={summary}
+                onTrack={(key) => showReasons(key)}
+                onInspect={(kind) =>
+                  inspect({ tab: kind === 'rule' ? 'checks' : 'judges', kind })
+                }
+              />
 
               <div ref={scoreFlowRef}>
                 <ScoreFlow
@@ -347,46 +363,27 @@ export function OpenJudge() {
                   config={configQuery.data ?? null}
                   gates={configQuery.data?.gates}
                   calibration={summary.calibration ?? calibrationQuery.data}
-                  defaultOpen={summary.verdict !== 'pass' || focus === 'scoreflow'}
+                  defaultOpen={focusScoreFlow || summary.verdict !== 'pass'}
                   onInspect={inspect}
-                  onReasons={() => showReasons()}
+                  onReasons={showReasons}
                 />
               </div>
 
-              <div ref={trackRef} className="panel">
-                <h2>
-                  赛道{' '}
-                  <span className={`status-pill ${verdictClass(summary.verdict)}`}>
-                    {verdictText(summary.verdict)}
-                  </span>
-                </h2>
-                <div className="table-scroll">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>赛道</th><th>用例</th><th>通过</th><th>通过率</th>
-                        <th>裁判均分</th><th>违规</th><th>结论</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {trackOptions.map((key) => (
-                        <TrackRow
-                          key={key}
-                          track={key}
-                          stat={tracks[key]}
-                          highlighted={highlightTrack === key}
-                        />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+              <div ref={trackRef}>
+                <TrackTable
+                  tracks={tracks}
+                  failures={summary.failures}
+                  highlight={highlightTrack}
+                />
               </div>
 
               <FailureList
                 failures={summary.failures}
                 pareto={summary.pareto}
-                onLocate={(caseId) => void locateFailure(caseId)}
+                truncated={summary.truncated}
+                onLocate={(failure) => void locateFailure(failure)}
                 onCopy={copyRepro}
+                onBackfill={(failure) => void backfill(failure)}
               />
 
               <div className="panel">
@@ -437,7 +434,11 @@ export function OpenJudge() {
               config={configQuery.data ?? null}
               failureCaseIds={(summary?.failures ?? []).map((failure) => failure.case_id)}
               onClose={() => setOpenCase(null)}
-              onNavigate={(caseId, tab) => void locateFailure(caseId, tab)}
+              onNavigate={(caseId, tab) => {
+                const failure = (summary?.failures ?? []).find((item) => item.case_id === caseId);
+                if (failure) void locateFailure(failure, tab);
+                else setToast(`未在失败清单中找到 ${caseId}`);
+              }}
             />
           )}
         </div>

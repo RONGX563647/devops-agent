@@ -7,6 +7,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchOpenJudgeLibrary } from '../../../api/client';
+import { TIER_LABEL } from '../labels';
 import { CaseEditor } from './CaseEditor';
 
 const TRACK_LABEL: Record<string, string> = {
@@ -21,6 +22,7 @@ const PAGE_SIZE = 20;
 
 export function CasesPanel() {
   const [track, setTrack] = useState('');
+  const [tier, setTier] = useState('');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
@@ -36,10 +38,11 @@ export function CasesPanel() {
   const keyword = search.trim().toLowerCase();
   const filtered = items.filter(
     (item) =>
-      !keyword ||
-      item.id.toLowerCase().includes(keyword) ||
-      item.subject.toLowerCase().includes(keyword) ||
-      item.track.toLowerCase().includes(keyword),
+      (!tier || (item.tier ?? 'must_pass') === tier) &&
+      (!keyword ||
+        item.id.toLowerCase().includes(keyword) ||
+        item.subject.toLowerCase().includes(keyword) ||
+        item.track.toLowerCase().includes(keyword)),
   );
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
@@ -90,6 +93,34 @@ export function CasesPanel() {
         />
       </div>
 
+      <div className="tag-row" role="group" aria-label="按分层筛选">
+        <button
+          type="button"
+          className={`view-tab${tier === '' ? ' active' : ''}`}
+          aria-pressed={tier === ''}
+          onClick={() => {
+            setTier('');
+            setPage(0);
+          }}
+        >
+          全部分层
+        </button>
+        {(limits.tiers ?? ['must_pass', 'challenge']).map((key) => (
+          <button
+            key={key}
+            type="button"
+            className={`view-tab${tier === key ? ' active' : ''}`}
+            aria-pressed={tier === key}
+            onClick={() => {
+              setTier(key);
+              setPage(0);
+            }}
+          >
+            {TIER_LABEL[key] ?? key}
+          </button>
+        ))}
+      </div>
+
       <div className="oj-library-body">
         <div className="table-scroll oj-library-list">
         <table className="data-table">
@@ -97,6 +128,7 @@ export function CasesPanel() {
             <tr>
               <th>用例</th>
               <th>赛道</th>
+              <th>分层</th>
               <th>风险</th>
               <th>档位</th>
               <th>来源</th>
@@ -111,6 +143,11 @@ export function CasesPanel() {
               >
                 <td>{row.id}</td>
                 <td>{row.track}</td>
+                <td>
+                  <span className={`oj-badge tier-${row.tier ?? 'must_pass'}`}>
+                    {TIER_LABEL[row.tier ?? 'must_pass'] ?? row.tier ?? '必过'}
+                  </span>
+                </td>
                 <td>{row.risk}</td>
                 <td>{row.permission}</td>
                 <td>
@@ -122,7 +159,7 @@ export function CasesPanel() {
             ))}
             {pageItems.length === 0 && (
               <tr>
-                <td colSpan={5} className="muted">
+                <td colSpan={6} className="muted">
                   没有匹配的用例
                 </td>
               </tr>

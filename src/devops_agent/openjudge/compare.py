@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from devops_agent.openjudge import stats
+
 
 def _compare_reasons(base: dict[str, Any], head: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
@@ -19,18 +21,37 @@ def _compare_reasons(base: dict[str, Any], head: dict[str, Any]) -> list[str]:
 
 
 def _track_deltas(base_tracks: dict[str, Any], head_tracks: dict[str, Any]) -> dict[str, Any]:
-    tracks: dict[str, Any] = {}
-    for track in sorted(set(base_tracks) | set(head_tracks)):
-        old = base_tracks.get(track, {})
-        new = head_tracks.get(track, {})
-        tracks[track] = {
-            "base_pass_rate": old.get("pass_rate"),
-            "head_pass_rate": new.get("pass_rate"),
-            "delta": (new.get("pass_rate", 0) - old.get("pass_rate", 0)) if old and new else None,
-            "base_judge": old.get("judge_avg"),
-            "head_judge": new.get("judge_avg"),
-        }
-    return tracks
+    """逐赛道 delta + 两比例检验。
+
+    `mde` 保留给旧前端（1/n），新前端用 `p_value`：n=30 时 1/n≈3.3pp 会让
+    「2pp 的提升」看起来显著，而两比例检验会老实说「不显著」。
+    """
+    return {
+        track: _track_row(base_tracks.get(track, {}), head_tracks.get(track, {}))
+        for track in sorted(set(base_tracks) | set(head_tracks))
+    }
+
+
+def _n_rate(row: dict[str, Any]) -> tuple[int, float]:
+    return int(row.get("total", 0) or 0), float(row.get("pass_rate", 0.0) or 0.0)
+
+
+def _track_row(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    old_n, old_rate = _n_rate(old)
+    new_n, new_rate = _n_rate(new)
+    # 一侧没有该赛道就没什么可比：delta 与检验都给 None，不给 0。
+    p_value = stats.two_proportion_p(old_rate, old_n, new_rate, new_n) if old and new else None
+    return {
+        "base_pass_rate": old.get("pass_rate"),
+        "head_pass_rate": new.get("pass_rate"),
+        "base_n": old_n or None,
+        "head_n": new_n or None,
+        "delta": (new_rate - old_rate) if old and new else None,
+        "p_value": p_value,
+        "significant": None if p_value is None else p_value < 0.05,
+        "base_judge": old.get("judge_avg"),
+        "head_judge": new.get("judge_avg"),
+    }
 
 
 def _case_counts(batch: dict[str, Any]) -> int:

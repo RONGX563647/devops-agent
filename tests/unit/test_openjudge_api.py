@@ -221,9 +221,7 @@ def test_case_detail_exposes_scoring_contract(client: TestClient) -> None:
     assert scoring["judge_failed"][0]["contribution"] == pytest.approx(0.25 * 0.35)
 
 
-def test_run_rejects_unreviewed_case(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_rejects_unreviewed_case(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_start(**_: object) -> dict[str, object]:
         raise benchmark.ReviewError("未审核用例：c1")
 

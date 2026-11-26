@@ -17,7 +17,15 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, HTTPException
 from fastapi import Path as PathParam
 
-from devops_agent.openjudge import benchmark, casestore, report, service, settings
+from devops_agent.openjudge import (
+    benchmark,
+    casestore,
+    gates,
+    run,
+    service,
+    settings,
+    store,
+)
 
 router = APIRouter(prefix="/api/openjudge", tags=["openjudge-edit"])
 
@@ -31,9 +39,11 @@ def _limits() -> dict[str, Any]:
         "min_timeout": settings.MIN_TIMEOUT,
         "max_timeout": settings.MAX_TIMEOUT,
         "max_limit": service.MAX_LIMIT,
+        "max_trials": run.MAX_TRIALS,
         "tracks": list(benchmark.TRACKS),
         "risks": list(benchmark.RISKS),
         "permissions": list(benchmark.PERMISSIONS),
+        "tiers": list(benchmark.TIERS),
     }
 
 
@@ -73,7 +83,7 @@ def list_cases(track: str = "", source: str = "") -> dict[str, Any]:
         "items": rows,
         "total": len(rows),
         "suite": casestore.suite_view(),
-        "thresholds": report.TRACK_RULES,
+        "thresholds": gates.TRACK_RULES,
         "limits": _limits(),
     }
 
@@ -105,6 +115,66 @@ def delete_case(case_id: CaseId) -> dict[str, Any]:
     if not casestore.delete(case_id):
         raise HTTPException(status_code=404, detail=f"用例不存在：{case_id}")
     return {"id": case_id, "deleted": True, "suite": casestore.suite_view()}
+
+
+def _original_case_id(batch_id: int, case_row_id: int) -> str:
+    """批次行 → 原用例 id；不属于该批次的行一律当不存在。"""
+    with store.connect() as conn:
+        store.init_db(conn)
+        row = store.get_case(conn, case_row_id)
+    if row is None or int(row.get("batch_id", 0)) != batch_id:
+        raise HTTPException(status_code=404, detail="用例不存在")
+    return str(row.get("case_id", ""))
+
+
+def _draft_fields(
+    batch_id: int,
+    original: str,
+    new_id: str,
+    payload: dict[str, Any],
+    clean: dict[str, Any],
+) -> dict[str, Any]:
+    """回流出来的条目一律草稿态：人工确认之前不进必过集。"""
+    return {
+        "id": new_id,
+        "provenance": f"from-batch#{batch_id}:{original}",
+        "review_status": "draft",
+        "reviewer": str(payload.get("reviewer") or f"from-batch#{batch_id}"),
+        "reviewed_at": "",
+        "review_note": "由历史批次回流，需人工确认后改为 approved",
+        "tier": str(payload.get("tier") or clean.get("tier") or benchmark.DEFAULT_TIER),
+    }
+
+
+@router.post("/cases/from-batch/{batch_id}/{case_row_id}")
+def case_from_batch(
+    batch_id: int,
+    case_row_id: int,
+    body: Annotated[dict[str, Any] | None, Body()] = None,
+) -> dict[str, Any]:
+    """把一个历史批次里的用例回流成题库条目（写覆盖层，草稿态）。
+
+    为什么必须新建 id：同名覆盖会悄悄改掉正在当门禁的那条题，而回流的意义
+    是「线上出过问题，加一条来盯住它」。所以派生 `-b<batch>` 后缀，并强制
+    `review_status=draft` —— 人工确认之前不进必过集。
+    """
+    payload = body or {}
+    original = _original_case_id(batch_id, case_row_id)
+    raw = casestore.get_raw(original)
+    if raw is None:
+        raise HTTPException(status_code=404, detail=f"题库里找不到原用例 {original}")
+    clean = {key: value for key, value in raw.items() if not key.startswith("_")}
+    new_id = str(payload.get("id") or f"{original}-b{batch_id}")
+    clean.update(_draft_fields(batch_id, original, new_id, payload, clean))
+    try:
+        casestore.save(clean)
+    except casestore.CaseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "case": casestore.get_raw(new_id),
+        "source": "overlay",
+        "suite": casestore.suite_view(),
+    }
 
 
 @router.post("/cases/{case_id}/restore")

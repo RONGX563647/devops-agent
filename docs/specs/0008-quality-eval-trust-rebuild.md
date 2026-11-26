@@ -1,7 +1,7 @@
 # SPEC-0008：质量页与评测可信度重建
 
-- 状态：Draft（待评审；评审通过后按 §7 分期实施）
-- 日期：2026-11-26
+- 状态：已实施（P0–P4 全部落地，见 §10 实施记录）
+- 日期：2026-11-26（实施记录 2026-11-27）
 - 相关：`src/devops_agent/openjudge/{report,run,grade,calibration,store,api}.py`、
   `web/src/pages/Quality.tsx`、`web/src/pages/quality/**`、
   `docs/wiki/Observability-and-Eval.md`
@@ -283,3 +283,71 @@ pareto: []
 | 3 | 校准 soft 档 `n≥30 / ρ≥0.6` 是否可接受 | 接受 | 否则裁判仍无法参与 |
 | 4 | 是否本期就做「必过集/挑战集」 | 放 P4 | 题库要重新标一遍，工作量大 |
 | 5 | `/health` 是否直接删掉 `calibration` 字段 | 改为复用 `/calibration` | 避免两处口径 |
+
+## 10. 实施记录
+
+P0–P4 一次落在一个 PR 里（分期在 issue 上拆过，代码上是同一份契约，拆开合并
+会让中间态自相矛盾）。以下按节记录落地位置与偏离。
+
+### 10.1 结论层（§5.1）
+
+| 内容 | 位置 |
+|---|---|
+| 五态 `pass/fail/partial/unvalidated/insufficient` | `openjudge/gates.py:VERDICTS` |
+| `scope / causes / evidence / truncated` | `gates.py`（`scope_of`、`causes_of`、`calibration_reasons`）+ `report.summarize` |
+| blocking / advisory 分流 | `gates.BLOCKING_CODES` / `ADVISORY_CODES` |
+| 三档校准 `off/soft/hard` | `calibration.calibration_gate`，`meta.calibration.level` |
+| 规则通过率与判分通过率分开 | `metrics.track_stats` 同时给 `pass_rate` 与 `rule_pass_rate` |
+| `/health` 复用 `/calibration` 口径 | `store.health` → `_health_calibration` |
+
+偏离：`report.py` 拆成 `gates.py`（判决）+ `metrics.py`（归因与统计）+
+`schema.py`（DDL）+ `plan.py`（判分方案），因为单文件 500 行上限先撞上了，
+且 `report.py` 同时承担「判」与「算」两件事，改一边要读另一边。
+
+### 10.2 多次试验（§5.2）
+
+- `RunOptions.trials`（默认 1，上限 3，`run.MAX_TRIALS`）、`oj_cases.trial`、
+  `oj_runs.trials`；k 次试验在单 worker 内串行，避免把并发抖动混进稳定性结论。
+- `kpi.pass_at_k`（至少一次过）/ `pass_hat_k`（k 次全过）+ Wilson 区间（`stats.py`）。
+- `compare` 的两比例 z 检验替换 `1/n` 经验阈值；样本不足时 `significant=null`
+  而不是 `false` —— 「算不出」与「算出来不显著」不是同一件事。
+
+### 10.3 归因与过程指标（§5.4）
+
+- `metrics.failure_type` 的优先级：规则断言 > 运行异常 > 裁判低分 > 缺裁判；
+  `failures[]` 带 `judge_dims` 与 `failure_type`，`pareto` 拆 `{rule, judge}`。
+- `truncated` 显式给出 `total_failures`，前端据此显示「只列了前 N 条」。
+- `stages` 从已有轨迹投影（`process_stages`），不额外采样。
+
+### 10.4 前端信息架构（§5.5）
+
+- 视图改为 URL 驱动：`?view=overview|batches|scoreflow|studio`；旧 `?focus=scoreflow`
+  保留为兼容重定向。批次页码是独立参数 `offset`。
+- 新增 `run/BatchHeader`、`run/TrackTable`（五赛道固定五行）、`run/CausesPanel`
+  （结论/范围/原因/证据四段）、`quality/GateMatrix`（阈值 | 实际 | 结论）。
+- `charts.tsx` 删掉阈值参考线：五赛道门槛互不相同，一条线会被读成共同门禁。
+
+### 10.5 资产分层与回流（§5.6）
+
+- `Case.tier ∈ {must_pass, challenge}`（默认 `DEFAULT_TIER = "must_pass"`），
+  `suite_sha` 纳入 tier；必过集一票否决，挑战集只进 `challenge_score`。
+- 90 条题库中 9 条标 `challenge`，其余 `must_pass`。
+- `POST /cases/from-batch/{batch_id}/{row_id}`：从失败批次回流成 `-b<batch>` 草稿，
+  同 id 覆盖会悄悄改掉正在当门禁的题，所以强制新 id。
+- 题库列表下发 `tier` 并支持按分层筛选（`limits.tiers`）；分层也可在用例 JSON
+  里直接改，`parse_case` 做白名单校验。
+
+### 10.6 验收对照
+
+| 断言 | 测试 |
+|---|---|
+| 单赛道 10 条全过 → `partial` | `tests/unit/test_openjudge_verdict.py` |
+| 全量全过 + 无校准 → `unvalidated` | 同上 |
+| 全量全过 + hard 校准 → `pass` | 同上 |
+| 裁判缺失不进 `kpi.passed` | 同上 |
+| 规则失败 → `fail` | 同上 |
+| k=3 时 `pass_at_k > pass_hat_k` | `test_openjudge_run.py` |
+| 裁判低分进 `failures` 且带 `judge_dims` | `test_openjudge_verdict.py` |
+| F1–F9 逐条 | `web/src/pages/Quality.test.tsx`（17 例） |
+| `must_pass` 一条失败即 fail | `test_openjudge_verdict.py` |
+| 题库列表带 `tier` | `test_openjudge_edit.py` |

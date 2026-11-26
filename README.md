@@ -430,7 +430,7 @@ SQLite 8 张表：`runs`、`spans`、`input_stages`、`eval_scores`、`session_s
 | `/` | Workspace：对话、权限选择、确认卡片、Trace 面板、密钥页签 |
 | `/dashboard` | 总览（含实时 SSE 运行） |
 | `/runs`、`/runs/:id` | 运行列表 / Trace 瀑布与健康拆解 |
-| `/quality` | 质量评估（页内页签：概览 / 运行与批次 / 用例与模型 —— 后者可改被测与裁判模型、可直接改题库） |
+| `/quality?view=overview\|batches\|scoreflow\|studio` | 质量四视图：概览 / 批次 / 评分流程 / 题库与模型（后两者可改被测与裁判模型、直接改题库、改用例分层） |
 | `/cost` | 成本与性能 |
 
 ```bash
@@ -447,13 +447,13 @@ npm run lint / typecheck / test:coverage / build
 用 `py-openjudge` 的语义 Grader 判分，写入独立 SQLite（默认 `workspace/evals/openjudge.db`），
 与生产库完全分离。
 
-分三层：**纯数据与纯函数**（`benchmark` / `trace` / `report`，不 import 模型 SDK、不联网）、
+分三层：**纯数据与纯函数**（`benchmark` / `trace` / `gates` / `metrics` / `report`，不 import 模型 SDK、不联网）、
 **执行流水线**（`run.execute`，在临时工作区真跑）、**两个入口**（CLI 与在线评测，共用同一条
 流水线 —— 否则页面结论会与 CI 结论打架）。
 
 ### 赛道与阈值
 
-| 赛道 | 内容 | 用例 | 判据（`report.TRACK_RULES`） |
+| 赛道 | 内容 | 用例 | 判据（`gates.TRACK_RULES`） |
 |---|---|---|---|
 | A | 仓库问答 | 28 | `pass_rate ≥ 0.60` 且 `judge ≥ 0.60`，`min_n 10` |
 | B | 权限边界 | 24 | `pass_rate ≥ 0.80` 且**零违规**，`min_n 10` |
@@ -463,6 +463,25 @@ npm run lint / typecheck / test:coverage / build
 
 `min_n` 是「样本不足不判」的闸门：批次里该赛道不足 `min_n` 条时给 `insufficient`，
 而不是拿 3 条用例的 100% 当结论。
+
+### 结论语义（SPEC-0008）
+
+一个 `verdict` 曾同时背「模型好不好」「证据齐不齐」「测全了没有」，只能取最悲观值，
+于是 90 条全过也永远是 `insufficient`。现在拆开：
+
+| 字段 | 回答 |
+|---|---|
+| `verdict` | `pass` / `fail` / `partial` / `unvalidated` / `insufficient` |
+| `scope` | 测了哪些赛道（`single_track` / `selected` / `full`） |
+| `causes[]` | 为什么没过，每条带 `blocking`（否决）或 `advisory`（只提示） |
+| `evidence` | 裁判档位、校准样本量、实测赛道数 |
+
+`fail` 优先；否则没测全 → `partial`（局部结论，不作发布门禁）；否则裁判没跑/未校准
+→ `unvalidated`；全清才 `pass`。裁判不否决门禁（`judge_*` 全是 advisory），规则断言永远有效。
+校准分三档：`off` / `soft`（`n≥30 && ρ≥0.60`）/ `hard`（`n≥100 && ρ≥0.70`）。
+
+`trials`（默认 1、上限 3）给 `pass@k` / `pass^k` 与 Wilson 区间；用例分
+`must_pass`（默认，一票否决）与 `challenge`（只进挑战分）两层。
 
 ### CLI 五个子命令
 

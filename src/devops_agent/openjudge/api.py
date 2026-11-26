@@ -11,17 +11,19 @@ from __future__ import annotations
 import copy
 import sqlite3
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from devops_agent.openjudge import (
     benchmark,
+    calibration,
     casestore,
     explain,
+    gates,
     grade,
-    report,
+    run,
     service,
     settings,
     store,
@@ -55,13 +57,24 @@ def openjudge_health() -> dict[str, object]:
 def openjudge_batches(
     verdict: str = Query("", max_length=24),
     plan_sha: str = Query("", max_length=80),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ) -> dict[str, object]:
-    rows = _read(
-        lambda conn: store.list_batches(conn, verdict=verdict, plan_sha=plan_sha, limit=limit)
+    """批次分页。
+
+    `total` 必须是库里的真实条数：原来返回 `len(items)`，于是「共 20 批」在
+    有 200 个批次时也是 20 —— 用户没有翻页的入口，因为界面认为已经到底了。
+    """
+    payload = _read(
+        lambda conn: (
+            store.list_batches(
+                conn, verdict=verdict, plan_sha=plan_sha, limit=limit, offset=offset
+            ),
+            store.count_batches(conn, verdict=verdict, plan_sha=plan_sha),
+        )
     )
-    items = rows or []
-    return {"items": items, "total": len(items)}
+    items, total = payload or ([], 0)
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @router.get("/batches/{batch_id}")
@@ -154,7 +167,7 @@ def openjudge_coverage() -> dict[str, object]:
 def openjudge_suites() -> dict[str, object]:
     """赛道清单：用例数、阈值、最近一批通过率。
 
-    阈值从 `report.TRACK_RULES` 下发，前端不再自己维护一份「门禁线」——
+    阈值从 `gates.TRACK_RULES` 下发，前端不再自己维护一份「门禁线」——
     之前那套写死在前端，取的是 `items[0]`，结果拿到的是最旧的套件。
     """
     cases = casestore.load_cases()
@@ -167,7 +180,7 @@ def openjudge_suites() -> dict[str, object]:
             {
                 "track": track,
                 "cases": int(coverage.get("tracks", {}).get(track, 0)),
-                "rules": report.TRACK_RULES.get(track, {}),
+                "rules": gates.TRACK_RULES.get(track, {}),
                 "latest": latest.get(track),
             }
             for track in benchmark.TRACKS
@@ -205,14 +218,20 @@ def _calibration_status() -> dict[str, object]:
     )
     status = payload or {
         "checked": False,
-        "valid": True,
+        "valid": False,
+        "level": "off",
         "missing": [],
         "calibration_ids": [],
+        "n": None,
+        "spearman": None,
+        "progress": None,
     }
     return {
         **status,
         "required_n": store.MIN_CALIBRATION_N,
         "required_spearman": store.MIN_CALIBRATION_SPEARMAN,
+        "soft_n": calibration.SOFT_CALIBRATION_N,
+        "soft_spearman": calibration.SOFT_CALIBRATION_SPEARMAN,
     }
 
 
@@ -242,7 +261,7 @@ def openjudge_scoring_config() -> dict[str, object]:
             ],
         },
         "pass_judge": explain.PASS_JUDGE,
-        "track_rules": copy.deepcopy(report.TRACK_RULES),
+        "track_rules": copy.deepcopy(gates.TRACK_RULES),
         "gates": {"review": _review_gate(), "rubric": grade.rubric_gate(plan)},
     }
 
@@ -253,12 +272,44 @@ def openjudge_series(days: int = Query(30, ge=1, le=365)) -> dict[str, object]:
     return {"points": points or []}
 
 
+@router.get("/patrol")
+def openjudge_patrol(
+    limit: int = Query(10, ge=1, le=50),
+) -> dict[str, object]:
+    """巡检契约：最近 N 批的赛道通过率与结论分布。
+
+    本期只提供数据形状，不做调度 —— 调度属于线上基建（SPEC-0008 非目标）。
+    放在只读接口里，是为了让外部定时任务不必自己解析 summary_json。
+    """
+    rows = _read(lambda conn: store.list_batches(conn, limit=limit)) or []
+    tracks: dict[str, Any] = {}
+    verdicts: dict[str, int] = {}
+    for row in rows:
+        verdicts[row["verdict"]] = verdicts.get(row["verdict"], 0) + 1
+        for track, item in (row["summary"].get("tracks") or {}).items():
+            bucket = tracks.setdefault(track, {"rates": [], "last_verdict": ""})
+            bucket["rates"].append(float(item.get("pass_rate", 0.0)))
+            bucket["last_verdict"] = str(item.get("verdict", row["verdict"]))
+    summary: dict[str, dict[str, object]] = {}
+    for track, bucket in sorted(tracks.items()):
+        rates: list[float] = bucket["rates"]
+        summary[track] = {
+            "batches": len(rates),
+            "latest_pass_rate": rates[0] if rates else None,
+            "avg_pass_rate": sum(rates) / len(rates) if rates else None,
+            "latest_verdict": bucket["last_verdict"],
+        }
+    return {"batches": len(rows), "tracks": summary, "verdicts": verdicts}
+
+
 class RunStartIn(BaseModel):
     track: str = ""
     case_ids: list[str] = Field(default_factory=list)
     limit: int = Field(default=service.DEFAULT_LIMIT, ge=0, le=service.MAX_LIMIT)
     judge: bool = False
     concurrency: int = Field(default=2, ge=1, le=service.MAX_CONCURRENCY)
+    #: 每条用例重复次数：页面默认 1，CI 可用 3 看稳定性。
+    trials: int = Field(default=1, ge=1, le=run.MAX_TRIALS)
 
 
 @router.post("/runs", status_code=202)
@@ -272,6 +323,7 @@ async def openjudge_start_run(body: RunStartIn) -> dict[str, object]:
             limit=body.limit,
             judge=body.judge,
             concurrency=body.concurrency,
+            trials=body.trials,
             case_ids=body.case_ids,
         )
     except benchmark.ReviewError as exc:

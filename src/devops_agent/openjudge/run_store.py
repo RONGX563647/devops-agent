@@ -23,7 +23,13 @@ def _now() -> str:
 
 
 def claim_run(
-    conn: sqlite3.Connection, *, track: str, total: int, judge: bool, concurrency: int
+    conn: sqlite3.Connection,
+    *,
+    track: str,
+    total: int,
+    judge: bool,
+    concurrency: int,
+    trials: int = 1,
 ) -> int | None:
     """占用唯一的运行槽；已有任务在跑时返回 None（不抛异常，由调用方转 409）。
 
@@ -35,11 +41,11 @@ def claim_run(
         cursor = conn.execute(
             """
             INSERT INTO oj_runs
-                (status, track, total, done, judge, concurrency,
+                (status, track, total, done, judge, concurrency, trials,
                  started_at, updated_at, finished_at)
-            VALUES ('running', ?, ?, 0, ?, ?, ?, ?, '')
+            VALUES ('running', ?, ?, 0, ?, ?, ?, ?, ?, '')
             """,
-            (track, total, 1 if judge else 0, concurrency, now, now),
+            (track, total, 1 if judge else 0, concurrency, max(1, int(trials)), now, now),
         )
     except sqlite3.IntegrityError:
         conn.rollback()

@@ -1,62 +1,67 @@
-import { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Overview } from './quality/Overview';
+/**
+ * 质量页外壳：四个视图，全部由 URL 决定。
+ *
+ * 视图切换用导航链接而不是 `role="tab"`：这是在换页面内容（各自有独立的
+ * 查询与地址栏状态），不是同一份数据的分页签。ARIA tabs 模式明确不适用于
+ * 页面导航；用 `<a>` + `aria-current` 才能让「复制链接 / 前进后退 / 新标签」都正常。
+ *
+ * 旧地址 `?focus=scoreflow` 仍然有效，被重定向到 `?view=scoreflow`，
+ * 已分享出去的链接不会失效。
+ */
+
+import { useMemo } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { OpenJudge } from './quality/OpenJudge';
+import { Overview } from './quality/Overview';
 import { Studio } from './quality/studio/Studio';
 
-/** 三个视图：「这批能不能用」→「发起一次评测看明细」→「配模型、改用例」。 */
-type QualityView = 'overview' | 'run' | 'studio';
+export type QualityView = 'overview' | 'batches' | 'scoreflow' | 'studio';
 
-const VIEWS: { key: QualityView; label: string }[] = [
-  { key: 'overview', label: '概览' },
-  { key: 'run', label: '运行与批次' },
-  { key: 'studio', label: '用例与模型' },
+const VIEWS: { key: QualityView; label: string; hint: string }[] = [
+  { key: 'overview', label: '概览', hint: '这批能不能用' },
+  { key: 'batches', label: '批次', hint: '逐批看明细' },
+  { key: 'scoreflow', label: '评分流程', hint: '分数从哪来' },
+  { key: 'studio', label: '用例与模型', hint: '改题、切模型' },
 ];
 
-export function Quality() {
-  const [params, setParams] = useSearchParams();
-  const [view, setView] = useState<QualityView>(() =>
-    params.get('focus') === 'scoreflow' ? 'run' : 'overview',
-  );
+function parseView(raw: string | null, legacyFocus: string | null): QualityView {
+  if (legacyFocus === 'scoreflow') return 'scoreflow';
+  const found = VIEWS.find((item) => item.key === raw);
+  return found?.key ?? 'overview';
+}
 
-  const showScoreFlow = () => {
-    setView('run');
-    setParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.set('focus', 'scoreflow');
-      return next;
-    }, { replace: true });
-  };
+export function Quality() {
+  const [params] = useSearchParams();
+  const view = useMemo(
+    () => parseView(params.get('view'), params.get('focus')),
+    [params],
+  );
 
   return (
     <div className="page quality-page">
       <h1>质量评估</h1>
-      <p className="subtitle">先看这批能不能用，再看分数从哪来 —— 题和模型都能在这里直接改</p>
+      <p className="subtitle">
+        先看这批能不能用，再看分数从哪来 —— 题和模型都能在这里直接改
+      </p>
 
-      <div className="tag-row">
-        <div className="view-tabs" role="tablist" aria-label="质量视图">
-          {VIEWS.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              role="tab"
-              aria-selected={view === item.key}
-              className={`view-tab${view === item.key ? ' active' : ''}`}
-              onClick={() => setView(item.key)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-        <button type="button" className="oj-link-btn quality-flow-entry" onClick={showScoreFlow}>
-          查看评分流程
-        </button>
-      </div>
+      <nav className="quality-views" aria-label="质量视图">
+        {VIEWS.map((item) => (
+          <Link
+            key={item.key}
+            to={`?view=${item.key}`}
+            replace
+            className={`quality-view-link${view === item.key ? ' active' : ''}`}
+            aria-current={view === item.key ? 'page' : undefined}
+          >
+            {item.label}
+            <span className="muted">{item.hint}</span>
+          </Link>
+        ))}
+      </nav>
 
-      {view === 'overview' && (
-        <Overview onShowBatches={() => setView('run')} onShowScoreFlow={showScoreFlow} />
-      )}
-      {view === 'run' && <OpenJudge />}
+      {view === 'overview' && <Overview />}
+      {view === 'batches' && <OpenJudge />}
+      {view === 'scoreflow' && <OpenJudge focusScoreFlow />}
       {view === 'studio' && <Studio />}
     </div>
   );

@@ -54,6 +54,7 @@ const LIMITS = {
   tracks: ['A', 'B'],
   risks: ['low'],
   permissions: ['readonly'],
+  tiers: ['must_pass', 'challenge'],
 };
 
 function settingsPayload() {
@@ -81,6 +82,7 @@ function libraryPayload() {
         subject: 'repo_qa',
         fixture: 'python-basic',
         offline: false,
+        tier: 'must_pass',
         source: 'repo' as const,
         edited: false,
       },
@@ -92,6 +94,7 @@ function libraryPayload() {
         subject: 'repo_qa',
         fixture: 'python-basic',
         offline: false,
+        tier: 'challenge',
         source: 'overlay' as const,
         edited: true,
       },
@@ -166,6 +169,21 @@ describe('题库列表', () => {
     expect(await screen.findByText('仓库')).toBeTruthy();
     expect(screen.getByText('改过')).toBeTruthy();
     expect(screen.getByText(/本地改动 1 条/)).toBeTruthy();
+  });
+
+  it('分层列与分层筛选都看得见、点得动', async () => {
+    const { container } = renderStudio();
+    // 分层只在 JSON 里能看见等于没标：列表上必须直接分辨必过集与挑战集。
+    expect(await screen.findByText('a-1')).toBeTruthy();
+    expect(container.querySelectorAll('.oj-badge.tier-must_pass')).toHaveLength(1);
+    expect(container.querySelectorAll('.oj-badge.tier-challenge')).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: '挑战' }));
+    expect(screen.queryByText('a-1')).toBeNull();
+    expect(screen.getByText('a-2')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '全部分层' }));
+    expect(screen.getByText('a-1')).toBeTruthy();
   });
 
   it('点一条用例会打开编辑器', async () => {

@@ -1,25 +1,33 @@
 // @vitest-environment jsdom
+/**
+ * 质量页集成测试：视图路由、概览门禁矩阵、批次下钻与归因分桶。
+ *
+ * 重点覆盖 SPEC-0008 里前端要修的那几条：F1 单一阈值线、F2 批次分页、
+ * F3 门禁下钻不分类型、F6 时间本地化、F7 五赛道固定五行、F9 批次身份。
+ */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  createCaseFromBatch,
   fetchOpenJudgeBatch,
   fetchOpenJudgeBatches,
   fetchOpenJudgeCalibration,
   fetchOpenJudgeCase,
   fetchOpenJudgeCaseDocument,
-  fetchOpenJudgeLibrary,
-  fetchOpenJudgeSettings,
   fetchOpenJudgeCases,
   fetchOpenJudgeCompare,
   fetchOpenJudgeCoverage,
+  fetchOpenJudgeLibrary,
   fetchOpenJudgeRubrics,
   fetchOpenJudgeRun,
   fetchOpenJudgeScoringConfig,
   fetchOpenJudgeSeries,
+  fetchOpenJudgeSettings,
   fetchOpenJudgeSuites,
 } from '../api/client';
+import type { OjBatch } from '../types';
 import { Quality } from './Quality';
 
 vi.mock('../api/client', () => ({
@@ -45,6 +53,7 @@ vi.mock('../api/client', () => ({
   saveOpenJudgeCase: vi.fn(),
   deleteOpenJudgeCase: vi.fn(),
   restoreOpenJudgeCase: vi.fn(),
+  createCaseFromBatch: vi.fn(),
 }));
 
 const mockSeries = vi.mocked(fetchOpenJudgeSeries);
@@ -53,95 +62,125 @@ const mockBatches = vi.mocked(fetchOpenJudgeBatches);
 const mockBatch = vi.mocked(fetchOpenJudgeBatch);
 const mockCalibration = vi.mocked(fetchOpenJudgeCalibration);
 const mockCases = vi.mocked(fetchOpenJudgeCases);
+const mockCase = vi.mocked(fetchOpenJudgeCase);
 const mockCompare = vi.mocked(fetchOpenJudgeCompare);
 const mockCoverage = vi.mocked(fetchOpenJudgeCoverage);
 const mockRubrics = vi.mocked(fetchOpenJudgeRubrics);
 const mockRun = vi.mocked(fetchOpenJudgeRun);
-const mockCase = vi.mocked(fetchOpenJudgeCase);
 const mockScoringConfig = vi.mocked(fetchOpenJudgeScoringConfig);
 const mockSettings = vi.mocked(fetchOpenJudgeSettings);
 const mockLibrary = vi.mocked(fetchOpenJudgeLibrary);
 const mockCaseDoc = vi.mocked(fetchOpenJudgeCaseDocument);
+const mockBackfill = vi.mocked(createCaseFromBatch);
 
-function makeOjBatch() {
+const LIMITS = {
+  max_concurrency: 4,
+  min_timeout: 30,
+  max_timeout: 900,
+  max_limit: 30,
+  tracks: ['A', 'B'],
+  risks: ['low'],
+  permissions: ['readonly'],
+  tiers: ['must_pass', 'challenge'],
+};
+
+/** 一个「只跑了 A」的批次：范围不足 → partial，并带一条 advisory 原因。 */
+function makeBatch(overrides: Partial<OjBatch> = {}): OjBatch {
   return {
     id: 3,
-    verdict: 'pass' as const,
+    verdict: 'partial',
     model: 'deepseek-v4.1-flash',
-    suite_sha: 'suite123456789',
-    plan_sha: 'plan123456789',
+    suite_sha: 'suite123456789abc',
+    plan_sha: 'plan123456789abc',
     started_at: '2026-11-25T06:00:00Z',
     finished_at: '2026-11-25T06:10:00Z',
     summary: {
-      verdict: 'pass' as const,
-      kpi: { cases: 90, passed: 80, judge_n: 60, violations: 0 },
+      verdict: 'partial',
+      scope: { mode: 'single_track', measured_tracks: ['A'], unmeasured_tracks: ['B', 'C', 'D', 'E'] },
+      causes: [
+        {
+          code: 'judge_below',
+          message: 'A 赛道：裁判均分 0.52 低于门槛 0.60',
+          severity: 'advisory',
+          track: 'A',
+        },
+      ],
+      evidence: {
+        judge_level: 'soft',
+        judge_model: 'qwen3.8-flash',
+        calibration_checked: true,
+        calibration_n: 42,
+        calibration_spearman: 0.64,
+        measured_tracks: 1,
+      },
+      truncated: { failures: true, pareto: false, total_failures: 120 },
+      challenge_score: 0.5,
+      case_total: 90,
+      kpi: {
+        cases: 30,
+        case_count: 28,
+        trials: 2,
+        passed: 24,
+        judge_n: 20,
+        violations: 0,
+        pass_at_k: 0.9,
+        pass_hat_k: 0.75,
+        judge_failed_cases: 4,
+        rule_failed_cases: 4,
+        not_judged_cases: 8,
+        cost_usd: null,
+        cost_note: '未配置单价（DEVOPS_AGENT_OPENJUDGE_USD_PER_1K）',
+      },
       tracks: {
         A: {
           n: 28,
+          total: 28,
           passed: 24,
           pass_rate: 0.857,
-          judge_avg: 0.72,
+          rule_pass_rate: 0.857,
+          judge_avg: 0.52,
           violations: 0,
-          verdict: 'pass' as const,
+          ci: [0.68, 0.95],
+          verdict: 'partial',
+          challenge: { total: 2, passed: 1 },
+          reasons: [
+            {
+              code: 'judge_below',
+              actual: 0.52,
+              threshold: 0.6,
+              message: '裁判均分 0.52 低于门槛 0.60',
+              severity: 'advisory' as const,
+            },
+          ],
         },
       },
       subjects: {},
+      stages: {},
       failures: [
         {
-          case_id: 'a-fail',
+          case_id: 'a-rule',
           track: 'A',
           status: 'success',
           violations: 0,
           failed_checks: ['must_cite:x'],
-          repro: 'python -m devops_agent.openjudge run --case a-fail --no-judge',
+          judge_dims: [],
+          failure_type: 'rule',
+          repro: 'run --case a-rule',
+        },
+        {
+          case_id: 'a-judge',
+          track: 'A',
+          status: 'success',
+          violations: 0,
+          failed_checks: [],
+          judge_dims: ['correctness'],
+          failure_type: 'judge_score',
+          repro: 'run --case a-judge',
         },
       ],
-      pareto: [{ check: 'must_cite:x', count: 1 }],
+      pareto: { rule: [{ check: 'must_cite:x', count: 1 }], judge: [{ check: 'correctness', count: 1 }] },
     },
-  };
-}
-
-function makeCaseDetail() {
-  return {
-    id: 11,
-    case_id: 'a-fail',
-    track: 'A',
-    subject: 'repo_qa',
-    risk: 'low',
-    status: 'success',
-    passed: false,
-    latency_ms: 1200,
-    tokens: { input: 10, output: 5 },
-    checks: [{ name: 'must_cite:x', kind: 'content', passed: false, detail: '缺少引用' }],
-    judge: {
-      correctness: { status: 'scored' as const, score: 3, normalized: 0.5, weight: 0.35, reason: '引用不足' },
-      loop: { status: 'skipped' as const, skip_reason: 'rule_failed' },
-    },
-    scoring: {
-      rule_passed: false,
-      violations: 0,
-      judge_norm: 0.5,
-      pass_judge: 0.6,
-      passed: false,
-      formula: 'judge_norm = sum(normalized * weight) / sum(weight)',
-      failure_type: 'rule' as const,
-      rule_failed_checks: ['must_cite:x'],
-      judge_failed: [],
-    },
-    events: ['开始', '结束'],
-    input_stages: [{ stage: 'prompt' }],
-    workspace: { states: {}, diff: '', hashes: {} },
-    trace: {
-      status: 'success',
-      error: '',
-      turns: [{ role: 'user', content: '你好' }],
-      tool_calls: [{ name: 'Grep', args: { pattern: 'x' }, state: 'done', result_excerpt: '命中一处' }],
-      events: ['开始'],
-      input_stages: [],
-      workspace: { states: {}, diff: '', hashes: {} },
-      judge_input: {},
-      final_text: '回答',
-    },
+    ...overrides,
   };
 }
 
@@ -152,7 +191,6 @@ function makeScoringConfig() {
       sha: 'plan123456789',
       judges: [
         { key: 'correctness', grader: 'CorrectnessGrader', weight: 0.35, scale: [1, 5] as [number, number] },
-        { key: 'relevance', grader: 'RelevanceGrader', weight: 0.15, scale: [1, 5] as [number, number] },
       ],
     },
     pass_judge: 0.6,
@@ -170,11 +208,75 @@ function makeScoringConfig() {
   };
 }
 
-function renderQuality() {
+function makeCaseDetail(rowId: number) {
+  const judge = rowId === 12;
+  return {
+    id: rowId,
+    case_id: judge ? 'a-judge' : 'a-rule',
+    track: 'A',
+    subject: 'repo_qa',
+    risk: 'low',
+    status: 'success',
+    passed: false,
+    latency_ms: 1200,
+    tokens: { input: 10, output: 5 },
+    tier: 'must_pass',
+    trial: 0,
+    checks: judge
+      ? [{ name: 'must_cite:x', kind: 'content', passed: true, detail: '有引用' }]
+      : [{ name: 'must_cite:x', kind: 'content', passed: false, detail: '缺少引用' }],
+    judge: {
+      correctness: { status: 'scored' as const, score: 3, normalized: 0.5, weight: 0.35, reason: '引用不足' },
+    },
+    scoring: {
+      rule_passed: !judge,
+      violations: 0,
+      judge_norm: 0.5,
+      pass_judge: 0.6,
+      passed: false,
+      formula: 'judge_norm = sum(normalized * weight) / sum(weight)',
+      failure_type: judge ? ('judge_score' as const) : ('rule' as const),
+      rule_failed_checks: judge ? [] : ['must_cite:x'],
+      judge_failed: [],
+    },
+    events: ['开始', '结束'],
+    input_stages: [],
+    workspace: {},
+    trace: {
+      status: 'success',
+      error: '',
+      turns: [{ role: 'user', content: '你好' }],
+      tool_calls: [],
+      events: ['开始'],
+      input_stages: [],
+      workspace: {},
+      judge_input: {},
+      final_text: '回答',
+    },
+  };
+}
+
+function rowOf(id: number, caseId: string) {
+  return {
+    id,
+    case_id: caseId,
+    track: 'A',
+    subject: 'repo_qa',
+    risk: 'low',
+    status: 'success',
+    passed: false,
+    latency_ms: 1200,
+    tokens: { input: 10, output: 5 },
+    tier: 'must_pass',
+    trial: 0,
+  };
+}
+
+function renderQuality(initial = '/?view=overview') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initial]}>
         <Quality />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -187,268 +289,253 @@ beforeEach(() => {
     unobserve() {}
     disconnect() {}
   });
-  mockSeries.mockReset();
-  mockSuites.mockReset();
-  mockBatches.mockReset();
-  mockBatch.mockReset();
-  mockCalibration.mockReset();
-  mockCases.mockReset();
-  mockCompare.mockReset();
-  mockCoverage.mockReset();
-  mockRubrics.mockReset();
-  mockRun.mockReset();
-  mockCase.mockReset();
-  mockScoringConfig.mockReset();
+  for (const fn of [
+    mockSeries, mockSuites, mockBatches, mockBatch, mockCalibration, mockCases, mockCase,
+    mockCompare, mockCoverage, mockRubrics, mockRun, mockScoringConfig, mockSettings,
+    mockLibrary, mockCaseDoc, mockBackfill,
+  ]) {
+    fn.mockReset();
+  }
 
   mockSeries.mockResolvedValue({
     points: [
-      {
-        batch_id: 1,
-        finished_at: '2026-11-24T10:00:00Z',
-        verdict: 'pass',
-        pass_rate: 0.7,
-        cases: 10,
-        tracks: { A: 0.7 },
-      },
-      {
-        batch_id: 2,
-        finished_at: '2026-11-25T10:00:00Z',
-        verdict: 'pass',
-        pass_rate: 0.7,
-        cases: 10,
-        tracks: { A: 0.7 },
-      },
+      { batch_id: 2, finished_at: '2026-11-24T10:00:00Z', verdict: 'fail', pass_rate: 0.5, cases: 10, tracks: { A: 0.5 } },
+      { batch_id: 3, finished_at: '2026-11-25T10:00:00Z', verdict: 'partial', pass_rate: 0.8, cases: 10, tracks: { A: 0.8 } },
     ],
   });
   mockSuites.mockResolvedValue({
     total: 90,
     suite_sha: 'suite123456789',
     tracks: [
-      {
-        track: 'A',
-        cases: 28,
-        rules: { pass_rate: 0.6, judge: 0.6, min_n: 10 },
-        latest: { batch_id: 2, pass_rate: 0.7, verdict: 'pass', finished_at: '2026-11-25T10:00:00Z' },
-      },
-      {
-        track: 'B',
-        cases: 24,
-        rules: { pass_rate: 0.6, judge: 0.6, min_n: 10 },
-        latest: null,
-      },
+      { track: 'A', cases: 28, rules: { pass_rate: 0.6, judge: 0.6, min_n: 10 }, latest: null },
+      { track: 'B', cases: 24, rules: { pass_rate: 0.6, judge: 0.6, min_n: 10, max_violations: 0 }, latest: null },
     ],
   });
-  mockBatches.mockResolvedValue({ items: [makeOjBatch()], total: 1 });
-  mockBatch.mockResolvedValue(makeOjBatch());
+  mockBatches.mockResolvedValue({ items: [makeBatch()], total: 45, limit: 20, offset: 0 });
+  mockBatch.mockResolvedValue(makeBatch());
   mockCalibration.mockResolvedValue({
     checked: true,
     valid: false,
+    level: 'soft',
     missing: ['correctness'],
     required_n: 100,
     required_spearman: 0.7,
+    progress: {
+      n: 42,
+      spearman: 0.64,
+      next: 'hard',
+      soft: { n: 30, spearman: 0.6 },
+      hard: { n: 100, spearman: 0.7 },
+    },
   });
-  mockCase.mockResolvedValue(makeCaseDetail());
-  mockScoringConfig.mockResolvedValue(makeScoringConfig());
   mockCases.mockResolvedValue({
-    items: [
-      {
-        id: 11,
-        case_id: 'a-fail',
-        track: 'A',
-        subject: 'repo_qa',
-        risk: 'low',
-        status: 'success',
-        passed: false,
-        latency_ms: 1200,
-        tokens: { input: 10, output: 5 },
-      },
-    ],
-    total: 1,
+    items: [rowOf(11, 'a-rule'), rowOf(12, 'a-judge')],
+    total: 2,
     limit: 50,
     offset: 0,
   });
+  mockCase.mockImplementation(async (_batchId: number, rowId: number) => makeCaseDetail(rowId));
+  mockScoringConfig.mockResolvedValue(makeScoringConfig());
   mockCompare.mockResolvedValue({
-    base: 1,
-    head: 2,
-    comparable: true,
-    suite_sha: ['a', 'b'],
-    tracks: { A: { base: 0.5, head: 0.8, delta: 0.3 } },
-    flips: [{ case_id: 'a-fail', base: false, head: true }],
+    base: 1, head: 2, comparable: true, suite_sha: ['a', 'b'],
+    tracks: { A: { base: 0.5, head: 0.8, delta: 0.3 } }, flips: [],
   });
   mockCoverage.mockResolvedValue({
-    cases: 90,
-    suite_sha: 'suite123456789',
-    coverage: { tracks: { A: 28, B: 24 } },
-    problems: [],
+    cases: 90, suite_sha: 'suite123456789', coverage: { tracks: { A: 28 } }, problems: [],
   });
   mockRubrics.mockResolvedValue({ items: [], total: 0 });
   mockSettings.mockResolvedValue({
     values: { target_model: '', judge_model: '', judge: false, concurrency: 2, timeout: 180 },
     effective: { target_model: 'deepseek-v4.1-flash', judge_model: 'qwen3.8-flash' },
-    limits: {
-      max_concurrency: 4,
-      min_timeout: 30,
-      max_timeout: 900,
-      max_limit: 30,
-      tracks: ['A', 'B'],
-      risks: ['low'],
-      permissions: ['readonly'],
-    },
+    limits: LIMITS,
   });
   mockLibrary.mockResolvedValue({
     items: [
       {
-        id: 'a-1',
-        track: 'A',
-        risk: 'low',
-        permission: 'readonly',
-        subject: 'repo_qa',
-        fixture: 'python-basic',
-        offline: false,
-        source: 'repo',
-        edited: false,
+        id: 'a-1', track: 'A', risk: 'low', permission: 'readonly', subject: 'repo_qa',
+        fixture: 'python-basic', offline: false, source: 'repo', edited: false,
       },
     ],
     total: 1,
     suite: { cases: 1, suite_sha: 'abcdef123456', overlay: 0, deleted: 0, dir: '/tmp/x' },
     thresholds: { A: { pass_rate: 0.6 } },
-    limits: {
-      max_concurrency: 4,
-      min_timeout: 30,
-      max_timeout: 900,
-      max_limit: 30,
-      tracks: ['A', 'B'],
-      risks: ['low'],
-      permissions: ['readonly'],
-    },
+    limits: LIMITS,
   });
   mockCaseDoc.mockResolvedValue({
     case: { _source: 'repo', _edited: false, id: 'a-1', track: 'A', turns: ['你好'] },
   });
   mockRun.mockResolvedValue({
-    id: 5,
-    status: 'done',
-    track: 'A',
-    total: 10,
-    done: 10,
-    judge: false,
-    batch_id: 3,
-    error: '',
-    elapsed_ms: 1000,
-    current_case: '',
+    id: 5, status: 'done', track: 'A', total: 10, done: 10, judge: false,
+    batch_id: 3, error: '', elapsed_ms: 1000, current_case: '',
   });
+  mockBackfill.mockResolvedValue({
+    case: { id: 'a-rule-b3' },
+    suite: { cases: 91, suite_sha: 'abcdef123456', overlay: 1, deleted: 0, dir: '/tmp/x' },
+  } as never);
 });
 
 afterEach(cleanup);
 
-describe('Quality 三个视图', () => {
-  it('只有「概览 / 运行与批次 / 用例与模型」三个 tab，旧 tab 已删除', () => {
-    renderQuality();
+describe('质量页视图路由', () => {
+  it('四个视图由 URL 决定，选中态用 aria-current 而不是 tab 角色', async () => {
+    renderQuality('/?view=overview');
 
-    expect(screen.getByText('概览')).toBeTruthy();
-    expect(screen.getByText('运行与批次')).toBeTruthy();
-    expect(screen.getByText('用例与模型')).toBeTruthy();
-    expect(screen.queryByText('评测集')).toBeNull();
-    expect(screen.queryByText('评测批次')).toBeNull();
-    expect(screen.queryByText('OpenJudge')).toBeNull();
+    const nav = screen.getByRole('navigation', { name: '质量视图' });
+    expect(nav).toBeTruthy();
+    const links = screen.getAllByRole('link');
+    expect(links.map((link) => link.textContent)).toEqual(
+      expect.arrayContaining([expect.stringContaining('概览')]),
+    );
+    expect(screen.getByRole('link', { name: /概览/ }).getAttribute('aria-current')).toBe('page');
+    expect(screen.queryByRole('tablist')).toBeNull();
+    expect(screen.queryByText('运行与批次')).toBeNull();
+  });
+
+  it('旧的 ?focus=scoreflow 仍能落到评分流程视图', async () => {
+    renderQuality('/?focus=scoreflow');
+    await screen.findByText('评分流程');
+    expect(screen.getByRole('link', { name: /评分流程/ }).getAttribute('aria-current')).toBe('page');
   });
 
   it('用例与模型视图能改模型、能打开用例', async () => {
-    renderQuality();
-    fireEvent.click(screen.getByText('用例与模型'));
-
+    renderQuality('/?view=studio');
     expect(await screen.findByText('评测模型')).toBeTruthy();
-    expect(await screen.findByText('题库')).toBeTruthy();
     fireEvent.click(await screen.findByText('a-1'));
     expect(await screen.findByLabelText('用例 JSON')).toBeTruthy();
   });
+});
 
-  it('概览展示最近批次与通过率趋势', async () => {
-    renderQuality();
+describe('概览', () => {
+  it('结论、范围、原因、证据四段齐全', async () => {
+    renderQuality('/?view=overview');
 
-    expect(await screen.findByText(/批次 #2/)).toBeTruthy();
-    expect(screen.getByText(/通过率 70\.0%（n=10）/)).toBeTruthy();
-    expect(await screen.findByText(/精度上限 10\.0pp，变化在抖动范围内/)).toBeTruthy();
+    expect(await screen.findByText(/局部结论：只测了部分赛道/)).toBeTruthy();
+    expect(screen.getByText(/范围 单赛道/)).toBeTruthy();
+    expect(screen.getByText(/A 赛道：裁判均分 0\.52 低于门槛 0\.60/)).toBeTruthy();
+    expect(screen.getByText(/裁判档位/)).toBeTruthy();
+    expect(screen.getAllByText(/软校准（可降为未证实）/).length).toBeGreaterThan(0);
   });
 
-  it('概览在加载中显示占位而不是「还没有批次」', async () => {
-    mockSeries.mockReturnValue(new Promise(() => {}));
-    renderQuality();
+  it('门禁矩阵逐赛道给阈值，不再画一条全局阈值线', async () => {
+    renderQuality('/?view=overview');
 
+    expect(await screen.findByText('赛道门禁矩阵')).toBeTruthy();
+    expect(screen.getAllByText(/通过率 ≥60\.0% · 质量分 ≥0\.60 · 至少 10 条/).length).toBe(2);
+    expect(screen.getByText(/违例 ≤0/)).toBeTruthy();
+    expect(screen.getByText(/五个赛道的门槛并不相同/)).toBeTruthy();
+    // 没有跑过的赛道也要占一行
+    expect(screen.getAllByText('未测').length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('k=1 之外才显示多次试验的稳定性口径', async () => {
+    renderQuality('/?view=overview');
+    expect(await screen.findByText(/pass@k（至少过一次）/)).toBeTruthy();
+  });
+
+  it('加载中显式占位，不先渲染「还没有批次」', () => {
+    mockSeries.mockReturnValue(new Promise(() => {}));
+    renderQuality('/?view=overview');
     expect(screen.getByText('正在加载质量趋势…')).toBeTruthy();
     expect(screen.queryByText(/还没有批次/)).toBeNull();
   });
 
-  it('无批次时概览给出发起评测入口', async () => {
+  it('无批次时给出去批次的入口', async () => {
     mockSeries.mockResolvedValue({ points: [] });
-    renderQuality();
-
+    mockBatches.mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
+    renderQuality('/?view=overview');
     expect(await screen.findByText(/还没有批次/)).toBeTruthy();
-    expect(screen.getByText('去发起评测')).toBeTruthy();
+    expect(screen.getByRole('link', { name: '去发起评测' })).toBeTruthy();
+  });
+});
+
+describe('批次视图', () => {
+  it('身份卡摆出模型、指纹、耗时与成本口径', async () => {
+    renderQuality('/?view=batches');
+
+    expect(await screen.findByText('批次 #3')).toBeTruthy();
+    expect(screen.getAllByText('deepseek-v4.1-flash').length).toBeGreaterThan(0);
+    expect(screen.getByText('qwen3.8-flash')).toBeTruthy();
+    expect(screen.getByText('suite1234567')).toBeTruthy();
+    expect(screen.getByText('10m0s')).toBeTruthy();
+    expect(screen.getAllByText(/未计价 · 未配置单价/).length).toBeGreaterThan(0);
   });
 
-  it('运行与批次视图展示发起入口、题库与批次明细', async () => {
-    renderQuality();
-    fireEvent.click(screen.getByText('运行与批次'));
-
-    expect(await screen.findByText('发起评测')).toBeTruthy();
-    expect((await screen.findAllByText(/#3/)).length).toBeGreaterThan(0);
-    expect((await screen.findAllByText('A 仓库问答')).length).toBeGreaterThan(0);
-    expect((await screen.findAllByText('a-fail')).length).toBeGreaterThan(0);
-    expect((await screen.findAllByText('must_cite:x')).length).toBeGreaterThan(0);
-    // 题库卡片：有最近批次的显示通过率，没有的显式提示
-    expect(await screen.findByText('尚无批次')).toBeTruthy();
+  it('五赛道固定五行，未测赛道显式写出', async () => {
+    renderQuality('/?view=batches');
+    await screen.findByText('赛道结论');
+    expect(screen.getAllByText('本批次未测此赛道')).toHaveLength(4);
+    expect(screen.getAllByText('A 仓库问答').length).toBeGreaterThan(0);
   });
 
-  it('评分流程可展开，阈值来自 scoring-config', async () => {
-    renderQuality();
-    fireEvent.click(screen.getByText('运行与批次'));
+  it('批次分页用真实 total，并把它传回后端', async () => {
+    renderQuality('/?view=batches');
+    expect(await screen.findByText(/共 45 批 · 第 1\/3 页/)).toBeTruthy();
+    await waitFor(() => expect(mockBatches).toHaveBeenCalledWith(20, undefined, 0));
+    fireEvent.click(screen.getByRole('button', { name: '更早' }));
+    await waitFor(() => expect(mockBatches).toHaveBeenCalledWith(20, undefined, 20));
+  });
 
-    expect(await screen.findByText('评分流程')).toBeTruthy();
-    const toggle = screen.getByRole('button', { name: '展开依据' });
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    fireEvent.click(toggle);
+  it('失败按规则与裁判分桶，归因也分开列', async () => {
+    renderQuality('/?view=batches');
+
+    expect(await screen.findByText('规则失败 1')).toBeTruthy();
+    expect(screen.getByText('裁判低分 1')).toBeTruthy();
+    expect(screen.getByText(/断言 must_cite:x/)).toBeTruthy();
+    fireEvent.click(screen.getByText('裁判低分 1'));
+    expect(screen.getByText(/裁判 correctness/)).toBeTruthy();
+    expect(screen.getByText('规则断言')).toBeTruthy();
+    expect(screen.getByText('裁判维度')).toBeTruthy();
+  });
+
+  it('失败列表被截断时说明总数', async () => {
+    renderQuality('/?view=batches');
+    expect(await screen.findByText(/本批次共 120 条失败/)).toBeTruthy();
+  });
+
+  it('回流按钮把批次用例变成题库草稿', async () => {
+    renderQuality('/?view=batches');
+    fireEvent.click(await screen.findByText('回流成草稿'));
+    await waitFor(() => expect(mockBackfill).toHaveBeenCalledWith(3, 11));
+    expect(await screen.findByText('已回流为草稿 a-rule-b3')).toBeTruthy();
+  });
+});
+
+describe('评分流程与下钻', () => {
+  it('评分流程视图默认展开，门禁用「提示」而不是「未校准」', async () => {
+    renderQuality('/?view=scoreflow');
+
     expect(await screen.findByText('归一化合成')).toBeTruthy();
-    expect(screen.getByText(/判分方案 oj-plan-v1/)).toBeTruthy();
     expect(screen.getByRole('button', { name: '收起依据' }).getAttribute('aria-expanded')).toBe('true');
-    expect(mockScoringConfig).toHaveBeenCalled();
-  });
-
-  it('评分流程展示三道门禁，未校准只报告不参与通过判定', async () => {
-    renderQuality();
-    fireEvent.click(screen.getByText('运行与批次'));
-
-    expect(await screen.findByText('可信度门禁')).toBeTruthy();
-    expect(screen.getByText('用例审核')).toBeTruthy();
-    expect(screen.getByText('已审 85/90')).toBeTruthy();
-    expect(screen.getByText('rubric 冻结')).toBeTruthy();
-    expect(screen.getByText('已冻结 repo_qa_quality@v1')).toBeTruthy();
-    expect(screen.getByText('裁判校准')).toBeTruthy();
-    expect(screen.getByText('未校准')).toBeTruthy();
+    expect(screen.getAllByText(/软校准（可降为未证实）/).length).toBeGreaterThan(0);
     expect(screen.getByText(/缺 correctness/)).toBeTruthy();
-    expect(mockCalibration).toHaveBeenCalled();
+    expect(screen.getByText(/样本 42\/100 · ρ 0\.64/)).toBeTruthy();
   });
 
-  it('失败列表可定位到固定抽屉并在四个 Tab 间切换', async () => {
-    renderQuality();
-    fireEvent.click(screen.getByText('运行与批次'));
+  it('点「语义裁判」的证据只跳到裁判低分那条，而不是第一条失败', async () => {
+    renderQuality('/?view=scoreflow');
+    await screen.findByText('归一化合成');
 
-    fireEvent.click(await screen.findByText('定位'));
+    const inspectButtons = screen.getAllByRole('button', { name: '查看证据' });
+    fireEvent.click(inspectButtons[1]);
+
     expect(await screen.findByRole('dialog', { name: '用例诊断' })).toBeTruthy();
-    expect(screen.getByText('判定依据')).toBeTruthy();
-    expect(screen.getByRole('tab', { name: '规则断言' }).getAttribute('aria-selected')).toBe('true');
-    fireEvent.click(screen.getByRole('tab', { name: '语义裁判' }));
-    expect(await screen.findByText('CorrectnessGrader')).toBeTruthy();
-    fireEvent.click(screen.getByText('轨迹证据'));
-    expect(await screen.findByText('对话轮次（1）')).toBeTruthy();
+    await waitFor(() => expect(mockCase).toHaveBeenCalledWith(3, 12));
   });
 
-  it('批次结论过滤把 verdict 传给后端', async () => {
-    renderQuality();
-    fireEvent.click(screen.getByText('运行与批次'));
-    await screen.findByText('批次');
+  it('门禁没有对应失败时给具体文案，而不是跳错用例', async () => {
+    const batch = makeBatch();
+    batch.summary.failures = [
+      {
+        case_id: 'a-rule', track: 'A', status: 'success', violations: 0,
+        failed_checks: ['must_cite:x'], judge_dims: [], failure_type: 'rule', repro: 'run --case a-rule',
+      },
+    ];
+    mockBatch.mockResolvedValue(batch);
+    mockBatches.mockResolvedValue({ items: [batch], total: 1, limit: 20, offset: 0 });
+    renderQuality('/?view=scoreflow');
+    await screen.findByText('归一化合成');
 
-    fireEvent.change(screen.getByLabelText('结论'), { target: { value: 'fail' } });
-    await waitFor(() => expect(mockBatches).toHaveBeenCalledWith(20, 'fail'));
+    fireEvent.click(screen.getAllByRole('button', { name: '查看证据' })[1]);
+    expect(await screen.findByText('本批次没有裁判低分的用例')).toBeTruthy();
   });
 });

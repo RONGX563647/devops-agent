@@ -22,10 +22,15 @@ RISKS = ("low", "medium", "high_risk")
 PERMISSIONS = ("readonly", "workspace", "execute", "auto", "unrestricted")
 REVIEW_STATUSES = ("draft", "approved", "rejected")
 REVIEW_FIELDS = ("review_status", "reviewer", "reviewed_at", "review_note")
+#: 必过集一票否决，挑战集只进挑战分与趋势（SPEC-0008 §5.6）。
+TIERS = ("must_pass", "challenge")
+#: 未标注分层的用例默认进必过集 —— 漏标不该变成「悄悄放宽门禁」。
+DEFAULT_TIER = "must_pass"
 
 
 class ReviewError(ValueError):
     """进入门禁的用例未完成人工审核。"""
+
 
 # 各赛道最低条数（SPEC §4 锁定配比），validate 用它防止题库被悄悄删薄
 TRACK_QUOTA = {"A": 28, "B": 24, "C": 14, "D": 12, "E": 12}
@@ -44,6 +49,7 @@ _TOP_KEYS = {
     "expected",
     "judge",
     "offline",
+    "tier",
     *REVIEW_FIELDS,
 }
 _EXPECTED_KEYS = {
@@ -127,6 +133,8 @@ class Case:
     expected: Expected
     judge: dict[str, Any] = field(default_factory=dict)
     offline: bool = False
+    #: 默认必过集：旧题库没有该字段时不能悄悄变成「不参与门禁」。
+    tier: str = DEFAULT_TIER
     review_status: str = "draft"
     reviewer: str = ""
     reviewed_at: str = ""
@@ -249,6 +257,7 @@ def parse_case(raw: dict[str, Any]) -> Case:
     track = _require(str(raw.get("track", "")), TRACKS, case_id, "赛道")
     risk = _require(str(raw.get("risk", "")), RISKS, case_id, "风险等级")
     permission = _require(str(raw.get("permission", "")), PERMISSIONS, case_id, "权限档位")
+    tier = _require(str(raw.get("tier", DEFAULT_TIER)), TIERS, case_id, "用例分层")
     # step4: turns/expected 递归解析后构造
     review_status = _require(
         str(raw.get("review_status", "draft")), REVIEW_STATUSES, case_id, "审核状态"
@@ -268,6 +277,7 @@ def parse_case(raw: dict[str, Any]) -> Case:
         expected=_parse_expected(raw.get("expected"), case_id),
         judge=dict(raw.get("judge") or {}),
         offline=bool(raw.get("offline", False)),
+        tier=tier,
         review_status=review_status,
         reviewer=str(raw.get("reviewer", "")),
         reviewed_at=str(raw.get("reviewed_at", "")),
@@ -323,6 +333,7 @@ def suite_sha(cases: list[Case]) -> str:
                         "status_any": case.expected.status_any,
                     },
                     "judge": case.judge,
+                    "tier": case.tier,
                 },
                 sort_keys=True,
                 ensure_ascii=False,
@@ -376,7 +387,7 @@ def _case_problems(case: Case, known_fixtures: set[str]) -> list[str]:
 
 
 def unreviewed_ids(cases: list[Case]) -> list[str]:
-    """ approved 必须带 reviewer；其余状态都视为未审核。 """
+    """approved 必须带 reviewer；其余状态都视为未审核。"""
     return [case.id for case in cases if case.review_status != "approved" or not case.reviewer]
 
 

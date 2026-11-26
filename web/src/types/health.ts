@@ -127,3 +127,21 @@ export interface Health {
   runtime?: RuntimeStatus;
   tools?: Record<string, { available: boolean; binary: string }>;
 }
+
+/**
+ * 联网检索工具的就绪状态（GET /api/tools/search）。
+ *
+ * 按钮能不能点必须由服务端说：前端猜不出「有没有配搜索后端」，
+ * 而给一个点了没反应的开关是最难排查的一类缺陷。
+ */
+export interface SearchToolStatus {
+  configured: boolean;
+  /** tool = 工具化（默认）；provider = 旧请求体模式；off = 禁网 */
+  mode: 'tool' | 'provider' | 'off';
+  /** http / provider；未配置时为空串 */
+  backend: string;
+  max_calls: number;
+  timeout_s: number;
+  /** 不可用原因，直接展示给用户 */
+  reason?: string;
+}

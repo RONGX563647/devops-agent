@@ -12,3 +12,7 @@ from __future__ import annotations
 
 READONLY_TOOL_NAMES: tuple[str, ...] = ("bash", "read", "glob", "grep")
 WRITE_TOOL_NAMES: tuple[str, ...] = ("write", "edit")
+
+# 联网检索工具不属于文件/命令能力，因此不在上面两个元组里：它由独立的 net
+# 维度授予（SPEC-0011 §3）。放进只读集会让「只读档」自动获得出站能力。
+SEARCH_TOOL_NAME = "web_search"

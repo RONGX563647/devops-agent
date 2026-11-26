@@ -40,6 +40,7 @@ from devops_agent.openjudge.metrics import (
     failures_of,
     kpi_of,
     process_stages,
+    search_stats,
     subject_stats,
 )
 from devops_agent.openjudge.trace import TraceRecord
@@ -149,6 +150,9 @@ def summarize(
         "truncated": _truncated(pareto, total_failures),
         "challenge_score": _challenge_score(challenge),
         "case_total": len(cases),
+        # 检索工具的调用统计：工具化后检索从黑盒变成轨迹里的可读记录，
+        # 这里把它投影成汇总，判分与成本核算不必再去翻每条 tool_call。
+        "searches": search_stats(traces),
     }
 
 

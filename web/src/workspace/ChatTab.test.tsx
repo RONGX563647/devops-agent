@@ -24,6 +24,7 @@ const deleteAttachment = vi.fn();
 const fetchPermissions = vi.fn();
 const fetchHealth = vi.fn();
 const fetchModelConfig = vi.fn();
+const fetchSearchToolStatus = vi.fn();
 const switchPermission = vi.fn();
 
 vi.mock('../api/client', () => ({
@@ -33,6 +34,7 @@ vi.mock('../api/client', () => ({
   // 运行时模式：默认按真实模型返回，专门测 Echo 的用例再覆盖
   fetchHealth: () => fetchHealth(),
   fetchModelConfig: (session?: string) => fetchModelConfig(session),
+  fetchSearchToolStatus: () => fetchSearchToolStatus(),
   switchSessionPermission: (...args: unknown[]) => switchPermission(...args),
 }));
 
@@ -158,6 +160,15 @@ function reset() {
   fetchModelConfig.mockReset();
   // 默认没有会话覆盖：面板与 chat-meta 都靠这份数据判断
   fetchModelConfig.mockResolvedValue({ overrides: {} });
+  // 默认检索后端可用：按钮的 disabled 态由它决定，缺了整条 tab 都渲染不出来
+  fetchSearchToolStatus.mockReset();
+  fetchSearchToolStatus.mockResolvedValue({
+    configured: true,
+    mode: 'tool',
+    backend: 'http',
+    max_calls: 5,
+    timeout_s: 15,
+  });
   queryClient.clear();
   snapshot.messages = [];
   snapshot.running = false;
@@ -635,9 +646,11 @@ describe('输入区链接芯片', () => {
 });
 
 describe('联网搜索开关', () => {
-  it('默认关闭，点开后随本轮请求带上 web_search', () => {
+  it('默认关闭，点开后随本轮请求带上 web_search', async () => {
     render(tab());
     const toggle = screen.getByRole('button', { name: '联网搜索' });
+    // 能力探测是异步的：拿到 configured 之前按钮是禁用态，先等它变可点
+    await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
     expect(toggle.getAttribute('aria-pressed')).toBe('false');
 
     fireEvent.click(toggle);
@@ -649,6 +662,25 @@ describe('联网搜索开关', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
     expect(send).toHaveBeenCalledWith('s-1', '查下最新版本', [], 'workspace', true);
+  });
+
+  it('未配置检索后端时按钮禁用并说出原因', async () => {
+    fetchSearchToolStatus.mockResolvedValue({
+      configured: false,
+      mode: 'tool',
+      backend: '',
+      max_calls: 5,
+      timeout_s: 15,
+      reason: '未配置 DEVOPS_AGENT_SEARCH_ENDPOINT',
+    });
+    render(tab());
+    const toggle = screen.getByRole('button', { name: '联网搜索' });
+    // 点了没反应的开关最难排查：必须禁用，并把「缺什么」写在 title 上。
+    // 等 title 更新而不是等 disabled —— 首屏（数据未到）本来就是禁用的。
+    await waitFor(() =>
+      expect(toggle.getAttribute('title')).toContain('DEVOPS_AGENT_SEARCH_ENDPOINT'),
+    );
+    expect(toggle.hasAttribute('disabled')).toBe(true);
   });
 
   it('默认发送时不带搜索开关', () => {

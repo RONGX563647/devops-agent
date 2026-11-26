@@ -13,6 +13,7 @@ from fastapi import APIRouter
 from devops_agent.governance.presets import UnknownProfile, default_profile, resolve
 from devops_agent.tools.preflight import readiness_payload
 from devops_agent.tools.schema import tool_schemas
+from devops_agent.tools.web_search import search_status
 
 router = APIRouter(prefix="/api", tags=["tools"])
 
@@ -40,3 +41,13 @@ async def tool_preflight() -> dict[str, Any]:
     一起展示，就能解释「为什么这个工具一用就报错」。
     """
     return readiness_payload()
+
+
+@router.get("/tools/search")
+async def search_tool_status() -> dict[str, Any]:
+    """联网工具的就绪状态：前端据此决定「联网」按钮能不能点、为什么不能点。
+
+    没有检索后端时按钮必须置灰并给出原因（缺哪个环境变量），而不是给一个
+    点下去毫无反应的开关 —— 那种「空开关」是最难排查的一类缺陷。
+    """
+    return search_status()

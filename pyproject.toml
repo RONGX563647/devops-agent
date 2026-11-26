@@ -18,6 +18,9 @@ dependencies = [
     "cryptography>=42.0",
     # FastAPI 解析 multipart/form-data 的必需依赖，缺了 POST /api/attachments 直接 500
     "python-multipart>=0.0.9",
+    # 联网检索工具的出站客户端（tools/web_search.py）。显式声明而不是蹭
+    # agentscope 的间接依赖：间接依赖随上游升级消失时，报错会出现在调用点上。
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]

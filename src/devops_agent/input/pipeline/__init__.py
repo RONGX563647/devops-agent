@@ -40,7 +40,7 @@ from .model import (
     estimate_tokens,
 )
 from .prepare import default_workspace_root, prepare
-from .redact import _PLACEHOLDER_RE, SecretSink
+from .redact import _PLACEHOLDER_RE, SecretSink, redact_preview
 
 __all__ = [
     "CHARS_PER_TOKEN",
@@ -64,4 +64,5 @@ __all__ = [
     "default_workspace_root",
     "estimate_tokens",
     "prepare",
+    "redact_preview",
 ]

@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from devops_agent.observability.models import EvalDimension
+from devops_agent.observability.models import EvalDimension, RunStatus
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +23,16 @@ DB_PATH_ENV = "DEVOPS_AGENT_DB_PATH"
 
 # 评测维度 CHECK 与枚举同源：新增维度只改 EvalDimension，DB 约束自动跟进。
 _DIMENSIONS_SQL = ", ".join(f"'{dim.value}'" for dim in EvalDimension)
+# 运行状态同理：DDL 的 CHECK 在 SQLite 里改不了，只能靠「代码与建表同源」防漂移。
+# 注意已存在的库不会自动放宽 CHECK —— 加状态要走 `_RUN_COLUMNS` 的加列路线。
+_STATUS_SQL = ", ".join(f"'{status.value}'" for status in RunStatus)
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id    TEXT NOT NULL,
     domain        TEXT NOT NULL,
-    status        TEXT NOT NULL CHECK (status IN ('running', 'success', 'failed')),
+    status        TEXT NOT NULL CHECK (status IN ({_STATUS_SQL})),
     input         TEXT NOT NULL,
     output        TEXT NOT NULL DEFAULT '',
     started_at    TEXT NOT NULL,

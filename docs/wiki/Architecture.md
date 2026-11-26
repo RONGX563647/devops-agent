@@ -4,14 +4,16 @@
 
 ```
                      ┌──────────────────────────────────────────┐
-  HTTP / SSE   →     │ gateway/  网关：会话、权限、SSE、挂起续跑    │
+  HTTP / SSE   →     │ gateway/  路由(stream/confirm/sessions/health) │
+                     │   编排 run/lease/ending  ┊ 契约 contract/errors │
+                     │   端口 ports/settings    ┊ 保活 sse            │
                      └───────────────┬──────────────────────────┘
                                      │ 只依赖协议
                      ┌───────────────▼──────────────────────────┐
    编排层             │ runtime/runtime.py  AgentRuntime 协议     │
                      │   ├─ runtime/scope_runtime.py  AgentScopeRuntime │
                      │   ├─ runtime/sessions.py SessionRegistry  │
-                     │   └─ runtime/confirm.py  确认协议数据结构  │
+                     │   └─ runtime/{confirm,risk,rules,shell}.py 确认协议 │
                      └───────────────┬──────────────────────────┘
                                      │ 装配点（唯一 import agentscope 的地方）
         ┌────────────────────────────┼────────────────────────────┐
@@ -20,7 +22,7 @@
  input/ 输入管线           secrets/ 密钥保险箱            memory/ 记忆（未接线）
                      ┌──────────────────────────────────────────┐
    观测与评测         │ observability/ 事件流 → SQLite → API      │
-                     │ eval/ 题库 / 判卷 / 裁判 / 报告 / lint     │
+                     │ openjudge/ 题库 / 判卷 / 裁判 / 报告      │
                      └──────────────────────────────────────────┘
 ```
 
@@ -41,21 +43,44 @@
 
 | 步骤 | 代码位置 | 说明 |
 |---|---|---|
-| 1. 解析请求 | `main.RunRequest` | `session_id` / `user_input` / `attachments` / `permission` / `web_search` |
-| 2. 档位校验 | `main._profile_or_403` | 未开放档 → 403 `permission_not_available`，不静默降级 |
-| 3. 会话取用 | `SessionRegistry.acquire` | 命中复用；档位或联网开关变了就重建（从 `session_states` 快照） |
-| 4. 并发互斥 | `entry.lock` | 同会话第二次请求 → 409 `session_busy` |
-| 5. 首帧心跳 | `yield ": ping\n\n"` | 模型首 token 需 2–3 秒，先让代理确认流已建立 |
-| 6. 结清遗留挂起 | `_settle_abandoned` | 上一轮停在 ASKING 时按**拒绝**结清，最多追跑 `SETTLE_ROUNDS=2` 轮 |
-| 7. 输入管线 | `input.prepare()` | 7 阶段；帧推前端并进 recorder；只有 `prepared.text` 进模型 |
-| 8. 运行事件流 | `AgentScopeRuntime.stream` | 框架事件 → `event_to_dict()` → dict |
-| 9. 收尾 | `_stream_entry` | 有挂起 → `event: parked`；否则 `recorder.finish()` → `event: done` |
-| 10. finally | `registry.save` / `flush_pending` | 快照落库、释放锁、补做被延迟的参数热替换 |
+| 1. 解析请求 | `gateway/schemas.RunRequest` | `session_id` / `user_input` / `attachments` / `permission` / `web_search` |
+| 2. 档位校验 | `gateway/deps.profile_or_403` | 未开放档 → 403 `permission_not_available`，不静默降级 |
+| 3. 会话取用 | `gateway/lease.claim_entry` → `SessionRegistry.acquire` | 命中复用；档位或联网开关变了就重建（从 `session_states` 快照） |
+| 4. 并发互斥 | `gateway/lease.claim_entry`（同步） | 同会话第二次请求 → 409 `session_busy`，必须在返回响应前判 |
+| 5. 首帧心跳 | `gateway/contract.PING_FRAME` | 模型首 token 需 2–3 秒，先让代理确认流已建立 |
+| 6. 结清遗留挂起 | `gateway/run.settle_abandoned` | 上一轮停在 ASKING 时按**拒绝**结清，追跑上限来自 `settle_rounds` |
+| 7. 输入管线 | `gateway/input_prep.prepare_input` → `input.prepare()` | 7 阶段；帧推前端并进 recorder；只有 `prepared.text` 进模型 |
+| 8. 运行事件流 | `gateway/ports.RuntimePort.stream` → `AgentScopeRuntime.stream` | 框架事件 → `event_to_dict()` → dict |
+| 9. 收尾 | `gateway/run.finish_or_park` | 决策在 `ending.decide_ending`（纯函数）：有挂起 → `event: parked`；否则 `recorder.finish()` → `event: done` |
+| 10. finally | `gateway/lease.SessionLease.close` | 兜底终态 → 快照落库 → 放锁 → 补做被延迟的参数热替换 |
 
-输入阶段失败不阻断对话：`_prepare_input` 捕获一切异常后返回 `None`，
+输入阶段失败不阻断对话：`input_prep.prepare_input` 捕获一切异常后返回 `None`，
 `payload` 保持原始输入。
 
 ## 3. 模块职责
+
+### gateway/
+
+按「变更原因」切，不按技术分层切（ADR-0004）。路由模块的走样判据：**出现 `if` 分支或 `try`
+就说明有逻辑放错了层**。
+
+| 文件 | 唯一职责 | 什么时候会改 |
+|---|---|---|
+| `app.py` | 装配根 `create_app()`：注入、挂载、启动告警 | 新增路由 / 新增进程级单例 |
+| `settings.py` | env 名 + `config/gateway.yaml` → 强类型策略 | 新增部署旋钮 |
+| `errors.py` | `ErrorCode` 枚举 + `STATUS_OF` 映射（**叶子**） | 新增错误码（前后端同步） |
+| `contract.py` | SSE 帧、传输常量、挂起载荷（**叶子**） | 帧字段变（前端同步） |
+| `sse.py` | 保活：队列 + 心跳泵 | 保活机制变 |
+| `lease.py` | 会话租约：`claim_entry` / `hold` / `open_lease` / `close` | 并发模型变 |
+| `run.py` | 一轮编排：`run_turn` / `resume_turn` / `finish_or_park` | agent 流程变 |
+| `ending.py` | 收尾决策纯函数 + `RunLimits` | 收尾 UX 变 |
+| `ports.py` | `RuntimePort`（Null Object）+ `PendingStore` | 运行时能力面变 / 挂起态存储变 |
+| `input_prep.py` | 输入准备（失败即退化） | 解析管线接口变 |
+| `stream.py` / `confirm.py` / `sessions.py` / `health.py` | HTTP 契约映射 | 端点契约变 |
+| `deps.py` / `schemas.py` | 依赖取用 / 请求体 | 注入点或请求字段变 |
+
+`.importlinter` 强制：`contract` / `errors` 不得依赖其他 gateway 模块；`gateway` 不得直接
+import `agentscope`。
 
 ### runtime/
 
@@ -65,7 +90,10 @@
 | `chat_model.py` | 模型与上下文配置 | `build_chat_model` / `build_context_config` / 搜索参数 |
 | `scope_runtime.py` | 框架运行时适配 | `AgentScopeRuntime`；`PROFILE_KEY` 写进 `middle_context` |
 | `sessions.py` | 会话隔离 | `max_entries=16`；`acquire/peek/switch/save/drop/flush_pending/broadcast_model_defaults` |
-| `confirm.py` | 确认协议数据结构 | 风险分级、`RULE_SCOPES`、`prefix` 沉淀规则；**不 import 框架** |
+| `confirm.py` | 确认协议**门面** | 只做导出，实现拆在下面三个模块；**不 import 框架** |
+| `risk.py` | 风险分级 | `read/exec/write/danger`；正则来自 `policy.yaml` 的 `confirm.risk` |
+| `rules.py` | 规则沉淀 | 作用域、`prefix` 深度、复合命令不沉淀；原料来自 `confirm.rules` |
+| `shell.py` | shell 词法 | 纯函数（拆段 / 剥包装层），不读配置，可零配置单测 |
 | `profile_note.py` | 档位说明 + 联网说明下发位置 | 追加在消息末尾，保前缀缓存（21% → 96%）；`set_profile()` / `set_web_search()` 支持运行中切换 |
 | `compression.py` | 压缩中间件 | 钩子无事件通道，由运行时 `drain()` 补帧 |
 | `events.py` | 事件转译 | 输出稳定 key 契约；`SPAN_EVENT_TYPES` 决定哪些落 span |
@@ -162,6 +190,6 @@ shell 统一用 `Bash`：`Bash` 会按命令判定只读（`ls`/`cat`/`git statu
 
 | 现象 | 位置 | 影响 |
 |---|---|---|
-| 巨型模块 | `observability/repository.py`（1079 行）、`input/pipeline.py`（807）、`eval/report.py`（780） | 单文件承担多职责，改动半径大 |
+| 巨型模块 | `observability/repository/`（已按表拆包，`db.py` 208 行仍偏大）、`openjudge/`（单文件普遍 100–160 行，`api*.py` 偏大） | 单文件承担多职责，改动半径大；`input/pipeline/` 与 `runtime/confirm` 已按 ADR-0004 拆完 |
 | 只装配未接线 | `supervisor.py`、`memory/ledger.py`、`DockerWorkspace` | 架构图上有、运行链路上没有，容易误判能力 |
 | AGENTS.md 清单少一项 | §3.1 列 8 个，实测 9 个 | 新增装配点容易漏更新 |

@@ -46,6 +46,15 @@ class PermissionProfile:
     # 是否把 policy.command_allowlist 作为 allow_rules 注入
     allowlist: bool = False
 
+    @property
+    def can_write(self) -> bool:
+        """该档位是否带写工具（前端据此渲染「可建/删/改文件」的提示）。
+
+        由工具集求交集，而不是由调用方去 `"write" in tools` 猜名字：工具改名时
+        那种探测会静默失真，而这里会跟着 `WRITE_TOOL_NAMES` 一起变。
+        """
+        return bool(set(self.tools) & set(WRITE_TOOLS))
+
 
 PROFILES: dict[str, PermissionProfile] = {
     "readonly": PermissionProfile(

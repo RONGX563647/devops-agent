@@ -1,44 +1,41 @@
-"""请求级依赖：档位解析、会话注册表与运行记录器。"""
+"""请求级依赖 —— 只负责「从应用状态里取到对象」，不含任何业务判断。
+
+FastAPI 的依赖注入就是这一层的全部机制，不额外包一层容器：
+`app.state` 上的三个键（runtime / settings / sessions）是装配根写下的，
+这里的函数负责把它们取出来并给出明确的缺省行为。
+
+取舍：`settings_of` 在缺省时回落 `Settings.load()`，而不是抛错 —— 测试会直接替换
+`app.state.runtime` 来跑端点，那种场景下没装配 settings 也应能跑（用 yaml 默认值）。
+"""
 
 from __future__ import annotations
 
-import os
+from fastapi import Request
 
-from fastapi import HTTPException, Request
-
+from devops_agent.gateway.errors import ErrorCode, http_error
+from devops_agent.gateway.settings import Settings
 from devops_agent.governance.profiles import PermissionProfile, UnknownProfile, resolve
-from devops_agent.observability.recorder import RunRecorder
-from devops_agent.runtime.sessions import SessionEntry, SessionRegistry, registry_for
+from devops_agent.runtime.sessions import SessionRegistry, registry_for
 
 
-def _profile_or_403(name: str | None) -> PermissionProfile:
-    """解析请求里的档位；未开放/不存在一律 403，不静默降级。
+def profile_or_403(name: str | None) -> PermissionProfile:
+    """解析请求里的档位；未开放或不存在一律 403，不静默降级。
 
-    静默降级到默认档会让「我明明选了放开档」变成「怎么还是不行」，更难排查。
+    静默降级到默认档会让「我明明选了放开档」变成「怎么还是不行」，更难排查；
+    也更危险 —— 客户端以为自己在放开档，实际被降成只读。
     """
     try:
         return resolve(name)
     except UnknownProfile:
-        raise HTTPException(status_code=403, detail="permission_not_available") from None
+        raise http_error(ErrorCode.PERMISSION_NOT_AVAILABLE) from None
 
 
-def _registry(request: Request) -> SessionRegistry:
-    """取会话注册表（实现见 runtime/sessions.registry_for，模型配置端点共用）。"""
+def registry_of(request: Request) -> SessionRegistry:
+    """取会话注册表（实现见 runtime/sessions.registry_for，模型配置端点共用同一份）。"""
     return registry_for(request)
 
 
-def _recorder_for(entry: SessionEntry, *, profile_key: str, request_id: str = "") -> RunRecorder:
-    """建一次运行的记录器，并把本轮实际下发的参数快照一起带上。
-
-    参数不进 run 记录，一旦可配就不可归因：健康分与评测批次会把
-    「参数变化点前后」混在一起算。取不到（Echo）时留空。
-    """
-    params_of = getattr(entry.runtime, "model_params_record", None)
-    record = params_of() if callable(params_of) else None
-    return RunRecorder(
-        domain=os.environ.get("DEVOPS_AGENT_DOMAIN", "debug"),
-        model=os.environ.get("DEVOPS_AGENT_MODEL", ""),
-        request_id=request_id,
-        permission=profile_key,
-        model_params=record or {},
-    )
+def settings_of(request: Request) -> Settings:
+    """取本进程的网关设置；未装配时回落到配置默认（测试替身友好）。"""
+    found = getattr(request.app.state, "settings", None)
+    return found if isinstance(found, Settings) else Settings.load()

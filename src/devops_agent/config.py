@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import re
 from functools import cache
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -75,14 +76,187 @@ class PermissionPolicy(BaseModel):
     ask_rules: list[RuleSpec] = Field(default_factory=list)
 
 
+# 确认协议的默认值 —— 与 config/policy.yaml 的 confirm 段逐项对应。
+# 文件缺失时（wheel 不含 config/）回落这里；两边一致由
+# tests/unit/test_gateway_settings.py 的对账用例钉住，改一处就会红。
+_DEFAULT_DANGER_PATTERNS: tuple[str, ...] = (
+    r"rm\s+-[a-zA-Z]*r[a-zA-Z]*f",
+    r"rm\s+-[a-zA-Z]*f[a-zA-Z]*r",
+    r":\s*\(\s*\)\s*\{",
+    "mkfs",
+    r"dd\s+if=",
+    "shutdown",
+    "reboot",
+    r"chmod\s+-R\s+0?777",
+    r">\s*/dev/sd",
+)
+_DEFAULT_WRITE_PATTERNS: tuple[str, ...] = (
+    r"sed\s+-i",
+    r">>?",
+    r"\btouch\b",
+    r"\bmkdir\b",
+    r"\brm\b",
+    r"\bmv\b",
+    r"\bcp\b",
+    r"\btee\b",
+)
+_DEFAULT_SCOPES: tuple[str, ...] = ("once", "exact", "prefix")
+
+
+class RiskPolicy(BaseModel):
+    """风险分级规则：哪些命令算高危、哪些算写入（runtime/risk.py 的判定依据）。"""
+
+    danger_patterns: list[str] = Field(default_factory=lambda: list(_DEFAULT_DANGER_PATTERNS))
+    write_patterns: list[str] = Field(default_factory=lambda: list(_DEFAULT_WRITE_PATTERNS))
+
+    @model_validator(mode="after")
+    def _check_compilable(self) -> RiskPolicy:
+        """正则必须在加载期就能编译：写错一条不该等到用户点「允许」时才炸。"""
+        for name in ("danger_patterns", "write_patterns"):
+            for pattern in getattr(self, name):
+                try:
+                    re.compile(pattern)
+                except re.error as exc:
+                    raise ValueError(f"confirm.risk.{name} 含非法正则 {pattern!r}: {exc}") from exc
+        return self
+
+
+class RulePolicy(BaseModel):
+    """规则沉淀策略：把一次确认扩展成哪条 allow 规则（runtime/rules.py 的依据）。"""
+
+    # 确认作用域，顺序即「由窄到宽」，前端按它渲染选项
+    scopes: list[str] = Field(default_factory=lambda: list(_DEFAULT_SCOPES))
+    # 需要看「子命令」的程序：前缀落到第二个词
+    subcommand_programs: list[str] = Field(
+        default_factory=lambda: [
+            "git",
+            "gh",
+            "npm",
+            "pnpm",
+            "yarn",
+            "npx",
+            "pip",
+            "uv",
+            "poetry",
+            "cargo",
+            "go",
+            "docker",
+            "docker-compose",
+            "kubectl",
+            "helm",
+            "terraform",
+            "make",
+            "dotnet",
+            "mvn",
+            "gradle",
+            "apt",
+            "apt-get",
+            "brew",
+            "systemctl",
+            "journalctl",
+            "az",
+            "aws",
+            "gcloud",
+            "conda",
+            "alembic",
+        ]
+    )
+    # 复合命令分隔符：命中任意一个就不沉淀
+    separators: list[str] = Field(default_factory=lambda: ["&&", "||", ";", "|", "\n"])
+    # 包装层：先剥掉再判定真正的程序
+    wrappers: list[str] = Field(
+        default_factory=lambda: [
+            "timeout",
+            "time",
+            "nice",
+            "nohup",
+            "stdbuf",
+            "env",
+            "command",
+            "exec",
+        ]
+    )
+    # 沉淀后等于开了任意执行的门，永不沉淀
+    never_persist: list[str] = Field(
+        default_factory=lambda: [
+            "rm",
+            "rmdir",
+            "mkfs",
+            "dd",
+            "shutdown",
+            "reboot",
+            "chmod",
+            "chown",
+            "sudo",
+            "su",
+        ]
+    )
+    never_persist_interpreters: list[str] = Field(
+        default_factory=lambda: ["bash", "sh", "zsh", "fish", "cmd", "powershell", "pwsh"]
+    )
+    # 按「`-m` 后的模块」取前缀的程序
+    python_programs: list[str] = Field(default_factory=lambda: ["python", "python3", "py"])
+
+    @model_validator(mode="after")
+    def _check_scopes(self) -> RulePolicy:
+        """作用域必须非空且无重复：空列表让 parse_decisions 无处回落，重复项让前端选项重影。"""
+        if not self.scopes:
+            raise ValueError("confirm.rules.scopes 不能为空")
+        if len(set(self.scopes)) != len(self.scopes):
+            raise ValueError("confirm.rules.scopes 不得重复")
+        return self
+
+
+class ConfirmPolicy(BaseModel):
+    """policy.yaml 的 confirm 段：确认协议的域知识（展示上限 + 风险 + 沉淀规则）。"""
+
+    # 下发给前端的命令原文上限：只用于展示，超长由界面折叠，不影响真正执行的命令
+    display_limit: int = Field(default=2000, ge=200, le=20_000)
+    risk: RiskPolicy = Field(default_factory=RiskPolicy)
+    rules: RulePolicy = Field(default_factory=RulePolicy)
+
+
 class RuntimePolicy(BaseModel):
     """policy.yaml 的完整类型化视图。
 
     模型参数（含 max_iters / 两级重试）不在这里：它们已迁到 `config/model.yaml`
     （见 `ModelSettings`）。留两个入口会让同一件事有两个默认值。
+    确认协议只带「域知识」（正则、程序分类、作用域），不带任何 HTTP 或 UI 决策。
     """
 
     permission: PermissionPolicy = Field(default_factory=PermissionPolicy)
+    confirm: ConfirmPolicy = Field(default_factory=ConfirmPolicy)
+
+
+class GatewayStreamPolicy(BaseModel):
+    """流式端点的策略旋钮（gateway.yaml 的 gateway.stream 段）。"""
+
+    # 同一次 run 最多打扰用户几次确认
+    ask_limit: int = Field(default=3, ge=1, le=20)
+    # 挂起有效期（秒）：超时按「未确认」处理
+    park_ttl_seconds: int = Field(default=600, ge=30, le=86_400)
+    # 结清遗留挂起时最多追跑几轮
+    settle_rounds: int = Field(default=2, ge=0, le=5)
+    # SSE 静默补帧间隔（秒）
+    heartbeat_seconds: float = Field(default=15.0, ge=1, le=120)
+    # 确认次数读不到时的策略：reject=按超限自动拒绝 / park=照常弹卡片
+    on_counter_unavailable: Literal["reject", "park"] = "reject"
+
+
+class GatewaySessionsPolicy(BaseModel):
+    """会话注册表策略（gateway.yaml 的 gateway.sessions 段）。"""
+
+    max_entries: int = Field(default=16, ge=1, le=256)
+
+
+class GatewayPolicy(BaseModel):
+    """gateway.yaml 的完整类型化视图。
+
+    只放部署策略；HTTP 状态码、帧名、DB 状态值一律不进来（见 gateway.yaml 的注释）。
+    """
+
+    stream: GatewayStreamPolicy = Field(default_factory=GatewayStreamPolicy)
+    sessions: GatewaySessionsPolicy = Field(default_factory=GatewaySessionsPolicy)
 
 
 class ModelSettings(BaseModel):
@@ -211,9 +385,20 @@ def load_model() -> ModelSettings:
     return ModelSettings.model_validate(data.get("model", data))
 
 
+@cache
+def load_gateway() -> GatewayPolicy:
+    """加载并缓存网关策略（gateway.yaml 的 gateway 段）。
+
+    缺文件时回落内置默认 —— 与 `load_policy` 同一降级策略：写错配置不该让服务起不来。
+    """
+    data = _load_yaml("gateway.yaml")
+    return GatewayPolicy.model_validate(data.get("gateway", data))
+
+
 def clear_cache() -> None:
     """测试中切换配置目录后调用。"""
     load_policy.cache_clear()
     load_gates.cache_clear()
     load_health.cache_clear()
     load_model.cache_clear()
+    load_gateway.cache_clear()

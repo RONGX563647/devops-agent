@@ -9,6 +9,17 @@ source_modules = devops_agent.prompt_lint
 forbidden_modules = agentscope
 allow_indirect_imports = True
 
+# 权限的「数据层」必须零框架：它被 prompt_lint / eval 那类不得依赖框架的层直接
+# import。旧实现里 profiles.py 通过 tools.catalog 间接拉进 agentscope，靠
+# allow_indirect_imports=True 放行 —— 契约看起来成立，实际不成立。
+[importlinter:contract:governance-data-no-framework]
+name = governance 的数据层（model / presets）不得依赖 AgentScope（直接或间接）
+type = forbidden
+source_modules =
+    devops_agent.governance.model
+    devops_agent.governance.presets
+forbidden_modules = agentscope
+
 [importlinter:contract:input-no-framework]
 name = input 层不得直接依赖 AgentScope
 type = forbidden

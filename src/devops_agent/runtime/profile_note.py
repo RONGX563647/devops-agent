@@ -19,7 +19,7 @@ from agentscope.agent import Agent
 from agentscope.message import Msg, UserMsg
 from agentscope.middleware import MiddlewareBase
 
-from devops_agent.governance.profiles import PermissionProfile
+from devops_agent.governance.model import PermissionProfile
 
 # 按档位改写的约束句：只读档说「没有写权限」，其余档说边界在哪。
 # 这条不同步改的话，切到放开档模型仍然不会写文件，表现为「权限切了但毫无变化」。

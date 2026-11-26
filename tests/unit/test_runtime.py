@@ -9,7 +9,8 @@ import pytest
 from agentscope.agent import Agent
 from agentscope.pipeline import GoalPipeline, TeamMember, TeamPipeline
 
-from devops_agent.governance.profiles import PROFILES, default_profile
+from devops_agent.governance.model import PROFILES
+from devops_agent.governance.presets import default_profile
 from devops_agent.model_settings import effective_params
 from devops_agent.runtime.assembly import (
     _state_for,
@@ -204,7 +205,7 @@ def test_prompt_fingerprint_ignores_workdir(
 
 def test_system_prompt_is_profile_independent(tmp_path: Path) -> None:
     """系统提示必须与档位无关：那里改一个字，工具 schema 与整段历史全部缓存失效。"""
-    from devops_agent.governance.profiles import resolve
+    from devops_agent.governance.presets import resolve
     from devops_agent.runtime.profile_note import policy_note
 
     prompt = build_system_prompt(tmp_path)
@@ -224,7 +225,7 @@ def test_profile_note_middleware_appends_trailing_message(tmp_path: Path) -> Non
 
     from agentscope.message import UserMsg
 
-    from devops_agent.governance.profiles import resolve
+    from devops_agent.governance.presets import resolve
     from devops_agent.runtime.profile_note import ProfileNoteMiddleware
 
     mw = ProfileNoteMiddleware(resolve("readonly"))
@@ -372,7 +373,7 @@ def test_search_note_only_appended_when_enabled() -> None:
     """联网说明必须与开关同源：关了还留着，模型会声称「检索结果已附」并编来源。"""
     from agentscope.message import UserMsg
 
-    from devops_agent.governance.profiles import resolve
+    from devops_agent.governance.presets import resolve
     from devops_agent.runtime.profile_note import ProfileNoteMiddleware, search_note
 
     assert search_note(False) == ""
@@ -409,7 +410,7 @@ def test_search_note_hot_swaps_with_toggle() -> None:
     """运行中开关变化：下一轮请求末尾立即跟着变，不必重建中间件（保住前缀缓存）。"""
     from agentscope.message import UserMsg
 
-    from devops_agent.governance.profiles import resolve
+    from devops_agent.governance.presets import resolve
     from devops_agent.runtime.profile_note import ProfileNoteMiddleware
 
     mw = ProfileNoteMiddleware(resolve("readonly"))

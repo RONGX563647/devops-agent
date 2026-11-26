@@ -1,6 +1,6 @@
 """会话级权限端点 —— 本部署开放的档位与运行中切档。
 
-两个只读/单写接口，判断逻辑都在 governance.profiles：本模块只做契约映射。
+两个只读/单写接口，判断逻辑都在 governance.presets：本模块只做契约映射。
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from fastapi import APIRouter, Request
 from devops_agent.gateway.deps import profile_or_403, registry_of
 from devops_agent.gateway.errors import ErrorCode, http_error
 from devops_agent.gateway.schemas import SessionPermissionRequest
-from devops_agent.governance.profiles import available, default_profile
+from devops_agent.governance.presets import available, default_profile
 
 router = APIRouter()
 

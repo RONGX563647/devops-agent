@@ -14,7 +14,8 @@ from fastapi import Request
 
 from devops_agent.gateway.errors import ErrorCode, http_error
 from devops_agent.gateway.settings import Settings
-from devops_agent.governance.profiles import PermissionProfile, UnknownProfile, resolve
+from devops_agent.governance.model import PermissionProfile
+from devops_agent.governance.presets import UnknownProfile, resolve
 from devops_agent.runtime.sessions import SessionRegistry, registry_for
 
 

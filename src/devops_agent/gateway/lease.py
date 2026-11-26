@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from devops_agent.gateway.errors import ErrorCode, http_error
 from devops_agent.gateway.ports import RuntimePort
 from devops_agent.gateway.settings import Settings
-from devops_agent.governance.profiles import PermissionProfile
+from devops_agent.governance.model import PermissionProfile
 from devops_agent.observability.models import RunStatus
 from devops_agent.observability.recorder import RunRecorder
 from devops_agent.runtime.sessions import SessionEntry, SessionRegistry

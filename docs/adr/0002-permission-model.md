@@ -1,6 +1,10 @@
 # ADR-0002：权限模型重构 —— 两维拆分、六段规则管线与可沉淀授权
 
-- 状态：Accepted
+- 状态：Superseded —— 本方案（两维拆分 / 六段规则管线 / permissions.local.yaml）
+  实现于 PR #44，随即由 PR #47 整体 revert，代码中一行都不存在。保留原文是为了
+  记住「为什么当时这么想」，不要照着它再改一遍：现行的权限分层见
+  src/devops_agent/governance/（model / presets / compile / decide）与
+  docs/wiki/Permissions.md。
 - 日期：2026-11-24
 - 决策者：项目所有者
 - 相关：ADR-0001（权限拒绝率是已定义的观测指标之一）、`AGENTS.md` 架构约束、`config/policy.yaml`

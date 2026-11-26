@@ -29,12 +29,10 @@ def test_config_dir_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 
 
 def test_load_policy_from_repo() -> None:
+    """policy.yaml 现在只剩确认协议；权限档位已迁到 governance/model.py。"""
     policy = cfg.load_policy()
-    # 模型参数已迁到 model.yaml：policy 只管权限
-    assert policy.permission.available  # 非空即加载成功
-    # 无人值守服务的默认权限模式：只读放行、其余拒绝，绝不返回 ASK。
-    # 若这里被改回 default，敏感调用会退化成「发个确认事件就结束」的静默中断。
-    assert policy.permission.mode == "dont_ask"
+    assert policy.confirm.display_limit == 2000
+    assert policy.confirm.rules.scopes == ["once", "exact", "prefix"]
     assert cfg.load_policy() is policy  # 缓存命中
 
 
@@ -56,7 +54,9 @@ def test_missing_files_fall_back_to_defaults(
 
 
 def test_custom_yaml_values(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    (tmp_path / "policy.yaml").write_text("permission:\n  mode: explore\n", encoding="utf-8")
+    (tmp_path / "policy.yaml").write_text(
+        "confirm:\n  display_limit: 1234\n  rules:\n    scopes: [once]\n", encoding="utf-8"
+    )
     (tmp_path / "model.yaml").write_text(
         "model:\n  max_iters:\n    default: 7\n    delivery: 9\n  agent_max_retries: 5\n",
         encoding="utf-8",
@@ -69,7 +69,8 @@ def test_custom_yaml_values(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     policy = cfg.load_policy()
     gates = cfg.load_gates()
     model = cfg.load_model()
-    assert policy.permission.mode == "explore"
+    assert policy.confirm.display_limit == 1234
+    assert policy.confirm.rules.scopes == ["once"]
     assert model.max_iters_for("schedule") == 7
     assert model.max_iters_for("delivery") == 9
     assert model.agent_max_retries == 5
@@ -85,8 +86,13 @@ def test_max_iters_for_fallback() -> None:
     assert settings.max_iters_for("model_dump") == 4
 
 
-def test_invalid_mode_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    (tmp_path / "policy.yaml").write_text("permission:\n  mode: nope\n", encoding="utf-8")
+def test_invalid_confirm_value_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """确认协议的域知识仍在加载期校验：越界值不该等到用户点确认才炸。
+
+    权限段已迁到 governance/model.py（代码常量，由 mypy + 单测覆盖），
+    所以这里换成 confirm 段的非法值。
+    """
+    (tmp_path / "policy.yaml").write_text("confirm:\n  display_limit: 10\n", encoding="utf-8")
     monkeypatch.setenv(cfg.CONFIG_DIR_ENV, str(tmp_path))
     with pytest.raises(ValidationError):
         cfg.load_policy()

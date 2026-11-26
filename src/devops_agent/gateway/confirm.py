@@ -24,12 +24,8 @@ from devops_agent.gateway.lease import claim_entry, hold
 from devops_agent.gateway.ports import PendingRun, PendingStore, RuntimePort
 from devops_agent.gateway.run import resume_turn
 from devops_agent.gateway.schemas import ConfirmRequest
-from devops_agent.governance.profiles import (
-    PermissionProfile,
-    UnknownProfile,
-    default_profile,
-    resolve,
-)
+from devops_agent.governance.model import PermissionProfile
+from devops_agent.governance.presets import UnknownProfile, default_profile, resolve
 from devops_agent.observability.recorder import utc_now
 from devops_agent.runtime.confirm import parse_decisions
 from devops_agent.runtime.sessions import SessionEntry, SessionRegistry

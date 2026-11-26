@@ -1,25 +1,30 @@
-"""权限档位测试：档位定义、可用集、档位→权限上下文 / 工具集的映射。"""
+"""权限层测试：档位定义、可用集、档位→权限上下文 / 工具集的映射。
+
+契约强度约定：判定一律交给真实引擎跑（`PermissionEngine.check_permission`），
+不比对常量表 —— 只有实判才能证明「只读档真的写不进去」，而不是「我们以为它写不进去」。
+"""
 
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from agentscope.permission import (
     PermissionBehavior,
-    PermissionContext,
     PermissionEngine,
     PermissionMode,
     PermissionRule,
 )
 
-from devops_agent.governance.policy import bash_decision, build_permission_context, deny_rule
-from devops_agent.governance.profiles import (
+from devops_agent.governance.compile import WORKDIRS_ENV, build_engine, compile_context
+from devops_agent.governance.decide import bash_decision
+from devops_agent.governance.model import ALLOW_PREFIXES, PROFILES
+from devops_agent.governance.presets import (
     AVAILABLE_ENV,
     DEFAULT_ENV,
-    PROFILES,
     UnknownProfile,
     available,
     default_profile,
@@ -32,6 +37,13 @@ from devops_agent.tools.catalog import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """档位相关环境变量必须逐测隔离：presets 的结果按 env 原文缓存。"""
+    for name in (AVAILABLE_ENV, DEFAULT_ENV, WORKDIRS_ENV):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_profiles_bind_mode_tools_and_fallback() -> None:
     """档位是「mode + 工具集 + 兜底动作」的三元组，缺一项就不成档位。"""
     assert PROFILES["readonly"].mode == "explore"
@@ -42,6 +54,19 @@ def test_profiles_bind_mode_tools_and_fallback() -> None:
     assert PROFILES["unrestricted"].fallback == "hard_deny"
 
 
+def test_every_profile_mode_is_a_framework_mode() -> None:
+    """mode 是本模块里唯一的字符串，写错必须在这一层就被框架枚举挡住。"""
+    for key, profile in PROFILES.items():
+        assert PermissionMode(profile.mode) in set(PermissionMode), key
+
+
+def test_scope_declares_capability_boundary() -> None:
+    """scope 与 mode 是两个维度：只读档的限制不能只靠 mode 表达。"""
+    assert PROFILES["readonly"].scope == "readonly"
+    assert PROFILES["workspace"].scope == "workspace"
+    assert PROFILES["unrestricted"].scope == "container"
+
+
 def test_writable_profiles_mount_write_tools() -> None:
     """说明里承诺「可在工作区内建/删/改文件」的档位，必须真的挂上写工具。
 
@@ -50,9 +75,11 @@ def test_writable_profiles_mount_write_tools() -> None:
     """
     for key in ("workspace", "execute", "auto", "unrestricted"):
         assert set(PROFILES[key].tools) - set(READONLY_TOOL_NAMES) == set(WRITE_TOOL_NAMES), key
+        assert PROFILES[key].can_write is True, key
     # 只读档不给写工具：这是工具集层面的硬保证，不依赖 mode 是否被改错
     assert "write" not in PROFILES["readonly"].tools
     assert "edit" not in PROFILES["readonly"].tools
+    assert PROFILES["readonly"].can_write is False
 
 
 def test_only_readonly_profile_denies_writes(tmp_path: Path) -> None:
@@ -63,9 +90,7 @@ def test_only_readonly_profile_denies_writes(tmp_path: Path) -> None:
     outside = str(tmp_path.parent / "escape.txt")
 
     def decide(profile_key: str, target: str) -> str:
-        engine = PermissionEngine(
-            build_permission_context(profile=PROFILES[profile_key], workdir=tmp_path)
-        )
+        engine = PermissionEngine(compile_context(PROFILES[profile_key], workdir=tmp_path))
         # agentscope 2.x 的 LocalBackend 不接受 workdir；判定只看 permission
         # context 里登记的 working_directories，与 backend 的 cwd 无关。
         tool = Write(backend=LocalBackend())
@@ -89,8 +114,18 @@ def test_workdir_is_registered_so_writes_count_as_in_workspace(tmp_path: Path) -
     真正的工作区常由 DEVOPS_AGENT_WORKDIR 指到别处。不登记的话，accept_edits 档
     写文件会被当成「工作区外」，每次都要确认——用户看到的就是「选了可写还要问」。
     """
-    context = build_permission_context(profile=PROFILES["workspace"], workdir=tmp_path)
+    context = compile_context(PROFILES["workspace"], workdir=tmp_path)
     assert str(tmp_path.resolve()) in context.working_directories
+
+
+def test_extra_workdirs_come_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """附加工作目录原来是 policy.yaml 的空列表（死配置），现在只认环境变量。"""
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    monkeypatch.setenv(WORKDIRS_ENV, os.pathsep.join([str(extra), str(tmp_path / "gone")]))
+    context = compile_context(PROFILES["workspace"], workdir=tmp_path)
+    assert str(extra.resolve()) in context.working_directories
+    assert str((tmp_path / "gone").resolve()) in context.working_directories
 
 
 def test_available_respects_env_and_skips_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,11 +141,26 @@ def test_available_defaults_without_unrestricted(monkeypatch: pytest.MonkeyPatch
     assert "workspace" in keys
 
 
-def test_default_profile_falls_back_when_not_available(monkeypatch: pytest.MonkeyPatch) -> None:
-    """默认档被配成未开放档时必须回落，而不是把一个越权档当默认。"""
-    monkeypatch.setenv(AVAILABLE_ENV, "readonly")
-    monkeypatch.setenv(DEFAULT_ENV, "unrestricted")
+def test_default_profile_falls_back_to_strictest_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """默认档不可用时回落**最严可用档**，不是字典序首个。
+
+    旧实现回落 `sorted(allowed)[0]`：可用集是 {auto, readonly, workspace} 时字典序
+    首个是 `auto`（无人值守）—— 配置写错反而把用户推向最不想有人盯的档位。
+    """
+    monkeypatch.setenv(AVAILABLE_ENV, "auto,unrestricted,workspace")
+    monkeypatch.setenv(DEFAULT_ENV, "nope")
+    assert default_profile().key == "workspace"
+
+    monkeypatch.setenv(AVAILABLE_ENV, "auto,readonly")
     assert default_profile().key == "readonly"
+
+
+def test_default_profile_honors_env_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(AVAILABLE_ENV, "readonly,workspace,auto")
+    monkeypatch.setenv(DEFAULT_ENV, "auto")
+    assert default_profile().key == "auto"
 
 
 def test_resolve_rejects_unknown_and_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -123,6 +173,13 @@ def test_resolve_rejects_unknown_and_unavailable(monkeypatch: pytest.MonkeyPatch
         resolve("nope")
 
 
+def test_resolve_is_stable_within_one_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一请求内反复解析必须同源：旧实现每次重读 env，两次可能不一致。"""
+    monkeypatch.setenv(AVAILABLE_ENV, "readonly,workspace")
+    assert resolve(None) is resolve(None)
+    assert available() == available()
+
+
 def test_builtin_deny_injected_in_every_mode() -> None:
     """builtin deny（.git/、.env）对所有档位无条件生效。
 
@@ -131,7 +188,7 @@ def test_builtin_deny_injected_in_every_mode() -> None:
     所以五档都必须带上这层硬约束。
     """
     for key in ("readonly", "workspace", "execute", "unrestricted", "auto"):
-        context = build_permission_context(profile=PROFILES[key])
+        context = compile_context(PROFILES[key])
         assert context.deny_rules, f"{key} 档缺少 builtin deny"
         bash_deny = [rule.rule_content for rule in context.deny_rules.get("Bash", [])]
         assert ".env" in bash_deny, f"{key} 档的 Bash 未禁 .env"
@@ -142,24 +199,29 @@ def test_builtin_deny_injected_in_every_mode() -> None:
 
 
 def test_context_for_unrestricted_carries_profile_deny_rules() -> None:
-    context = build_permission_context(profile=PROFILES["unrestricted"])
+    context = compile_context(PROFILES["unrestricted"])
     assert context.mode == PermissionMode.BYPASS
     contents = [rule.rule_content for rule in context.deny_rules.get("Bash", [])]
     assert ".git/" in contents
 
 
 def test_context_for_execute_injects_command_allowlist() -> None:
-    context = build_permission_context(profile=PROFILES["execute"])
+    context = compile_context(PROFILES["execute"])
     assert context.mode == PermissionMode.ACCEPT_EDITS
     prefixes = [rule.rule_content for rule in context.allow_rules.get("Bash", [])]
     assert any(str(prefix).endswith(":*") for prefix in prefixes)
     assert "pytest:*" in prefixes
 
 
-def test_context_without_profile_still_reads_yaml() -> None:
-    """不带档位时保持旧行为（脚本 / 单测直接建引擎的场景）。"""
-    context: PermissionContext = build_permission_context()
-    assert context.mode == PermissionMode.DONT_ASK
+def test_whitelist_belongs_to_execute_only() -> None:
+    """白名单是 execute 档的能力，不是部署配置：别的档位一条都不该有。"""
+    for key in PROFILES:
+        context = compile_context(PROFILES[key])
+        if key == "execute":
+            assert context.allow_rules.get("Bash")
+        else:
+            assert not context.allow_rules, key
+    assert set(ALLOW_PREFIXES) == {"execute"}
 
 
 def test_custom_deny_appends_to_builtin() -> None:
@@ -168,33 +230,49 @@ def test_custom_deny_appends_to_builtin() -> None:
     旧实现 `deny_rules if deny_rules is not None else ...` 会让调用方一传
     就整体顶掉 builtin deny——而那是所有档位唯一的点防御兜底。
     """
-    custom = {"Bash": [deny_rule("Bash", source="caller")]}
-    contexts = (
-        build_permission_context(deny_rules=custom),
-        build_permission_context(profile=PROFILES["auto"], deny_rules=custom),
+    whole_tool = PermissionRule(
+        tool_name="Bash",
+        rule_content=None,
+        behavior=PermissionBehavior.DENY,
+        source="caller",
     )
-    for context in contexts:
-        contents = [rule.rule_content for rule in context.deny_rules["Bash"]]
-        assert ".env" in contents
-        assert ".git/" in contents
-        assert None in contents  # caller 的整工具拒绝也保留
+    context = compile_context(PROFILES["auto"], extra_deny={"Bash": [whole_tool]})
+    contents = [rule.rule_content for rule in context.deny_rules["Bash"]]
+    assert ".env" in contents
+    assert ".git/" in contents
+    assert None in contents  # caller 的整工具拒绝也保留
 
 
 def test_custom_deny_overrides_same_rule_only() -> None:
-    """同 (tool_name, rule_content) 的规则以 caller 为准，其余内置规则不受牵连。"""
+    """同 (tool, content, behavior) 的规则以 caller 为准，其余内置规则不受牵连。"""
     override = PermissionRule(
         tool_name="Bash",
         rule_content=".env",
         behavior=PermissionBehavior.DENY,
         source="caller",
     )
-    context = build_permission_context(deny_rules={"Bash": [override]})
+    context = compile_context(PROFILES["workspace"], extra_deny={"Bash": [override]})
     env_rules = [rule for rule in context.deny_rules["Bash"] if rule.rule_content == ".env"]
     assert len(env_rules) == 1
     assert env_rules[0].source == "caller"
     assert any(rule.rule_content == ".git/" for rule in context.deny_rules["Bash"])
     # 未被 Bash 覆盖的其他 builtin（Write/Edit 的 .git/）同样保留
     assert context.deny_rules["Write"]
+
+
+def test_build_engine_returns_engine(tmp_path: Path) -> None:
+    assert isinstance(build_engine(PROFILES["workspace"], workdir=tmp_path), PermissionEngine)
+
+
+def test_bash_decision_reuses_engine(tmp_path: Path) -> None:
+    """lint 批量跑题时不能每题重建引擎：同一 (档位, workdir) 必须命中缓存。"""
+    from devops_agent.governance import decide
+
+    decide._engine_for.cache_clear()
+    first = bash_decision(PROFILES["workspace"], "ls", tmp_path)
+    second = bash_decision(PROFILES["workspace"], "ls", tmp_path)
+    assert first == second == "allow"
+    assert decide._engine_for.cache_info().hits >= 1
 
 
 def test_build_toolkit_for_mounts_profile_tools(tmp_path: Path) -> None:

@@ -48,6 +48,12 @@ class PermissionProfile:
     # 与 framework 的 mode 是两个维度：mode 决定「无规则命中时怎么兜」，scope 决定
     # 「哪些路径算界内」。混在一起就会出现「只读档能读全盘」这种组合。
     scope: str = "workspace"
+    # 联网检索的默认准入（SPEC-0011 §3）。**不用 bool=False 作默认**：
+    # 那样「未表态」与「明确禁止」无法区分，部署级 DEVOPS_AGENT_ENABLE_SEARCH
+    # 会被永久压住。None = 跟随部署，True/False = 该档显式表态。
+    # 联网是出站能力，不并入 tools —— 只读档自动联网、全放开档自动出网都会
+    # 违背用户对这两个档位的直觉。
+    net: bool | None = None
 
     @property
     def can_write(self) -> bool:
@@ -108,6 +114,9 @@ PROFILES: dict[str, PermissionProfile] = {
         tools=READONLY_TOOLS + WRITE_TOOLS,
         fallback="deny",
         note="给定时任务用：工作区内可读写，越界一律拒绝且不弹确认（因为没人在）。",
+        # 无人值守时没人能判断「这条数据该不该出网」：显式关掉，要联网就在
+        # 任务自己的配置里开，不能靠部署默认悄悄放开。
+        net=False,
     ),
 }
 

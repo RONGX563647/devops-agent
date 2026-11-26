@@ -33,7 +33,10 @@ from devops_agent.runtime.confirm import (
 from devops_agent.runtime.events import event_to_dict
 from devops_agent.runtime.profile_note import ProfileNoteMiddleware
 from devops_agent.runtime.prompt import resolve_workdir
+from devops_agent.search_mode import search_mode
 from devops_agent.tools.catalog import build_toolkit_for
+from devops_agent.tools.names import SEARCH_TOOL_NAME
+from devops_agent.tools.web_search import WebSearchTool, build_backend
 
 # 快照里记录「这份状态是按哪个档位装配的」的键。
 # 必须用档位 key 而不是 permission_context.mode 判断：workspace 与 execute
@@ -69,6 +72,7 @@ class AgentScopeRuntime:
         toolkit_middlewares: Sequence[ToolMiddlewareBase] | None = None,
         compression_sink: CompressionSink | None = None,
         web_search: bool = False,
+        search_tool: WebSearchTool | None = None,
         params: ModelParams | None = None,
     ) -> None:
         self._agent = agent
@@ -82,6 +86,9 @@ class AgentScopeRuntime:
         # Echo/测试替身没有 sink 时为 None，事件序列保持原样。
         self._compression_sink = compression_sink
         self._web_search = web_search
+        # 检索工具的预算按 run 计：运行时持有同一个实例才能每轮 reset()。
+        # 切档时从「不联网」打开联网，实例可能还没建，由 _ensure_search_tool 补。
+        self._search_tool = search_tool
         # 当前生效的模型参数：热替换与 run 记录都以它为准，不从 agent 上反推
         # （反推要先猜「哪个字段对应哪个参数」，猜错就是静默错报）。
         self._params = params
@@ -120,7 +127,8 @@ class AgentScopeRuntime:
         fresh = compile_context(profile=profile, workdir=self._workdir)
         _copy_permission_context(self._agent.state.permission_context, fresh)
         # 2) 工具按新档位重装，密钥注入中间件与档位说明同步更新
-        self._agent.toolkit = self._rebuild_toolkit(profile)
+        target_search = self._web_search if web_search is None else web_search
+        self._agent.toolkit = self._rebuild_toolkit(profile, target_search)
         if self._note_middleware is not None:
             self._note_middleware.set_profile(profile)
         # 3) 联网开关真的变化时才重建模型（带上会话参数）
@@ -129,13 +137,37 @@ class AgentScopeRuntime:
         self._agent.state.middle_context[PROFILE_KEY] = profile.key
         self._profile = profile
 
-    def _rebuild_toolkit(self, profile: PermissionProfile) -> Toolkit:
-        """按档位重装工具；密钥注入中间件必须一并重挂，否则工具边界不再脱敏。"""
+    def _ensure_search_tool(self) -> WebSearchTool | None:
+        """首次需要时补建检索工具（会话内从「不联网」切到「联网」走这条路）。
+
+        只有 tool 模式且后端可用才建；`provider` 模式的检索在请求体里，
+        多注册一个工具只会让模型重复搜一次。
+        """
+        if self._search_tool is not None:
+            return self._search_tool
+        if search_mode() != "tool":
+            return None
+        backend, _reason = build_backend()
+        if backend is None:
+            return None
+        self._search_tool = WebSearchTool(backend)
+        return self._search_tool
+
+    def _rebuild_toolkit(self, profile: PermissionProfile, web_search: bool) -> Toolkit:
+        """按档位与联网开关重装工具；密钥注入中间件必须一并重挂，否则工具边界不再脱敏。
+
+        联网工具不在 `profile.tools` 里：它由独立的 net 维度授予，只有这里拼进来，
+        所以「切档」与「开关联网」是同一个装配动作，不会出现两套工具集不一致。
+        """
+        tool = self._ensure_search_tool() if web_search else None
+        names = profile.tools + ((SEARCH_TOOL_NAME,) if tool is not None else ())
+        extra = {SEARCH_TOOL_NAME: tool.as_function()} if tool is not None else None
         return build_toolkit_for(
-            profile.tools,
+            names,
             self._workdir,
             middlewares=self._toolkit_middlewares or None,
             scope=profile.scope,
+            extra=extra,
         )
 
     def _maybe_rebuild_model(self, web_search: bool | None) -> None:
@@ -212,6 +244,9 @@ class AgentScopeRuntime:
         这是框架隔离约束在流式路径上的延续。
         压缩帧没有框架事件可依附，在每个框架事件之后按顺序补发。
         """
+        # 检索预算按 run 归零：一轮用尽就锁死会让整个会话后面都不能再搜。
+        if self._search_tool is not None:
+            self._search_tool.reset()
         budget = self._budget_frame()
         if budget is not None:
             yield budget

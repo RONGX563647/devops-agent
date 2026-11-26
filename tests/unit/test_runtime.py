@@ -30,6 +30,7 @@ from devops_agent.runtime.supervisor import (
     build_goal_pipeline,
     build_team_pipeline,
 )
+from devops_agent.search_mode import search_mode
 
 
 def _agent(name: str) -> Agent:
@@ -97,7 +98,7 @@ def test_build_chat_model_search_disabled_by_default(monkeypatch: pytest.MonkeyP
 
 
 def test_build_chat_model_search_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """显式开启时必须连同 forced_search 一起下发。
+    """provider 模式下必须连同 forced_search 一起下发。
 
     只发 enable_search 是不够的：它只是授权模型可以搜，搜不搜由模型裁量。
     实测同一份请求体（含 system prompt 与工具定义）开与不开的 prompt_tokens
@@ -108,11 +109,24 @@ def test_build_chat_model_search_enabled(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
     monkeypatch.setenv("DEVOPS_AGENT_ENABLE_SEARCH", "1")
-    monkeypatch.delenv(SEARCH_MODE_ENV, raising=False)
+    monkeypatch.setenv(SEARCH_MODE_ENV, "provider")
     assert build_chat_model().extra_body == {
         "enable_search": True,
         "search_options": {"forced_search": True, "search_strategy": "standard"},
     }
+
+
+def test_tool_mode_does_not_send_search_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """tool 模式（默认）下请求体不带检索字段。
+
+    两套机制同时开着会变成「供应商强制检索一次 + 模型又调工具搜一次」：
+    重复计费，且两批结果可能互相矛盾。
+    """
+    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
+    monkeypatch.delenv(SEARCH_MODE_ENV, raising=False)
+    assert build_chat_model(enable_search=True).extra_body is None
 
 
 def test_search_mode_auto_drops_forced_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,14 +138,13 @@ def test_search_mode_auto_drops_forced_flag(monkeypatch: pytest.MonkeyPatch) -> 
     assert build_chat_model(enable_search=True).extra_body == {"enable_search": True}
 
 
-def test_search_mode_typo_falls_back_to_forced(monkeypatch: pytest.MonkeyPatch) -> None:
-    """拼错的环境变量不能把「联网」悄悄退化成空开关。"""
-    monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
-    monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
-    monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
+def test_search_mode_typo_falls_back_to_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """拼错的环境变量回落到默认 tool 模式，而不是让联网静默消失。
+
+    回落成 `off` 才是最难发现的状态：按钮还能点，但服务端什么都不做。
+    """
     monkeypatch.setenv(SEARCH_MODE_ENV, "forceed")
-    body = build_chat_model(enable_search=True).extra_body
-    assert body is not None and body["search_options"]["forced_search"] is True
+    assert search_mode() == "tool"
 
 
 def test_build_chat_model_request_flag_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,11 +152,12 @@ def test_build_chat_model_request_flag_overrides_env(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("DEVOPS_AGENT_API_KEY", "sk-test")
     monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
-    monkeypatch.delenv("DEVOPS_AGENT_ENABLE_SEARCH", raising=False)
-    monkeypatch.delenv(SEARCH_MODE_ENV, raising=False)
+    monkeypatch.setenv("DEVOPS_AGENT_ENABLE_SEARCH", "1")
+    monkeypatch.setenv(SEARCH_MODE_ENV, "provider")
 
-    assert build_chat_model(enable_search=True).extra_body is not None
+    # 显式 false 压过环境变量的 1；显式 true 与环境变量同向。
     assert build_chat_model(enable_search=False).extra_body is None
+    assert build_chat_model(enable_search=True).extra_body is not None
 
 
 def test_build_agent_reads_config_defaults() -> None:
@@ -324,7 +338,7 @@ def test_apply_profile_can_hot_swap_web_search(
     monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
     monkeypatch.delenv("DEVOPS_AGENT_ENABLE_SEARCH", raising=False)
-    monkeypatch.delenv(SEARCH_MODE_ENV, raising=False)
+    monkeypatch.setenv(SEARCH_MODE_ENV, "provider")
 
     runtime = build_agentscope_runtime(workdir=tmp_path)
     assert runtime._agent.model.extra_body is None
@@ -369,8 +383,13 @@ def _tail_messages(mw: object, history: list[object]) -> list[str]:
     return [m.get_text_content() for m in seen["messages"]]  # type: ignore[union-attr]
 
 
-def test_search_note_only_appended_when_enabled() -> None:
-    """联网说明必须与开关同源：关了还留着，模型会声称「检索结果已附」并编来源。"""
+def test_search_note_only_appended_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """联网说明必须与开关同源：关了还留着，模型会声称「检索结果已附」并编来源。
+
+    provider 模式才有这句：tool 模式下结果只在模型主动调用后出现，
+    「结果会以引用块出现在上下文里」不成立，说了反而是误导。
+    """
+    monkeypatch.setenv(SEARCH_MODE_ENV, "provider")
     from agentscope.message import UserMsg
 
     from devops_agent.governance.presets import resolve
@@ -388,13 +407,14 @@ def test_search_note_only_appended_when_enabled() -> None:
     assert "已开启联网检索" in on[-1]
 
 
-def test_search_note_does_not_assert_results_arrived() -> None:
+def test_search_note_does_not_assert_results_arrived(monkeypatch: pytest.MonkeyPatch) -> None:
     """说明只能写「若存在」，不能断言「已附带」。
 
     应用侧没有证据：框架不透出 `search_info`，事件流也没有检索 span。
     写死「已附带搜索结果」时，模型会去核对一段无法辨认的内容，进而自己抓网页核实——
     一次真实会话因此跑了 21 步工具调用，最后仍回答「我没收到检索结果」。
     """
+    monkeypatch.setenv(SEARCH_MODE_ENV, "provider")
     from devops_agent.runtime.profile_note import search_note
 
     note = search_note(True)
@@ -406,8 +426,9 @@ def test_search_note_does_not_assert_results_arrived() -> None:
     assert "失败两次就停止" in note
 
 
-def test_search_note_hot_swaps_with_toggle() -> None:
+def test_search_note_hot_swaps_with_toggle(monkeypatch: pytest.MonkeyPatch) -> None:
     """运行中开关变化：下一轮请求末尾立即跟着变，不必重建中间件（保住前缀缓存）。"""
+    monkeypatch.setenv(SEARCH_MODE_ENV, "provider")
     from agentscope.message import UserMsg
 
     from devops_agent.governance.presets import resolve
@@ -424,6 +445,17 @@ def test_search_note_hot_swaps_with_toggle() -> None:
     assert not any("已开启联网检索" in text for text in _tail_messages(mw, history))
 
 
+def test_search_note_absent_in_tool_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """tool 模式不追加联网说明：工具描述已经把「什么时候调」说清楚了。
+
+    多一条尾部消息只会让每轮请求末尾都不同，前缀缓存只能命中到倒数第二条。
+    """
+    monkeypatch.delenv(SEARCH_MODE_ENV, raising=False)
+    from devops_agent.runtime.profile_note import search_note
+
+    assert search_note(True) == ""
+
+
 def test_runtime_keeps_request_body_and_note_in_sync(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -436,7 +468,7 @@ def test_runtime_keeps_request_body_and_note_in_sync(
     monkeypatch.setenv("DEVOPS_AGENT_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("DEVOPS_AGENT_MODEL", "qwen-test")
     monkeypatch.delenv("DEVOPS_AGENT_ENABLE_SEARCH", raising=False)
-    monkeypatch.delenv(SEARCH_MODE_ENV, raising=False)
+    monkeypatch.setenv(SEARCH_MODE_ENV, "provider")
 
     on = build_agentscope_runtime(workdir=tmp_path, web_search=True)
     assert on._agent.model.extra_body is not None

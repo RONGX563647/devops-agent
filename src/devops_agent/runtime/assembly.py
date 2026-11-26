@@ -28,8 +28,11 @@ from devops_agent.runtime.compression import CompressionMiddleware, CompressionS
 from devops_agent.runtime.profile_note import ProfileNoteMiddleware
 from devops_agent.runtime.prompt import build_system_prompt, resolve_workdir
 from devops_agent.runtime.scope_runtime import PROFILE_KEY, AgentScopeRuntime
+from devops_agent.search_mode import search_mode
 from devops_agent.secrets.middleware import build_secret_middleware
 from devops_agent.tools.catalog import build_toolkit_for
+from devops_agent.tools.names import SEARCH_TOOL_NAME
+from devops_agent.tools.web_search import WebSearchTool, build_backend
 
 
 def build_agent(
@@ -109,6 +112,8 @@ class RuntimeParts:
     system_prompt: str
     state: AgentState
     note_mw: ProfileNoteMiddleware | None = None
+    # 联网检索工具实例：预算要跨轮 reset，所以必须由运行时与 toolkit 共用同一个对象。
+    search_tool: WebSearchTool | None = None
     toolkit_mws: list[ToolMiddlewareBase] = field(default_factory=list)
     compression_sink: CompressionSink | None = None
     agent: Agent | None = None
@@ -126,22 +131,39 @@ def _resolve_runtime_inputs(
 
     联网开关在这里定为最终值（而不是建模型时再读 env）：模型请求体与末尾
     档位说明必须同源，否则会出现「请求里带了检索结果、提示词却说没联网」。
+    优先级：请求里的逐轮开关 > 档位声明 `net` > 部署默认 env。
     `params` 省略时按「会话覆盖 > 部署默认 > yaml > env」解析。
     """
     resolved = profile if profile is not None else default_profile()
     base = resolve_workdir(workdir)
+    if web_search is not None:
+        effective_search = web_search
+    elif resolved.net is not None:
+        effective_search = resolved.net
+    else:
+        effective_search = os.environ.get("DEVOPS_AGENT_ENABLE_SEARCH") == "1"
     return RuntimeParts(
         profile=resolved,
         workdir=base,
         params=params if params is not None else effective_params(),
-        web_search=(
-            web_search
-            if web_search is not None
-            else os.environ.get("DEVOPS_AGENT_ENABLE_SEARCH") == "1"
-        ),
+        web_search=effective_search,
         system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),
         state=_state_for(resolved, state, base),
     )
+
+
+def _build_search_tool(parts: RuntimeParts) -> RuntimeParts:
+    """按需建检索工具：只有「本轮要联网 + tool 模式 + 后端可用」三者同时成立才建。
+
+    任一不成立就不注册工具 —— 前端据此把按钮置灰并说明原因，而不是给一个
+    点了没反应的按钮。`provider` 模式下检索走请求体，也不建工具。
+    """
+    if not parts.web_search or search_mode() != "tool":
+        return parts
+    backend, _reason = build_backend()
+    if backend is None:
+        return parts
+    return replace(parts, search_tool=WebSearchTool(backend))
 
 
 def _build_middlewares(parts: RuntimeParts) -> RuntimeParts:
@@ -159,15 +181,23 @@ def _build_agent(parts: RuntimeParts) -> RuntimeParts:
     note_mw = parts.note_mw
     sink = parts.compression_sink
     assert note_mw is not None and sink is not None
+    # 联网工具不在 profile.tools 里：它由独立的 net 维度授予，只有这一刻才拼进来。
+    names = parts.profile.tools + ((SEARCH_TOOL_NAME,) if parts.search_tool is not None else ())
+    extra = (
+        {SEARCH_TOOL_NAME: parts.search_tool.as_function()}
+        if parts.search_tool is not None
+        else None
+    )
     agent = build_agent(
         name="devops",
         system_prompt=parts.system_prompt,
         model=build_chat_model(enable_search=parts.web_search, params=parts.params),
         toolkit=build_toolkit_for(
-            parts.profile.tools,
+            names,
             parts.workdir,
             middlewares=parts.toolkit_mws,
             scope=parts.profile.scope,
+            extra=extra,
         ),
         middlewares=[note_mw, CompressionMiddleware(sink)],
         context_config=build_context_config(parts.params),
@@ -190,6 +220,7 @@ def _wrap_runtime(parts: RuntimeParts) -> AgentScopeRuntime:
         toolkit_middlewares=parts.toolkit_mws,
         compression_sink=parts.compression_sink,
         web_search=parts.web_search,
+        search_tool=parts.search_tool,
         params=parts.params,
     )
 
@@ -216,11 +247,13 @@ def build_agentscope_runtime(
     """
     # 1) 解析输入：提示词、目录、档位、跨轮状态、参数与本轮联网开关
     parts = _resolve_runtime_inputs(system_prompt, workdir, profile, state, web_search, params)
-    # 2) 建中间件与压缩 sink：密钥注入、档位说明、压缩帧收集
+    # 2) 联网工具：只有 tool 模式且后端可用才建，预算实例要交给运行时持有
+    parts = _build_search_tool(parts)
+    # 3) 建中间件与压缩 sink：密钥注入、档位说明、压缩帧收集
     parts = _build_middlewares(parts)
-    # 3) 建 Agent：工具按档位装配，模型参数与上下文窗口同源
+    # 4) 建 Agent：工具按档位装配，模型参数与上下文窗口同源
     parts = _build_agent(parts)
-    # 4) 包成运行时：中间件、sink 与当前参数交给运行时持有
+    # 5) 包成运行时：中间件、sink 与当前参数交给运行时持有
     return _wrap_runtime(parts)
 
 

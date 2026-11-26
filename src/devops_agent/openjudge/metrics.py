@@ -282,3 +282,46 @@ def challenge_tracks(results: list[dict[str, Any]]) -> dict[str, dict[str, Any]]
     if not results:
         return {}
     return track_stats(results)
+
+
+#: 与 `tools/names.SEARCH_TOOL_NAME` 同值：openjudge 是纯数据层，不为一个字符串
+#: 引入对 tools 包的依赖；`test_web_search_tool.py` 断言两者一致，改名会立刻红。
+SEARCH_TOOL = "web_search"
+
+
+def search_stats(traces: list[TraceRecord]) -> dict[str, Any]:
+    """检索工具的调用统计，从已有 `tool_calls` 投影，不额外采样。
+
+    这是工具化相对「供应商侧 RAG」最直接的收益：检索从黑盒变成轨迹里的
+    `name + args.query + result_excerpt`，判分与成本核算都能消费。
+    判定依据是 `tools/web_search.render()` 的首行契约（`hits=` / `note=error=`
+    / `skipped=budget-exhausted`），两侧一起改才不失效。
+    """
+    calls = 0
+    empty = 0
+    failed = 0
+    exhausted = 0
+    cases: set[str] = set()
+    queries: list[str] = []
+    for trace in traces:
+        for call in trace.tool_calls:
+            if call.name != SEARCH_TOOL:
+                continue
+            calls += 1
+            cases.add(trace.case_id)
+            queries.append(str(call.args.get("query", ""))[:80])
+            excerpt = call.result_excerpt
+            if "hits=0" in excerpt:
+                empty += 1
+            if "note=error=" in excerpt:
+                failed += 1
+            if "budget-exhausted" in excerpt:
+                exhausted += 1
+    return {
+        "calls": calls,
+        "empty": empty,
+        "failed": failed,
+        "budget_exhausted": exhausted,
+        "cases": sorted(cases),
+        "queries": queries[:20],
+    }

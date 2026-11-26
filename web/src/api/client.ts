@@ -20,6 +20,7 @@ import type {
   RunList,
   SecretMeta,
   SecretValue,
+  SearchToolStatus,
   Span,
   SessionModelConfig,
   Summary,
@@ -218,6 +219,11 @@ export async function switchSessionPermission(
 /** 运行时模式：Echo 兜底时前端要把它显式说出来，否则回显会被当成「答非所问」 */
 export function fetchHealth(): Promise<Health> {
   return getJson<Health>('/health');
+}
+
+/** 联网工具是否可用：按钮的 disabled 态与 title 都由这里决定，不在前端猜。 */
+export function fetchSearchToolStatus(): Promise<SearchToolStatus> {
+  return getJson<SearchToolStatus>('/api/tools/search');
 }
 
 // --- 模型参数 -----------------------------------------------------------

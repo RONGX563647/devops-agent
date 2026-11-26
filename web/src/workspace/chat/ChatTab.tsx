@@ -26,6 +26,7 @@ import { extractLinks } from '../links';
 import { ModelConfigPopover } from '../model-config/Popover';
 import { PermissionCard } from '../PermissionCard';
 import { PermissionPicker } from '../PermissionPicker';
+import { SearchToggle } from './SearchToggle';
 import { confirm, refreshPending, send, setPermission, stop } from '../store/actions';
 import { useSession } from '../store/state';
 import { CompressionTimeline, ContextRing } from '../ContextRing';
@@ -420,18 +421,11 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
               contextTokens={view.contextTokens}
               onChanged={() => void modelConfig.refetch()}
             />
-            <button
-              type="button"
-              className={`search-toggle${webSearch ? ' is-on' : ''}`}
-              aria-pressed={webSearch}
-              aria-label="联网搜索"
-              title="联网搜索：由模型判断是否需要检索；开启后可能产生额外费用"
-              onClick={() => setWebSearch((value) => !value)}
-              disabled={view.running}
-            >
-              <GlobeIcon />
-              <span>联网</span>
-            </button>
+            <SearchToggle
+              on={webSearch}
+              running={view.running}
+              onToggle={() => setWebSearch((value) => !value)}
+            />
             <input
               ref={fileInputRef}
               type="file"

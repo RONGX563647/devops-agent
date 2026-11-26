@@ -5,15 +5,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from devops_agent.gateway.app import app
+from devops_agent.gateway.confirm import confirm_run
+from devops_agent.gateway.schemas import ConfirmRequest
 from devops_agent.observability import repository as repo
 
 client = TestClient(app)
@@ -363,3 +367,49 @@ def test_new_message_after_park_settles_previous(
     assert "received no event" not in body
     # 结清必须是拒绝：没批准的调用不能因为「又发了一条消息」被放行
     assert runtime.resumed and all(item.confirmed is False for item in runtime.resumed[0])
+
+
+def test_confirm_disconnect_marks_run_finished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """续跑途中断连：run 必须落终态，不能停在「已解挂、ended_at 为空」。
+
+    这是改造前真实存在的缺口 —— 收尾逻辑有两份，主链路有断连兜底、确认续跑没有。
+    现在两者共用 `lease.SessionLease.close()`，本用例钉住这条。
+    模拟方式与主链路一致：直接驱动生成器，`aclose()` 触发 GeneratorExit
+    （它不是 Exception，只有 finally 能兜住）。
+    """
+    original = app.state.runtime
+    app.state.runtime = ParkRuntime()
+    monkeypatch.setenv("DEVOPS_AGENT_DB_PATH", str(tmp_path / "resume-abort.db"))
+    try:
+        run_id = int(_park(_post_stream({"session_id": "s1", "user_input": "删掉 dist"}))["run_id"])
+
+        async def drive() -> str:
+            request = Request({"type": "http", "headers": [], "app": app})
+            response = await confirm_run(
+                run_id,
+                ConfirmRequest(
+                    session_id="s1",
+                    results=[{"tool_call_id": "c1", "confirmed": True}],
+                ),
+                request,
+            )
+            iterator = cast(AsyncIterator[str], response.body_iterator)
+            await iterator.__anext__()  # 首帧注释心跳
+            frame = await iterator.__anext__()  # resume 的第一条 data 帧
+            await iterator.aclose()  # 模拟客户端断开
+            return frame
+
+        frame = asyncio.run(drive())
+    finally:
+        app.state.runtime = original
+        app.state.sessions = None
+        app.state.sessions_base = None
+
+    assert frame.startswith("data: ")
+    with repo.connect() as conn:
+        record = repo.get_run(conn, run_id)
+    assert record is not None
+    assert record.status == "failed", "断连不能留下 running 的悬空 run"
+    assert record.ended_at, "终态必须有结束时间，否则 run 列表会把这条算成在跑"

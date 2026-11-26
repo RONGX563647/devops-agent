@@ -15,8 +15,10 @@ from devops_agent.config import (
     load_gateway,
     load_policy,
 )
+from devops_agent.gateway.app import app, create_app
 from devops_agent.gateway.ending import RunLimits
 from devops_agent.gateway.settings import DEFAULT_DOMAIN, ENV_DOMAIN, ENV_MODEL, Settings
+from devops_agent.runtime.runtime import EchoRuntime
 
 
 def test_checked_in_gateway_yaml_matches_code_defaults() -> None:
@@ -55,3 +57,18 @@ def test_injected_policy_changes_behavior_without_monkeypatch() -> None:
     assert RunLimits.from_policy(settings.stream).ask_limit == 1
     # 默认实例不受影响（不可变快照，没有隐式共享）
     assert RunLimits.from_policy(Settings().stream).ask_limit == 3
+
+
+def test_create_app_isolates_runtime_and_settings() -> None:
+    """装配根注入：测试可以拿独立实例，不必再改模块全局 state。
+
+    这条同时钉住「三处 state 键的名字」—— 既有测试与会话注册表的懒建逻辑都按它们取值。
+    """
+    runtime = EchoRuntime()
+    built = create_app(runtime=runtime)
+
+    assert built.state.runtime is runtime, "显式注入的运行时不能被 select_runtime 覆盖"
+    assert built.state.settings.stream.ask_limit == 3, "设置随实例装配，来自 gateway.yaml"
+    assert built.state.sessions is None, "注册表懒建：替换 runtime 后下一次请求才建工厂"
+    assert built.state.sessions_base is None
+    assert built is not app, "每次调用都是一个独立实例"

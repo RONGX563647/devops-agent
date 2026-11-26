@@ -137,7 +137,9 @@ def test_switch_permission_validates_whitelist_and_session(
         json={"session_id": "s2", "permission": "readonly"},
     )
     assert mismatch.status_code == 400
-    assert mismatch.json()["detail"] == "session_mismatch"
+    # 400 是「请求自相矛盾」（路径与 body 各说一套），与「不是你的会话」（403）有意区分：
+    # 前者是调用方拼错，后者是越权，前端与排障需要的反应不同。
+    assert mismatch.json()["detail"] == "request_mismatch"
 
 
 def test_switch_permission_without_live_session_is_honest(

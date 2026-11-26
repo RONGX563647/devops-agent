@@ -10,7 +10,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from devops_agent.gateway.app import app
-from devops_agent.gateway.sse import _sse_frame
+from devops_agent.gateway.contract import sse_frame
 from devops_agent.observability import repository as repo
 from devops_agent.observability.recorder import RunRecorder, _as_int
 from devops_agent.runtime.events import event_to_dict
@@ -51,7 +51,7 @@ def test_event_to_dict_with_error() -> None:
 
 
 def test_sse_frame_is_json() -> None:
-    frame = _sse_frame({"type": "X", "v": 1})
+    frame = sse_frame({"type": "X", "v": 1})
     assert frame.startswith("data: ")
     assert json.loads(frame[6:]) == {"type": "X", "v": 1}
 
@@ -186,7 +186,7 @@ def test_repeat_start_same_id_with_db(tmp_path: Path) -> None:
 
 def test_redact_for_record_strips_secret() -> None:
     """观测库记录用的正文必须先脱敏：明文不能经 /api/runs 回到前端。"""
-    from devops_agent.gateway.input import redact_for_record
+    from devops_agent.gateway.input_prep import redact_for_record
 
     key = "sk-abcdefghijklmnopqrstuvwxyz012345"
     safe = redact_for_record(f"用 key={key} 调一下")
@@ -196,7 +196,7 @@ def test_redact_for_record_strips_secret() -> None:
 
 def test_redact_for_record_idempotent_with_pipeline() -> None:
     """管线对已脱敏文本是幂等的：第二次不会再脱一遍，也不会改占位符名。"""
-    from devops_agent.gateway.input import redact_for_record
+    from devops_agent.gateway.input_prep import redact_for_record
 
     key = "ghp_" + "a" * 30
     safe = redact_for_record(f"token={key}")

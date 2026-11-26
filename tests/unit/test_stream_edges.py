@@ -182,3 +182,23 @@ def test_repeat_start_same_id_with_db(tmp_path: Path) -> None:
     assert isinstance(rid, int)
     assert rec.run_id == rid
     rec.finish()  # 关闭连接，避免 ResourceWarning
+
+
+def test_redact_for_record_strips_secret() -> None:
+    """观测库记录用的正文必须先脱敏：明文不能经 /api/runs 回到前端。"""
+    from devops_agent.gateway.input import redact_for_record
+
+    key = "sk-abcdefghijklmnopqrstuvwxyz012345"
+    safe = redact_for_record(f"用 key={key} 调一下")
+    assert key not in safe
+    assert "{{secret:openai_key}}" in safe
+
+
+def test_redact_for_record_idempotent_with_pipeline() -> None:
+    """管线对已脱敏文本是幂等的：第二次不会再脱一遍，也不会改占位符名。"""
+    from devops_agent.gateway.input import redact_for_record
+
+    key = "ghp_" + "a" * 30
+    safe = redact_for_record(f"token={key}")
+    assert redact_for_record(safe) == safe
+    assert "{{secret:github_token}}" in safe

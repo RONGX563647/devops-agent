@@ -85,6 +85,18 @@ def test_hint_hides_chars_for_short_values() -> None:
     assert hint("abcdefghijklm").startswith("abcd")  # 13 位才允许露前 4 位
 
 
+def test_redact_fingerprint_matches_vault_hint_threshold() -> None:
+    """输入管线的阶段明细指纹必须与保险箱同一套阈值，短值不能露字符。
+
+    两条链路曾各自实现：vault 有 ≤12 位守卫，redact 无条件露前 4 位，
+    于是同一把短 key 进保险箱被遮、进 input_stages.detail 却露明文前缀。
+    """
+    from devops_agent.input.pipeline.redact import _fingerprint
+
+    for value in ("abcd", "sk-abc", "abcdefghijkl", "abcdefghijklm", "sk-" + "x" * 40):
+        assert _fingerprint(value) == hint(value), value
+
+
 def test_get_missing_returns_none(store: SecretVault) -> None:
     assert store.get("nope") is None
 

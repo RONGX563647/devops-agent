@@ -21,6 +21,7 @@ from agentscope.tool import Toolkit, ToolMiddlewareBase
 from devops_agent.governance.compile import compile_context
 from devops_agent.governance.model import PermissionProfile
 from devops_agent.governance.presets import default_profile
+from devops_agent.memory.runtime import MemoryRuntime
 from devops_agent.model_settings import ModelParams
 from devops_agent.runtime.chat_model import MODEL_WIRE_KEYS, build_chat_model
 from devops_agent.runtime.compression import CompressionSink, context_budget
@@ -71,6 +72,7 @@ class AgentScopeRuntime:
         note_middleware: ProfileNoteMiddleware | None = None,
         toolkit_middlewares: Sequence[ToolMiddlewareBase] | None = None,
         compression_sink: CompressionSink | None = None,
+        memory: MemoryRuntime | None = None,
         web_search: bool = False,
         search_tool: WebSearchTool | None = None,
         params: ModelParams | None = None,
@@ -85,6 +87,8 @@ class AgentScopeRuntime:
         # 压缩钩子没有事件通道，只能由运行时把中间件攒下的帧 drain 进流里。
         # Echo/测试替身没有 sink 时为 None，事件序列保持原样。
         self._compression_sink = compression_sink
+        # 记忆帧与压缩帧同路：钩子写队列，这里在每个框架事件后按序转发
+        self._memory = memory
         self._web_search = web_search
         # 检索工具的预算按 run 计：运行时持有同一个实例才能每轮 reset()。
         # 切档时从「不联网」打开联网，实例可能还没建，由 _ensure_search_tool 补。
@@ -229,6 +233,10 @@ class AgentScopeRuntime:
         """取走压缩钩子攒下的帧；没有 sink 的运行时返回空列表。"""
         return self._compression_sink.drain() if self._compression_sink is not None else []
 
+    def _drain_memory(self) -> list[dict[str, Any]]:
+        """取走记忆钩子攒下的帧；Echo/测试替身没有记忆运行时。"""
+        return self._memory.sink.drain() if self._memory is not None else []
+
     def _budget_frame(self) -> dict[str, Any] | None:
         """上下文预算帧：只在挂了压缩钩子的真实运行时发。
 
@@ -254,10 +262,18 @@ class AgentScopeRuntime:
             yield event_to_dict(event)
             for frame in self._drain_compression():
                 yield frame
+            for frame in self._drain_memory():
+                yield frame
 
     # --- 挂起与恢复 ---------------------------------------------------
     def snapshot(self) -> str:
-        """把 AgentState 序列化成 JSON：会话隔离、刷新恢复、跨实例续跑都靠它。"""
+        """把 AgentState 序列化成 JSON：会话隔离、刷新恢复、跨实例续跑都靠它。
+
+        序列化前先做一次体积保护：历史无上限增长会让 state_json 无限膨胀，
+        且注入内容从不写回 state，快照里只有运行时状态。
+        """
+        if self._memory is not None:
+            self._memory.cap_snapshot(self._agent)
         return json.dumps(
             self._agent.state.model_dump(mode="json"), ensure_ascii=False, default=str
         )
@@ -324,4 +340,6 @@ class AgentScopeRuntime:
         async for event in self._agent.reply_stream(self.confirm_event(decisions)):
             yield event_to_dict(event)
             for frame in self._drain_compression():
+                yield frame
+            for frame in self._drain_memory():
                 yield frame

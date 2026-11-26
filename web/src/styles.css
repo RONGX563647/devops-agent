@@ -76,6 +76,8 @@
   --lane-model-soft: #cecbf6;
   --lane-tool: #ef9f27;
   --lane-tool-soft: #faeeda;
+  --lane-memory: #2f9e6e;
+  --lane-memory-soft: #dff3e9;
   --lane-error: #e24b4a;
 
   /* ---- 兼容旧 token 名（指标 / 质量 / 成本页仍在用） ---- */
@@ -2285,6 +2287,9 @@ a:hover {
 .lane-track[data-lane='tool'] .lane-bar {
   background: var(--lane-tool);
 }
+.lane-track[data-lane='memory'] .lane-bar {
+  background: var(--lane-memory);
+}
 /* 状态色要压过泳道底色规则：选择器权重与 .lane-track[data-lane='tool'] .lane-bar 持平并靠后生效 */
 .lane-track .lane-bar[data-status='error'] {
   /* 失败块通常只有几百毫秒，必须压在相邻块上面，否则被后画的成功块吞掉 */
@@ -2324,6 +2329,9 @@ a:hover {
 }
 .lanes-legend i[data-lane='tool'] {
   background: var(--lane-tool);
+}
+.lanes-legend i[data-lane='memory'] {
+  background: var(--lane-memory);
 }
 .lanes-legend i[data-lane='error'] {
   background: var(--lane-error);
@@ -2767,6 +2775,10 @@ a:hover {
 .trace-badge[data-kind='error'] {
   background: var(--danger-soft);
   color: var(--danger-ink);
+}
+.trace-badge[data-kind='memory'] {
+  background: var(--lane-memory-soft);
+  color: #1f6a49;
 }
 .trace-badge[data-kind='parse'] {
   background: var(--ok-soft);

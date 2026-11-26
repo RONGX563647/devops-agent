@@ -111,6 +111,25 @@ export interface StreamEvent {
   compressed?: boolean;
   /** 压缩后摘要的字符数 */
   summary_chars?: number;
+  /** 记忆事件（SPEC-0013）：层、状态与结构化明细 */
+  layer?: string;
+  reason?: string;
+  memory?: Record<string, unknown>;
+  hits?: number;
+  ids?: number[];
+  scores?: number[];
+  injected_chars?: number;
+  dropped_tool_results?: number;
+  dropped_turns?: number;
+  deduped_reads?: number;
+  reclaimed_chars?: number;
+  version?: number;
+  stored?: boolean;
+  deduped?: boolean;
+  budget?: number;
+  latency_ms?: number;
+  zones?: Record<string, unknown>;
+  estimated?: boolean;
 }
 
 /** 过程步骤的类别——每类在 UI 上有不同视觉标注。 */
@@ -122,7 +141,8 @@ export type ProcessKind =
   | 'tool'
   | 'control'
   | 'error'
-  | 'parse';
+  | 'parse'
+  | 'memory';
 
 /** 输入解析的一个阶段：与后端 INPUT_PARSE_STAGE 事件字段一一对应。 */
 export interface ParseStage {
@@ -259,9 +279,9 @@ export interface TraceTiming {
 /** 轨迹步骤：由消息与过程步骤派生的只读视图。 */
 export interface TraceStep {
   id: string;
-  kind: 'text' | 'tool' | 'error' | 'parse' | 'model';
-  /** 该步骤占用的资源：模型推理 / 工具执行 / 输入解析。 */
-  layer: 'model' | 'tool' | 'input' | 'control';
+  kind: 'text' | 'tool' | 'error' | 'parse' | 'model' | 'memory';
+  /** 该步骤占用的资源：模型推理 / 工具执行 / 输入解析 / 记忆动作。 */
+  layer: 'model' | 'tool' | 'input' | 'control' | 'memory';
   /** 轮内序号，从 1 开始；Inspector 标题用。 */
   index: number;
   title: string;
@@ -296,7 +316,7 @@ export interface TraceStep {
 /** 泳道段：某条资源泳道上的一段占用。 */
 export interface TraceSpan {
   id: string;
-  lane: 'model' | 'tool';
+  lane: 'model' | 'tool' | 'memory';
   start: number;
   end: number;
   status: 'ok' | 'error' | 'running';
@@ -304,10 +324,11 @@ export interface TraceSpan {
   stepId: string;
 }
 
-/** 两条泳道的占用区间。只画真实占用的时间，空隙就留白，不造「等待」块。 */
+/** 三条泳道的占用区间。只画真实占用的时间，空隙就留白，不造「等待」块。 */
 export interface TraceLanes {
   model: TraceSpan[];
   tool: TraceSpan[];
+  memory: TraceSpan[];
 }
 
 /** 一组聚合指标：顶部状态栏与空态提示共用。 */

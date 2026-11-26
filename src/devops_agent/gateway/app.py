@@ -29,6 +29,7 @@ from devops_agent.gateway.routes import (
     session_router,
     stream_router,
 )
+from devops_agent.gateway.routes.memory import router as memory_router
 from devops_agent.gateway.settings import Settings
 from devops_agent.input.api import router as attachments_router
 from devops_agent.model_api import router as model_config_router
@@ -73,6 +74,7 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
         context_router,
         # 模型参数三层可配（SPEC-0001）：部署默认 / 会话覆盖 / 只读凭据
         model_config_router,
+        memory_router,
     ):
         application.include_router(business_router)
     application.include_router(health_router)

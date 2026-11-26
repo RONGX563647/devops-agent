@@ -1,0 +1,54 @@
+# 记忆（SPEC-0013）
+#
+# 三层：短期（工作记忆）/ 中期（会话情景）/ 长期（语义 + 程序性）。
+# 本文件只放「部署者能决定」的旋钮；上下文窗口与压缩比例仍在 model.yaml，
+# 由 memory.budget 从那一份推导，避免两处口径打架。
+memory:
+  enabled: true
+
+  short_term:
+    max_turns: 12
+    tool_output_chars: 1600
+    tool_output_head_ratio: 0.7
+    dedup_reads: true
+
+  episodic:
+    enabled: true
+    trigger_turns: 6
+    max_chars: 3000
+    max_versions: 20
+    ttl_days: 30
+
+  long_term:
+    enabled: true
+    # local：会话级 SQLite 兜底（无外部依赖）；mem0 / agentic 需要外部后端，
+    # 不可用时由 auto 降级为 local，并在 /api/memory/status 说明原因。
+    backend: auto          # auto | mem0 | agentic | local | off
+    scope: session         # session | user
+    top_k: 5
+    min_score: 0.35
+    max_entries: 200
+    ttl_days: 90
+    write_on: turn         # turn | session_end（本期只有 turn 实现）
+
+  budget:
+    short_term_ratio: 0.50
+    episodic_ratio: 0.30
+    long_term_ratio: 0.10
+    headroom_ratio: 0.10
+
+  context:
+    enabled: true
+    note_max_chars: 1200
+    episodic_note_ratio: 0.6
+    snapshot_max_chars: 1500000
+    snapshot_version: 2
+    assemble_event: true
+
+  compress:
+    fail_open: true
+
+  trace:
+    query_preview_chars: 120
+    hit_preview_chars: 80
+    summary_preview_chars: 160

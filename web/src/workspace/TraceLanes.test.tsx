@@ -16,6 +16,9 @@ const LANES: Lanes = {
     { id: 't1', lane: 'tool', start: at(9000), end: at(11_000), status: 'ok', label: 'Bash', stepId: 'tool:1' },
     { id: 't2', lane: 'tool', start: at(62_000), end: at(64_000), status: 'error', label: 'Bash', stepId: 'tool:2' },
   ],
+  memory: [
+    { id: 'mem1', lane: 'memory', start: at(61_000), end: at(61_008), status: 'ok', label: '记忆压缩', stepId: 'memory:1' },
+  ],
 };
 
 afterEach(cleanup);
@@ -25,8 +28,8 @@ describe('TraceLanes', () => {
     const { container } = render(
       <TraceLanes lanes={LANES} activeStepId={null} onSelect={() => {}} />,
     );
-    // 4 条真实区间 → 4 个块；空隙（0–9s 之间、11–30s 之间）不出现任何占位块
-    expect(container.querySelectorAll('.lane-bar')).toHaveLength(4);
+    // 5 条真实区间（模型 2 + 工具 2 + 记忆 1）→ 5 个块；空隙不出现占位块
+    expect(container.querySelectorAll('.lane-bar')).toHaveLength(5);
     expect(screen.queryByLabelText(/泳道 等待/)).toBeNull();
   });
 
@@ -40,12 +43,12 @@ describe('TraceLanes', () => {
     cleanup();
     render(
       <TraceLanes
-        lanes={{ model: LANES.model, tool: [] }}
+        lanes={{ model: LANES.model, tool: [], memory: [] }}
         activeStepId={null}
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByText('空闲')).toBeTruthy();
+    expect(screen.getAllByText('空闲').length).toBeGreaterThan(0);
   });
 
   it('刻度和总长按窗口末位对齐', () => {
@@ -65,7 +68,9 @@ describe('TraceLanes', () => {
     fireEvent.click(bars[2]);
     expect(onSelect).toHaveBeenCalledWith('tool:1');
 
-    rerender(<TraceLanes lanes={{ model: [], tool: [] }} activeStepId={null} onSelect={onSelect} />);
+    rerender(
+      <TraceLanes lanes={{ model: [], tool: [], memory: [] }} activeStepId={null} onSelect={onSelect} />,
+    );
     expect(screen.getByText('这一轮还没有可绘制的时间区间。')).toBeTruthy();
   });
 });

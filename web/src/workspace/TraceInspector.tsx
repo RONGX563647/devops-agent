@@ -70,6 +70,7 @@ const LAYER_TEXT: Record<TraceStep['layer'], string> = {
   tool: '工具',
   input: '输入解析',
   control: '控制',
+  memory: '记忆',
 };
 
 const KIND_TEXT: Record<TraceStep['kind'], string> = {
@@ -78,6 +79,7 @@ const KIND_TEXT: Record<TraceStep['kind'], string> = {
   model: '模型',
   error: '异常',
   parse: '解析',
+  memory: '记忆',
 };
 
 /** 计时来源的读法：这三档的可信度完全不同，必须写清楚。 */

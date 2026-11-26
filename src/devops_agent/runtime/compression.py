@@ -25,12 +25,14 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 from agentscope.agent import Agent, ContextConfig
 from agentscope.middleware import MiddlewareBase
 
 from devops_agent.config import load_model
+from devops_agent.memory import events as memory_events
+from devops_agent.memory.runtime import MemoryRuntime
 
 CONTEXT_BUDGET = "CONTEXT_BUDGET"
 CONTEXT_COMPRESSION_START = "CONTEXT_COMPRESSION_START"
@@ -97,11 +99,25 @@ class CompressionSink:
         return frames
 
 
+def _summary_text(summary: object) -> str:
+    """AgentState.summary 可能是字符串或文本块列表；记忆卡只收纯文本。"""
+    if isinstance(summary, str):
+        return summary
+    parts: list[str] = []
+    for block in summary if isinstance(summary, list) else []:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+    return "\n".join(parts)
+
+
 class CompressionMiddleware(MiddlewareBase):
     """挂在 Agent 的 middleware 链上，记录每次 compress_context 检查。"""
 
-    def __init__(self, sink: CompressionSink) -> None:
+    def __init__(self, sink: CompressionSink, memory: MemoryRuntime | None = None) -> None:
         self._sink = sink
+        # 记忆层与压缩共用同一个入口：压缩成功就写中期新版本，避免二次压缩
+        self._memory = memory
 
     async def on_compress_context(
         self,
@@ -129,18 +145,77 @@ class CompressionMiddleware(MiddlewareBase):
                 "threshold": threshold,
             }
         )
-        await next_handler()
+        trigger = "context_threshold"
+        self._emit_memory(
+            memory_events.MEMORY_COMPRESS_START,
+            trigger=trigger,
+            tokens_before=before,
+            budget=threshold,
+        )
+        try:
+            await next_handler()
+        except Exception as exc:
+            # 压缩失败保留旧摘要与旧卡片，本轮继续（由调用方决定是否吞掉）
+            self._emit_memory(
+                memory_events.MEMORY_COMPRESS_END,
+                state="error",
+                reason=f"{type(exc).__name__}: {exc}",
+                trigger=trigger,
+                tokens_before=before,
+                tokens_after=before,
+                budget=threshold,
+            )
+            raise
         after = await count_context_tokens(agent)
+        summary_now = getattr(agent.state, "summary", "") or ""
+        compressed = summary_now != summary_before or len(agent.state.context) != context_before
         self._sink.emit(
             {
                 "type": CONTEXT_COMPRESSION_END,
                 "before_tokens": before,
                 "after_tokens": after,
                 "threshold": threshold,
-                "compressed": (
-                    (getattr(agent.state, "summary", "") or "") != summary_before
-                    or len(agent.state.context) != context_before
-                ),
-                "summary_chars": len(getattr(agent.state, "summary", "") or ""),
+                "compressed": compressed,
+                "summary_chars": len(_summary_text(summary_now)),
             }
+        )
+        self._after_compress(compressed, summary_now, before, after, threshold, trigger)
+
+    def _emit_memory(self, kind: str, **fields: object) -> None:
+        """记忆层可选：没有运行时就不发，压缩观测不受影响。"""
+        if self._memory is None:
+            return
+        self._memory.sink.emit(
+            memory_events.frame(kind, layer="episodic", **cast(dict[str, Any], fields))
+        )
+
+    def _after_compress(
+        self,
+        compressed: bool,
+        summary_now: object,
+        before: int,
+        after: int,
+        threshold: int,
+        trigger: str,
+    ) -> None:
+        """真正压缩才写新版本；否则只记一条 skipped，避免误以为压过。"""
+        if self._memory is None:
+            return
+        if compressed:
+            self._memory.record_compression(
+                _summary_text(summary_now),
+                before=before,
+                after=after,
+                threshold=threshold,
+                trigger=trigger,
+            )
+            return
+        self._emit_memory(
+            memory_events.MEMORY_COMPRESS_END,
+            state="skipped",
+            reason="below_threshold",
+            trigger=trigger,
+            tokens_before=before,
+            tokens_after=after,
+            budget=threshold,
         )

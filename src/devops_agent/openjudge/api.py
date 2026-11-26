@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import copy
 import sqlite3
 from collections.abc import Callable
 from typing import TypeVar
@@ -15,7 +16,7 @@ from typing import TypeVar
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from devops_agent.openjudge import benchmark, casestore, report, service, store
+from devops_agent.openjudge import benchmark, casestore, explain, grade, report, service, store
 
 router = APIRouter(prefix="/api/openjudge", tags=["openjudge"])
 
@@ -169,6 +170,29 @@ def _latest_tracks(conn: sqlite3.Connection) -> dict[str, dict[str, object] | No
     return {track: store.latest_track_stats(conn, track) for track in benchmark.TRACKS}
 
 
+@router.get("/scoring-config")
+def openjudge_scoring_config() -> dict[str, object]:
+    """评分契约的唯一来源：计划/门槛/赛道规则都来自执行它们的代码。"""
+    plan = grade.load_plan()
+    return {
+        "plan": {
+            "name": plan.name,
+            "sha": grade.plan_sha(plan),
+            "judges": [
+                {
+                    "key": spec.key,
+                    "grader": spec.grader,
+                    "weight": spec.weight,
+                    "scale": [spec.low, spec.high],
+                }
+                for spec in plan.judges.values()
+            ],
+        },
+        "pass_judge": explain.PASS_JUDGE,
+        "track_rules": copy.deepcopy(report.TRACK_RULES),
+    }
+
+
 @router.get("/series")
 def openjudge_series(days: int = Query(30, ge=1, le=365)) -> dict[str, object]:
     points = _read(lambda conn: store.series(conn, days=days))
@@ -177,6 +201,7 @@ def openjudge_series(days: int = Query(30, ge=1, le=365)) -> dict[str, object]:
 
 class RunStartIn(BaseModel):
     track: str = ""
+    case_ids: list[str] = Field(default_factory=list)
     limit: int = Field(default=service.DEFAULT_LIMIT, ge=1, le=service.MAX_LIMIT)
     judge: bool = False
     concurrency: int = Field(default=2, ge=1, le=service.MAX_CONCURRENCY)
@@ -184,13 +209,16 @@ class RunStartIn(BaseModel):
 
 @router.post("/runs", status_code=202)
 async def openjudge_start_run(body: RunStartIn) -> dict[str, object]:
-    """在线发起一次评测。默认单赛道 + 10 条 + 不启用裁判，全量必须显式放宽。"""
+    """在线发起一次评测。track 与 case_ids 二选一；默认不启用裁判。"""
+    if body.case_ids and body.track.strip():
+        raise HTTPException(status_code=400, detail="track 与 case_ids 二选一，不能同时提供")
     try:
         payload = await service.start(
             track=body.track.strip().upper(),
             limit=body.limit,
             judge=body.judge,
             concurrency=body.concurrency,
+            case_ids=body.case_ids,
         )
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

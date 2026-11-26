@@ -121,6 +121,7 @@ export function CaseEditor({ caseId, onClose }: CaseEditorProps) {
         value={text}
         onChange={(event) => setDraft(event.target.value)}
         rows={22}
+        style={{ maxHeight: '50vh' }}
       />
 
       <div className="oj-form-actions">

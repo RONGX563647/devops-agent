@@ -152,6 +152,15 @@ def load_cases(track: str = "", limit: int = 0) -> list[benchmark.Case]:
     return cases
 
 
+def load_cases_by_ids(ids: list[str]) -> list[benchmark.Case]:
+    """按传入顺序从合并视图取用例；未知 id 汇总一次报出。"""
+    by_id = {case.id: case for case in load_cases()}
+    unknown = list(dict.fromkeys(case_id for case_id in ids if case_id not in by_id))
+    if unknown:
+        raise ValueError(f"未知用例 id：{', '.join(unknown)}")
+    return [by_id[case_id] for case_id in dict.fromkeys(ids)]
+
+
 def repo_cases() -> list[benchmark.Case]:
     """`validate` / 覆盖率基线口径：只看仓库，不看本地覆盖层。"""
     paths = repo_paths()

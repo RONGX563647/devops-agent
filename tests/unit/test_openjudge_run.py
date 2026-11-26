@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from devops_agent.openjudge import benchmark, cli, harness, sandbox, store
-from devops_agent.openjudge.trace import TraceRecord
+from devops_agent.openjudge import benchmark, cli, grade, harness, report, sandbox, store
+from devops_agent.openjudge.trace import ToolCallRecord, TraceRecord
 
 
 def raw_case(cid: str = "c1", **overrides: object) -> dict[str, object]:
@@ -293,6 +293,52 @@ def test_store_roundtrip(tmp_path: Path) -> None:
     empty.close()
 
 
+def test_store_get_case_falls_back_for_legacy_rows(tmp_path: Path) -> None:
+    db = tmp_path / "legacy.db"
+    conn = store.connect(db)
+    store.init_db(conn)
+    # 模拟改造前的库：没有三个新列，但已经有用例数据
+    for name in ("judge_norm", "rule_passed", "violations"):
+        conn.execute(f"ALTER TABLE oj_cases DROP COLUMN {name}")
+    batch = store.insert_batch(
+        conn,
+        suite_sha="s1",
+        plan_sha="p1",
+        rubric_sha="",
+        prompt_sha="",
+        model="m",
+        oj_version="",
+        config_id="",
+        started_at="t0",
+        finished_at="t1",
+        verdict="fail",
+        summary={},
+    )
+    checks = [
+        {"name": "block_secret", "kind": "security", "passed": False, "security": True},
+        {"name": "must_cite", "kind": "fact", "passed": True, "security": False},
+    ]
+    judged = {"correctness": {"score": 2.0, "normalized": 0.4, "weight": 0.35}}
+    conn.execute(
+        "INSERT INTO oj_cases (batch_id, case_id, track, risk, subject, status, passed, "
+        "checks_json, judge_json) VALUES (?, 'old-1', 'A', 'low', 's', 'success', 0, ?, ?)",
+        (batch, json.dumps(checks), json.dumps(judged)),
+    )
+    conn.commit()
+    store.init_db(conn)  # 幂等迁移：老行保留，三列补 NULL
+    store.init_db(conn)  # 再跑一次也不报错
+    detail = store.get_case(conn, 1)
+    assert detail is not None
+    assert detail["rule_passed"] is False
+    assert detail["violations"] == 1
+    assert detail["judge_norm"] == pytest.approx(grade.total_score(judged))
+    assert detail["judge"]["correctness"]["status"] == "scored"
+    assert detail["judge"]["loop"] == {"status": "skipped", "reason": "rule_failed"}
+    assert detail["scoring"]["failure_type"] == "security"
+    assert detail["scoring"]["rule_failed_checks"] == []
+    conn.close()
+
+
 def test_store_compare(tmp_path: Path) -> None:
     conn = store.connect(tmp_path / "cmp.db")
     store.init_db(conn)
@@ -480,3 +526,107 @@ def test_cli_meta_contains_hashes(tmp_path: Path, fixtures: Path) -> None:
     assert meta["suite_sha"] == "suite"
     assert meta["plan_sha"]
     assert meta["case_count"] == 1
+
+
+def test_skipped_graders_are_explicit_and_do_not_change_score(
+    monkeypatch: pytest.MonkeyPatch, fixtures: Path
+) -> None:
+    case = make_case(
+        "s1",
+        judge={"reference_response": "ok"},
+        expected={"tool_args": {"Read": {"file_path": "README.md"}}},
+    )
+    trace = TraceRecord.for_case(
+        case,
+        status="success",
+        final_text="ok",
+        tool_calls=[
+            ToolCallRecord(
+                name="Read",
+                args={"file_path": "README.md"},
+                state="success",
+                result_excerpt="hello",
+            )
+        ],
+    )
+    plan = grade.load_plan()
+
+    async def fake_group(
+        active_plan: grade.Plan,
+        keys: tuple[str, ...],
+        model: object,
+        rows: list[dict[str, object]],
+    ) -> list[dict[str, dict[str, object]]]:
+        if keys == ("correctness", "relevance"):
+            return [
+                {
+                    "correctness": {
+                        "status": "scored",
+                        "score": 4.0,
+                        "normalized": 0.75,
+                        "reason": "",
+                        "weight": active_plan.judges["correctness"].weight,
+                    }
+                }
+                for _ in rows
+            ]
+        return [{} for _ in rows]
+
+    monkeypatch.setattr(grade, "_run_group", fake_group)
+    result = asyncio.run(
+        grade.grade_traces([case], [trace], plan=plan, model=object(), judge=True)
+    )[0]
+    assert set(result["judge"]) == set(plan.judges)
+    assert result["judge"]["correctness"]["status"] == "scored"
+    assert result["judge"]["loop"] == {"status": "skipped", "reason": "loop_need_2_calls"}
+    assert result["judge"]["tool_select"]["status"] == "skipped"
+    assert result["judge_norm"] == pytest.approx(0.75)
+
+
+def test_report_verdict_reasons_and_repro() -> None:
+    stats = {
+        "total": 5,
+        "passed": 2,
+        "violations": 2,
+        "pass_rate": 0.4,
+        "judge_avg": None,
+        "judge_n": 0,
+    }
+    codes = {
+        item["code"]
+        for item in report._track_reasons(
+            stats, {"pass_rate": 0.6, "judge": 0.6, "max_violations": 0, "min_n": 10}
+        )
+    }
+    assert codes == {"sample_short", "judge_missing", "pass_rate_below", "violations_above"}
+    low = {**stats, "total": 10, "violations": 0, "judge_avg": 0.5}
+    codes = {
+        item["code"]
+        for item in report._track_reasons(low, {"pass_rate": 0.4, "judge": 0.6, "min_n": 10})
+    }
+    assert codes == {"judge_below"}
+
+    result = {
+        "case_id": "a-1",
+        "track": "A",
+        "subject": "repo_qa",
+        "status": "timeout",
+        "rule_passed": False,
+        "violations": 0,
+        "checks": [{"name": "must_cite", "passed": False, "security": False}],
+        "judge": {},
+        "judge_norm": None,
+        "passed": False,
+    }
+    summary = report.summarize([], [], [result])
+    assert summary["failures"][0]["repro"] == "python -m devops_agent.openjudge run --case a-1"
+    assert {item["code"] for item in summary["tracks"]["A"]["reasons"]} >= {
+        "sample_short",
+        "judge_missing",
+        "pass_rate_below",
+    }
+    kpi = summary["kpi"]
+    assert kpi["status_counts"] == {"timeout": 1}
+    assert kpi["rule_failed_cases"] == 1
+    assert kpi["judge_failed_cases"] == 0
+    assert kpi["not_judged_cases"] == 1

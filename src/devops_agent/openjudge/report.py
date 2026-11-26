@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from devops_agent.openjudge import explain
 from devops_agent.openjudge.benchmark import Case
 from devops_agent.openjudge.trace import TraceRecord
 
@@ -68,6 +69,63 @@ def _track_stats(results: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return tracks
 
 
+def _reason(
+    code: str, actual: float | int | None, threshold: float | int | None, message: str
+) -> dict[str, Any]:
+    return {"code": code, "actual": actual, "threshold": threshold, "message": message}
+
+
+def _track_reasons(stats: dict[str, Any], rules: dict[str, float]) -> list[dict[str, Any]]:
+    """只列未达标原因：前端直接展示，不再自己比较阈值。"""
+    reasons: list[dict[str, Any]] = []
+    min_n = rules.get("min_n", 1)
+    if stats["total"] < min_n:
+        reasons.append(
+            _reason(
+                "sample_short",
+                stats["total"],
+                min_n,
+                f"样本 {stats['total']} 条，不足 {min_n} 条",
+            )
+        )
+    if "judge" in rules:
+        judge = stats.get("judge_avg")
+        if judge is None:
+            reasons.append(
+                _reason("judge_missing", None, rules["judge"], "没有裁判均分，不能当成通过")
+            )
+        elif judge < rules["judge"]:
+            reasons.append(
+                _reason(
+                    "judge_below",
+                    judge,
+                    rules["judge"],
+                    f"裁判均分 {judge:.2f} 低于门槛 {rules['judge']:.2f}",
+                )
+            )
+    rate = rules.get("pass_rate", 0)
+    if stats["pass_rate"] < rate:
+        reasons.append(
+            _reason(
+                "pass_rate_below",
+                stats["pass_rate"],
+                rate,
+                f"通过率 {stats['pass_rate']:.0%} 低于门槛 {rate:.0%}",
+            )
+        )
+    if "max_violations" in rules and stats["violations"] > rules["max_violations"]:
+        limit = rules["max_violations"]
+        reasons.append(
+            _reason(
+                "violations_above",
+                stats["violations"],
+                limit,
+                f"安全违例 {stats['violations']} 条，超过上限 {limit} 条",
+            )
+        )
+    return reasons
+
+
 def _verdict(track: str, stats: dict[str, Any] | None, rules: dict[str, float]) -> str:
     """单赛道三态；缺数据一律 insufficient，不默认通过。"""
     if stats is None or stats["total"] < rules.get("min_n", 1):
@@ -103,9 +161,7 @@ def _failures(results: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list
                 "track": result["track"],
                 "status": result["status"],
                 "failed_checks": names,
-                "repro": (
-                    f"python -m devops_agent.openjudge run --case {result['case_id']} --no-judge"
-                ),
+                "repro": f"python -m devops_agent.openjudge run --case {result['case_id']}",
             }
         )
     ordered = [
@@ -142,18 +198,42 @@ def _token_totals(traces: list[TraceRecord]) -> dict[str, int]:
     }
 
 
+def _failure_counts(
+    results: list[dict[str, Any]],
+) -> tuple[dict[str, int], int, int, int]:
+    """终态分布 + 规则失败 / 裁判低分 / 未判分三类计数。"""
+    status_counts: dict[str, int] = {}
+    rule_failed = judge_failed = not_judged = 0
+    for item in results:
+        status = str(item.get("status", "") or "")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if not item.get("rule_passed"):
+            rule_failed += 1
+        judge = item.get("judge_norm")
+        if judge is None:
+            not_judged += 1
+        elif float(judge) < explain.PASS_JUDGE:
+            judge_failed += 1
+    return status_counts, rule_failed, judge_failed, not_judged
+
+
 def _kpi(results: list[dict[str, Any]], traces: list[TraceRecord]) -> dict[str, Any]:
     total = len(results)
     passed = sum(1 for item in results if item.get("passed"))
+    status_counts, rule_failed, judge_failed, not_judged = _failure_counts(results)
     return {
         "cases": total,
         "passed": passed,
         "pass_rate": passed / total if total else 0.0,
         "violations": sum(int(result.get("violations", 0)) for result in results),
-        "judge_n": sum(1 for item in results if item.get("judge_norm") is not None),
+        "judge_n": total - not_judged,
         "latency_p95_ms": _p95([trace.latency_ms for trace in traces]),
         "tokens": _token_totals(traces),
         "cost_usd": 0.0,
+        "status_counts": status_counts,
+        "rule_failed_cases": rule_failed,
+        "judge_failed_cases": judge_failed,
+        "not_judged_cases": not_judged,
     }
 
 
@@ -167,19 +247,31 @@ def summarize(
     """生成批次汇总（summary_json 的结构即前端契约）。"""
     # step1: 按赛道聚合 + TRACK_RULES 判决
     tracks = _track_stats(results)
+    rules_by_track = {track: TRACK_RULES.get(track, {}) for track in TRACK_RULES}
     verdicts = {
-        track: _verdict(track, tracks.get(track), TRACK_RULES.get(track, {}))
+        track: _verdict(track, tracks.get(track), rules_by_track[track]) for track in TRACK_RULES
+    }
+    # step2: 赛道依据只列未达标项，pass 给空数组
+    reasons = {
+        track: (_track_reasons(tracks[track], rules_by_track[track]) if track in tracks else [])
         for track in TRACK_RULES
     }
-    # step2: 失败按断言名统计 Pareto
+    # step3: 失败按断言名统计 Pareto
     failures, pareto = _failures(results)
-    # step3: 赛道结论 + 违例合成总判定
+    # step4: 赛道结论 + 违例合成总判定
     violations = sum(int(result.get("violations", 0)) for result in results)
     return {
         "verdict": _overall_verdict(verdicts, violations),
         "meta": meta or {},
         "kpi": _kpi(results, traces),
-        "tracks": {track: {**stats, "verdict": verdicts[track]} for track, stats in tracks.items()},
+        "tracks": {
+            track: {
+                **stats,
+                "verdict": verdicts[track],
+                "reasons": reasons.get(track, []),
+            }
+            for track, stats in tracks.items()
+        },
         "subjects": _subject_stats(results),
         "failures": failures[:50],
         "pareto": pareto[:20],

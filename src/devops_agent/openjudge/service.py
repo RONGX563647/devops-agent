@@ -35,29 +35,43 @@ def load_cases(track: str = "", limit: int = DEFAULT_LIMIT) -> list[benchmark.Ca
     return casestore.load_cases(track=track, limit=limit)
 
 
+def _select_cases(
+    track: str, limit: int, case_ids: list[str] | None
+) -> tuple[list[benchmark.Case], str]:
+    """两种用例来源归一成「用例列表 + run.track」，避免 start 里分叉。"""
+    if case_ids is not None:
+        ordered = list(dict.fromkeys(case_ids))
+        if len(ordered) > MAX_LIMIT:
+            raise ValueError(f"case_ids 最多 {MAX_LIMIT} 条")
+        return casestore.load_cases_by_ids(ordered), ""
+    if track and track not in benchmark.TRACKS:
+        raise ValueError(f"未知赛道：{track}")
+    return load_cases(track, limit), track
+
+
 async def start(
     *,
     track: str,
     limit: int,
     judge: bool | None = None,
     concurrency: int | None = None,
+    case_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """占用运行槽并起后台任务。
 
     `judge` / `concurrency` 省略时取界面里存的默认值（`oj_settings`）——「点一下就
-    跑」和「按上次配置再跑」必须用同一套参数，否则两次结果没法比。
+    跑」和「按上次配置再跑」必须用同一套参数，否则两次结果没法比。传 `case_ids`
+    时按 id 精确选例，忽略 `track` / `limit`，但仍守 `MAX_LIMIT`。
 
     返回 `{"run_id", "total"}`；已有任务时返回 `{"busy": run_id}`（由接口层转 409）。
     """
-    # step1: 校验开关/赛道/用例非空
+    # step1: 校验开关/用例来源/用例非空
     if not online_enabled():
         raise RuntimeError(f"在线评测未开启（设置 {ENV_FLAG}=1）")
-    if track and track not in benchmark.TRACKS:
-        raise ValueError(f"未知赛道：{track}")
-    defaults = settings.load()
-    cases = load_cases(track, limit)
+    cases, active_track = _select_cases(track, limit, case_ids)
     if not cases:
         raise ValueError("没有可执行的用例")
+    defaults = settings.load()
     active_judge = bool(defaults["judge"]) if judge is None else judge
     requested = int(defaults["concurrency"]) if concurrency is None else concurrency
     workers = max(1, min(requested, MAX_CONCURRENCY))
@@ -66,7 +80,7 @@ async def start(
         store.init_db(conn)
         run_store.reap_stale_runs(conn)
         run_id = run_store.claim_run(
-            conn, track=track, total=len(cases), judge=active_judge, concurrency=workers
+            conn, track=active_track, total=len(cases), judge=active_judge, concurrency=workers
         )
         if run_id is None:
             active = run_store.active_run(conn)

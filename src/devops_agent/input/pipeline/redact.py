@@ -167,6 +167,17 @@ def _redact_text(text: str, namer: _SecretNamer, sink: SecretSink | None) -> tup
     return _restore_placeholders(out, slots), notes
 
 
+def redact_preview(text: str) -> str:
+    """对外门面：只脱敏、不落保险箱的预览版（给「落库前」用）。
+
+    网关需要在解析管线**之前**先脱一遍（观测库的 input 列要求脱敏，而 recorder
+    必须在管线之前 start），两边必须是同一套规则且对已有占位符幂等 —— 由本函数保证，
+    调用方不再 import `_redact_text` / `_SecretNamer` 这些内部名字。
+    """
+    clean, _ = _redact_text(text, _SecretNamer(), None)
+    return clean
+
+
 def _redact(
     text: str,
     blocks: list[tuple[Reference, str]],

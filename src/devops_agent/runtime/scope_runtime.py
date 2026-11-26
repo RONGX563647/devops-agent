@@ -18,8 +18,9 @@ from agentscope.message import Msg, TextBlock, ToolCallBlock
 from agentscope.permission import PermissionBehavior, PermissionContext, PermissionRule
 from agentscope.tool import Toolkit, ToolMiddlewareBase
 
-from devops_agent.governance.policy import build_permission_context
-from devops_agent.governance.profiles import PermissionProfile, default_profile
+from devops_agent.governance.compile import compile_context
+from devops_agent.governance.model import PermissionProfile
+from devops_agent.governance.presets import default_profile
 from devops_agent.model_settings import ModelParams
 from devops_agent.runtime.chat_model import MODEL_WIRE_KEYS, build_chat_model
 from devops_agent.runtime.compression import CompressionSink, context_budget
@@ -116,7 +117,7 @@ class AgentScopeRuntime:
         模型只在联网开关真的变化时重建，避免无谓丢掉前缀缓存。
         """
         # 1) 权限上下文逐字段写回：引擎持有的是旧对象的引用
-        fresh = build_permission_context(profile=profile, workdir=self._workdir)
+        fresh = compile_context(profile=profile, workdir=self._workdir)
         _copy_permission_context(self._agent.state.permission_context, fresh)
         # 2) 工具按新档位重装，密钥注入中间件与档位说明同步更新
         self._agent.toolkit = self._rebuild_toolkit(profile)

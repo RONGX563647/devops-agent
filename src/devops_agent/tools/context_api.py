@@ -21,12 +21,8 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from devops_agent.governance.profiles import (
-    PermissionProfile,
-    UnknownProfile,
-    default_profile,
-    resolve,
-)
+from devops_agent.governance.model import PermissionProfile
+from devops_agent.governance.presets import UnknownProfile, default_profile, resolve
 from devops_agent.observability import repository as repo
 from devops_agent.runtime.profile_note import policy_note
 from devops_agent.runtime.prompt import build_system_prompt, resolve_workdir

@@ -8,7 +8,12 @@
 但工具集里压根没有 `Write`/`Edit`。
 
 所以一个档位 = **mode + 工具集 + 越界兜底动作**，三者一起换
-（[governance/profiles.py](../../src/devops_agent/governance/profiles.py#L50-L99)）。
+（[governance/model.py](../../src/devops_agent/governance/model.py)）。
+
+`governance/` 按职责分四层，依赖单向：`model`（纯数据）→ `presets`（env 解析）→
+`compile`（唯一碰框架的模块）→ `decide`（离线判定）。`model` / `presets` 由
+`.importlinter` 强制零框架依赖 —— 旧实现里 `profiles.py` 经 `tools.catalog` 间接
+拉进 agentscope，那条契约形同虚设。
 
 **产品定位（写进模块 docstring）**：这是防误操作的 UX 层，**不是安全隔离**。
 它防的是「模型手滑删错目录」，防不住恶意用户。真正的隔离靠容器、只读挂载、
@@ -16,20 +21,24 @@
 
 ## 2. 五档定义
 
-| key | label | mode | tools | fallback | allowlist |
-|---|---|---|---|---|---|
-| `readonly` | 只读 | `explore` | bash/read/glob/grep | `deny` | ✗ |
-| `workspace` | 工作区可写 | `accept_edits` | 只读 + write/edit | `ask` | ✗ |
-| `execute` | 可执行 | `accept_edits` | 只读 + write/edit | `ask` | ✓ |
-| `auto` | 无人值守 | `dont_ask` | 只读 + write/edit | `deny` | ✗ |
-| `unrestricted` | 全放开 | `bypass` | 只读 + write/edit | `hard_deny` | ✗ |
+| key | label | mode | tools | fallback | scope | 写工具 |
+|---|---|---|---|---|---|---|
+| `readonly` | 只读 | `explore` | bash/read/glob/grep | `deny` | readonly | ✗ |
+| `workspace` | 工作区可写 | `accept_edits` | 只读 + write/edit | `ask` | workspace | ✓ |
+| `execute` | 可执行 | `accept_edits` | 只读 + write/edit | `ask` | workspace | ✓ |
+| `auto` | 无人值守 | `dont_ask` | 只读 + write/edit | `deny` | workspace | ✓ |
+| `unrestricted` | 全放开 | `bypass` | 只读 + write/edit | `hard_deny` | container | ✓ |
 
 - `DEFAULT_AVAILABLE = ("readonly", "workspace", "execute", "auto")` ——
   **默认不含 `unrestricted`**，要显式配置才开放。
-- 默认档 `workspace`（`config/policy.yaml` 的 `permission.default_profile`）。
-- 覆盖顺序：环境变量（`DEVOPS_AGENT_PERMISSION_PROFILES` /
-  `DEVOPS_AGENT_DEFAULT_PROFILE`）> `policy.yaml` > 内置默认。
+- 默认档 `workspace`（`governance/model.py` 的 `DEFAULT_PROFILE_KEY`）。
+- 覆盖顺序：环境变量 `DEVOPS_AGENT_PERMISSION_PROFILES` /
+  `DEVOPS_AGENT_DEFAULT_PROFILE` > 内置默认。
   配置里写了不认识的名字 → 跳过该名字，不让服务起不来。
+- 默认档被配成未开放档 → 按 `SAFETY_ORDER` 回落**最严可用档**。旧实现回落
+  `sorted(allowed)[0]`，字典序首个恰好是 `auto`（无人值守），等于配置写错反而把
+  用户推向最不想有人盯的档位。
+- `write` 由 `PermissionProfile.can_write` 求工具集交集得出，不靠调用方猜工具名。
 - 请求里的档位未开放或不存在 → `UnknownProfile` → **403 `permission_not_available`**。
   **不做静默降级**：客户端以为在放开档、实际被降成只读，比直接报错更难排查。
 
@@ -41,25 +50,27 @@
 
 `execute` 同理：白名单里的构建命令如果改不了产物，等于「只能跑不能干」。
 
-## 3. `config/policy.yaml` 里实际有什么
+## 3. 权限不读 yaml：`governance/model.py` 是唯一事实来源
 
-```yaml
-permission:
-  mode: dont_ask                 # 仅无档位上下文时的回落
-  default_profile: workspace
-  available: [readonly, workspace, execute, auto]
-  command_allowlist: [pytest, python -m pytest, python -m ruff, python -m mypy,
-                      npm run, npm test, npm ci, npm install, npx, pnpm, yarn,
-                      make, cargo, go test, go build]
-  working_directories: []
-  allow_rules: []
-  ask_rules: []
-  deny_rules:                    # builtin deny，对所有档位无条件生效
-    - {tool_name: Bash,  rule_content: .git/, behavior: deny}
-    - {tool_name: Bash,  rule_content: .env,  behavior: deny}
-    - {tool_name: Write, rule_content: .git/, behavior: deny}
-    - {tool_name: Edit,  rule_content: .git/, behavior: deny}
+```python
+PROFILES  # 五档：mode + tools + fallback + note + scope
+DEFAULT_AVAILABLE  # 默认可用集（不含 unrestricted）
+ALLOW_PREFIXES  # execute 档的命令白名单（"pytest:*" 形式）
+BUILTIN_DENY  # builtin deny 规则（Bash / Write / Edit）
 ```
+
+`config/policy.yaml` 现在只剩 `confirm:`（确认协议的域知识）。权限为什么搬走：
+
+- **同一事实被写过两遍**：`available` 在 yaml 与代码里逐字相同，`default_profile`
+  在 yaml 与 `default_profile()` 的回落里各有一份，`command_allowlist` 与档位的
+  `allowlist` 布尔分散两处。改一处忘另一处，前端列出的档位就不是真正开放的档位。
+- **yaml 里的规则会静默失效**：`.git/`、`.env` 两条 deny 在 Write/Edit 上从未命中
+  （框架用 fnmatch 匹配 `file_path`，`.git/` 这种 pattern 匹配不到任何真实路径），
+  可它们看起来一直在生效 —— 真正的保护来自框架内建的 safety-ask。
+- 规则现在是代码契约：有判定矩阵、有跨平台语义，由 mypy 与单测覆盖，而不是只在
+  加载期拼错才报错。
+
+附加工作目录改由 `DEVOPS_AGENT_WORKDIRS`（`os.pathsep` 分隔）声明。
 
 ### builtin deny 为什么要对所有档位生效
 
@@ -76,7 +87,8 @@ permission:
 
 ## 4. 工具集与执行面
 
-工具名唯一事实源是 [tools/catalog.py](../../src/devops_agent/tools/catalog.py)：
+工具名唯一事实源是 [tools/names.py](../../src/devops_agent/tools/names.py)（零依赖，
+`tools/catalog.py` 原样 re-export）：
 
 ```python
 READONLY_TOOL_NAMES = ("bash", "read", "glob", "grep")

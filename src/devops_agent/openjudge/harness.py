@@ -306,7 +306,7 @@ def _configured_model() -> str:
 
 def _default_runtime(workdir: Path, case: Case, target_model: str = "") -> Any:
     """真实运行时工厂：延迟 import，离线测试不需要装 AgentScope。"""
-    from devops_agent.governance.profiles import resolve
+    from devops_agent.governance.presets import resolve
     from devops_agent.model_settings import effective_params
     from devops_agent.runtime.assembly import build_agentscope_runtime
 

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from devops_agent.governance.profiles import PROFILES, PermissionProfile
+from devops_agent.governance.model import PROFILES, PermissionProfile
 from devops_agent.openjudge.benchmark import Case, parse_case
 from devops_agent.prompt_lint import cli, rules
 from devops_agent.prompt_lint.known_issues import apply_known_issues

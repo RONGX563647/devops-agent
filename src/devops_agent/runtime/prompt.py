@@ -114,7 +114,7 @@ def prompt_bytes_sha(workdir: str | os.PathLike[str] | None = None) -> str:
 
 def profile_note_sha(profile_key: str) -> str:
     """档位说明的指纹：它每次请求都下发，改了必须能归因。"""
-    from devops_agent.governance.profiles import PROFILES  # noqa: PLC0415 - 避免循环 import
+    from devops_agent.governance.model import PROFILES  # noqa: PLC0415 - 避免循环 import
     from devops_agent.runtime.profile_note import policy_note  # noqa: PLC0415
 
     profile = PROFILES.get(profile_key)

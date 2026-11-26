@@ -39,10 +39,13 @@ from agentscope.tool import (
 )
 from agentscope.tool._base import ToolBase
 
-# 工具名的唯一事实来源：档位（governance/profiles.py）按名字选工具，
-# 两边共用这两个元组，改工具集只改这里。
-READONLY_TOOL_NAMES: tuple[str, ...] = ("bash", "read", "glob", "grep")
-WRITE_TOOL_NAMES: tuple[str, ...] = ("write", "edit")
+from devops_agent.tools.names import READONLY_TOOL_NAMES as READONLY_NAMES
+from devops_agent.tools.names import WRITE_TOOL_NAMES as WRITE_NAMES
+
+# 工具名的唯一事实来源是 tools/names.py（零依赖）：档位按名字选工具、
+# 本模块按名字装配，两边共用同一份元组。这里 re-export 是为了既有 import 不破。
+READONLY_TOOL_NAMES: tuple[str, ...] = READONLY_NAMES
+WRITE_TOOL_NAMES: tuple[str, ...] = WRITE_NAMES
 
 Middlewares = Sequence[ToolMiddlewareBase] | None
 

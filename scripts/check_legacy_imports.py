@@ -33,6 +33,10 @@ BACKEND_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"\bfrom\s+devops_agent\.runtime\s+import\s+agent\b"),
         "runtime.agent 已删除，请改为 runtime.prompt/assembly 等",
     ),
+    (
+        re.compile(r"\bdevops_agent\.governance\.(profiles|policy)\b"),
+        "governance.profiles/policy 已删除，请改为 governance.{model,presets,compile,decide}",
+    ),
 )
 
 # 旧门面对应的 import 结尾片段；新路径不会命中（例如 store/state、traceData/*）。

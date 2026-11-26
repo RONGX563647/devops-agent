@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from devops_agent.governance.profiles import PROFILES
+from devops_agent.governance.model import PROFILES
 from devops_agent.observability import repository as repo
 from devops_agent.runtime.runtime import EchoRuntime
 from devops_agent.runtime.sessions import SessionRegistry

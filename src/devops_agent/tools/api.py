@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from devops_agent.governance.profiles import UnknownProfile, default_profile, resolve
+from devops_agent.governance.presets import UnknownProfile, default_profile, resolve
 from devops_agent.tools.preflight import readiness_payload
 from devops_agent.tools.schema import tool_schemas
 

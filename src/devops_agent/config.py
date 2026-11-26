@@ -20,9 +20,6 @@ from pydantic import BaseModel, Field, model_validator
 
 CONFIG_DIR_ENV = "DEVOPS_AGENT_CONFIG_DIR"
 
-PermissionModeName = Literal["default", "accept_edits", "explore", "bypass", "dont_ask"]
-RuleBehaviorName = Literal["allow", "deny", "ask", "passthrough"]
-
 
 def config_dir() -> Path:
     """返回配置文件目录，环境变量优先。"""
@@ -43,38 +40,10 @@ def _load_yaml(name: str) -> dict[str, Any]:
     return cast(dict[str, Any], raw)
 
 
-class RuleSpec(BaseModel):
-    """一条权限规则的声明式描述。"""
-
-    tool_name: str
-    rule_content: str | None = None
-    behavior: RuleBehaviorName = "deny"
-    source: str = "policy"
-
-
-class WorkingDirSpec(BaseModel):
-    """一个附加工作目录的声明式描述。"""
-
-    path: str
-    source: str = "policy"
-
-
-class PermissionPolicy(BaseModel):
-    """policy.yaml 的 permission 段。"""
-
-    # 无档位上下文时的回落模式（保留给脚本 / 单测直接建引擎的场景）
-    mode: PermissionModeName = "default"
-    # 前端默认选中的档位
-    default_profile: str = "workspace"
-    # 本部署开放的档位；留空表示用内置默认（不含 unrestricted）
-    available: list[str] = Field(default_factory=list)
-    # execute 档放行的命令前缀，写成 "pytest:*" 形式（框架按子命令逐个匹配）
-    command_allowlist: list[str] = Field(default_factory=list)
-    working_directories: list[WorkingDirSpec] = Field(default_factory=list)
-    allow_rules: list[RuleSpec] = Field(default_factory=list)
-    deny_rules: list[RuleSpec] = Field(default_factory=list)
-    ask_rules: list[RuleSpec] = Field(default_factory=list)
-
+# 权限（档位、工具集、builtin 规则）不在这里读配置：它是代码契约，声明在
+# `governance/model.py`，编译在 `governance/compile.py`。同一份可用档位曾在
+# policy.yaml 与代码里各写一遍，改一处忘另一处就会出现「前端列出的档位不是真正
+# 开放的档位」——这类重复已随该次重构删除。
 
 # 确认协议的默认值 —— 与 config/policy.yaml 的 confirm 段逐项对应。
 # 文件缺失时（wheel 不含 config/）回落这里；两边一致由
@@ -217,14 +186,15 @@ class ConfirmPolicy(BaseModel):
 
 
 class RuntimePolicy(BaseModel):
-    """policy.yaml 的完整类型化视图。
+    """policy.yaml 的完整类型化视图（现在只剩确认协议）。
 
-    模型参数（含 max_iters / 两级重试）不在这里：它们已迁到 `config/model.yaml`
-    （见 `ModelSettings`）。留两个入口会让同一件事有两个默认值。
+    模型参数（含 max_iters / 两级重试）已迁到 `config/model.yaml`（见
+    `ModelSettings`）；权限档位与规则已迁到 `governance/model.py`。留多个入口会让
+    同一件事有多个默认值 —— 前者造成过「两个 max_iters 打架」，后者造成过
+    「yaml 里的 deny 规则从未命中却看起来在生效」。
     确认协议只带「域知识」（正则、程序分类、作用域），不带任何 HTTP 或 UI 决策。
     """
 
-    permission: PermissionPolicy = Field(default_factory=PermissionPolicy)
     confirm: ConfirmPolicy = Field(default_factory=ConfirmPolicy)
 
 

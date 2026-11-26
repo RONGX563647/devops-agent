@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from string import Formatter
 
-from devops_agent.governance.profiles import PROFILES, PermissionProfile
+from devops_agent.governance.model import PROFILES, PermissionProfile
 from devops_agent.openjudge.benchmark import Case
 from devops_agent.runtime.profile_note import policy_note
 from devops_agent.runtime.prompt import _TOOL_PROMPT, DEFAULT_SYSTEM_PROMPT

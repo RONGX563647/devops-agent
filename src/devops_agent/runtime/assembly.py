@@ -19,8 +19,9 @@ from agentscope.state import AgentState
 from agentscope.tool import Toolkit, ToolMiddlewareBase
 
 from devops_agent.config import load_model
-from devops_agent.governance.policy import build_permission_context
-from devops_agent.governance.profiles import PermissionProfile, default_profile
+from devops_agent.governance.compile import compile_context
+from devops_agent.governance.model import PermissionProfile
+from devops_agent.governance.presets import default_profile
 from devops_agent.model_settings import ModelParams, effective_params
 from devops_agent.runtime.chat_model import build_chat_model, build_context_config
 from devops_agent.runtime.compression import CompressionMiddleware, CompressionSink
@@ -84,13 +85,11 @@ def _state_for(
     `context`（对话历史）不动，用户无感。
     """
     if state is None:
-        fresh = AgentState(
-            permission_context=build_permission_context(profile=profile, workdir=workdir)
-        )
+        fresh = AgentState(permission_context=compile_context(profile=profile, workdir=workdir))
         fresh.middle_context[PROFILE_KEY] = profile.key
         return fresh
     if state.middle_context.get(PROFILE_KEY) != profile.key:
-        state.permission_context = build_permission_context(profile=profile, workdir=workdir)
+        state.permission_context = compile_context(profile=profile, workdir=workdir)
         state.middle_context[PROFILE_KEY] = profile.key
     return state
 

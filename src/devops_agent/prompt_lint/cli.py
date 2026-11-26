@@ -17,7 +17,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from devops_agent.governance.profiles import PROFILES
+from devops_agent.governance.model import PROFILES
 from devops_agent.openjudge.benchmark import Case, load_cases
 from devops_agent.prompt_lint.known_issues import (
     apply_known_issues,

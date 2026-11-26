@@ -105,43 +105,48 @@ AgentScope 的 `Bash` 在 ASK 时不会自己等人 —— 它把 tool_call 置�
 
 ```
 run → 权限引擎判 ASK → pending_calls() 非空
-      ├─ asks ≤ ASK_LIMIT(3) → event: parked（落库，TTL 600s）
+      ├─ asks ≤ ask_limit(3) → event: parked（落库，TTL 600s）
       │                       前端 POST /run/{run_id}/confirm
       │                       → 服务端从挂起状态取权威 ToolCallBlock → resume()
-      └─ asks > ASK_LIMIT    → 自动全部拒绝（让模型换思路，别再弹卡片）
+      └─ asks > ask_limit    → 自动全部拒绝（让模型换思路，别再弹卡片）
 ```
 
 关键实现点：
 
 - **不发 `done`**：前端据此把消息标成「等待确认」而不是「已完成」。
-- **TTL 600 秒**（`PARK_TTL_SECONDS`），过期后 confirm 返回 409 `expired`。
+- **限额与 TTL 是配置**（`config/gateway.yaml` 的 `gateway.stream`）：`ask_limit` /
+  `park_ttl_seconds` / `settle_rounds`。本文里的 3 / 600 / 2 就是当前默认值。
+  决策是纯函数 `gateway/ending.decide_ending`，副作用在 `gateway/run.finish_or_park`。
+- **TTL 过期**后 confirm 返回 409 `expired`。
 - `GET /run/{run_id}/pending` 必须带 `session_id`，不匹配返回 403 `session_mismatch`
   —— 否则知道 run_id 就能读到别人的命令。
 - confirm 用条件更新（`parked` 从真改假）保证同一次挂起**只执行一次**；
   已解决的返回 409 `already_resolved`。
+- **确认计数读不到**（观测库不可用）时怎么处理是显式策略：
+  `on_counter_unavailable: reject | park`，默认 `reject` 与历史行为一致。
 
-### `_settle_abandoned`：上一轮没作答怎么办
+### `settle_abandoned`：上一轮没作答怎么办
 
 用户弹卡片后直接关页面，前端只 abort 了请求，**服务端仍停在 ASKING**。
 这时再发新消息，框架会抛
 `Agent is waiting for N tool calls ... but received no event` ——
 用户看到「对话运行失败」。
 
-处理：新 run 开跑前，把遗留挂起**按拒绝结清**（`SETTLE_ROUNDS=2` 轮上限）。
+处理：新 run 开跑前，把遗留挂起**按拒绝结清**（`settle_rounds` 轮上限，默认 2）。
 结清方式固定是拒绝：没被批准的调用一条都不执行，发条消息不会顺手放行；
 模型被拒后换方案的追跑输出直接丢弃（它回答的是上一个问题）。
 
-### 三条硬约束（`runtime/confirm.py` 模块 docstring）
+### 三条硬约束（`runtime/confirm.py` 门面 docstring）
 
 1. **客户端永远不回传命令原文**。`UserConfirmResultEvent` 需要完整 `ToolCallBlock`，
    让前端带回来就等于允许客户端改写将要执行的命令。所以服务端保留权威副本，
    客户端只回 `tool_call_id + confirmed + scope`。
-2. 一个 run 最多打扰 **3 次**（`ASK_LIMIT`）。
-3. 高危命令（`_DANGER` 正则：`rm -rf` / `rm -fr` / fork bomb `:(){` / `mkfs` /
-   `dd if=` / `shutdown` / `reboot` / `chmod -R 0?777` / `> /dev/sd`）
+2. 一个 run 最多打扰 **3 次**（`ask_limit`，配置项而非常量）。
+3. 高危命令（`config/policy.yaml` 的 `confirm.risk.danger_patterns`：`rm -rf` / `rm -fr` /
+   fork bomb `:(){` / `mkfs` / `dd if=` / `shutdown` / `reboot` / `chmod -R 0?777` / `> /dev/sd`）
    强制降级为 `scope=once`。一秒钟的勾选不该变成永久放行 `rm -rf`。
 
-风险分级 `classify()` 返回四档：`read` / `exec` / `write` / `danger`；
+风险分级 `classify()`（`runtime/risk.py`）返回四档：`read` / `exec` / `write` / `danger`；
 `Write`/`Edit` 恒为 `write`；非 `Bash` 工具恒为 `read`。
 
 ## 6. `prefix` 沉淀规则

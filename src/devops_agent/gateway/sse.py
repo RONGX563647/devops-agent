@@ -1,12 +1,8 @@
-"""SSE 保活 —— 把运行时事件流翻成帧，并在静默期补心跳。
+"""SSE 保活：把运行时事件流翻成帧，并在静默期补心跳 —— 让连接始终有字节流动。
 
-职责只有一个：**让连接始终有字节流动**，不要被代理或前端 watchdog 判成假死。
-帧长什么样在 contract.py（本模块不拼字段，只搬帧）。
-
-为什么是「pump + heartbeat 双任务 + 队列」而不是
-`asyncio.wait_for(source.__anext__(), timeout=...)`：
-后者超时会取消上游生成器的 `__anext__`，可能永久打断 AgentScope 的事件流。
-心跳是「补帧」而不是「超时重试」，两者语义完全不同。
+帧字段在 contract.py，本模块只搬帧。为什么是「pump + heartbeat 双任务 + 队列」
+而不是 `wait_for(source.__anext__(), timeout=...)`：后者超时会取消上游的
+`__anext__`，可能永久打断 AgentScope 事件流；心跳是补帧，不是超时重试。
 """
 
 from __future__ import annotations

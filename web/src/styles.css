@@ -4731,7 +4731,7 @@ a:hover {
   padding: 12px 16px;
   border: 1px solid var(--border, #2a2f3a);
   border-radius: 8px;
-  background: var(--panel-alt, rgba(255, 255, 255, 0.03));
+  background: var(--surface);
 }
 
 .oj-drawer h3,
@@ -5052,7 +5052,13 @@ a:hover {
   max-height: 85vh;
   margin-top: 0;
   overflow-y: auto;
+  background: var(--surface);
+  color: var(--ink);
+  isolation: isolate;
   box-shadow: -8px 0 28px rgb(15 23 42 / 18%);
+}
+.oj-drawer-body {
+  background: var(--surface);
 }
 .oj-drawer-head {
   position: sticky;

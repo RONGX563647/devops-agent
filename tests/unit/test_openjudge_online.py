@@ -234,6 +234,22 @@ def test_online_flag_is_required(
         asyncio.run(service.start(track="A", limit=1, judge=False, concurrency=1))
 
 
+def test_select_cases_limit_zero_loads_all(
+    db: Path, monkeypatch: pytest.MonkeyPatch, fake_cases: list[Any]
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_load(track: str = "", limit: int = 0) -> list[Any]:
+        seen.update(track=track, limit=limit)
+        return fake_cases
+
+    monkeypatch.setattr(service, "load_cases", fake_load)
+    cases, active_track = service._select_cases("", 0, None)
+    assert seen == {"track": "", "limit": 0}
+    assert cases == fake_cases
+    assert active_track == ""
+
+
 def test_unknown_track_is_rejected(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(service.ENV_FLAG, "1")
     with pytest.raises(ValueError):
@@ -332,6 +348,23 @@ def test_post_run_returns_202(client: TestClient, monkeypatch: pytest.MonkeyPatc
     response = client.post("/api/openjudge/runs", json={"track": "A", "limit": 3})
     assert response.status_code == 202
     assert response.json() == {"run_id": 4, "total": 3}
+
+
+def test_post_run_accepts_limit_zero_for_all_cases(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+
+    async def fake_start(**kwargs: Any) -> dict[str, Any]:
+        seen.update(kwargs)
+        return {"run_id": 6, "total": 90}
+
+    monkeypatch.setattr(service, "start", fake_start)
+    response = client.post("/api/openjudge/runs", json={"track": "", "limit": 0})
+    assert response.status_code == 202
+    assert seen["limit"] == 0
+    assert seen["track"] == ""
+    assert response.json()["total"] == 90
 
 
 def test_post_run_rejects_track_and_case_ids(client: TestClient) -> None:

@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from devops_agent.openjudge import grade, report, store
+from devops_agent.openjudge import benchmark, grade, report, store
 from devops_agent.openjudge.api import router
 
 
@@ -164,6 +164,26 @@ def test_scoring_config_matches_single_source(client: TestClient) -> None:
     assert report.TRACK_RULES["A"]["pass_rate"] == 0.6
 
 
+def test_scoring_config_exposes_credibility_gates(client: TestClient) -> None:
+    payload = client.get("/api/openjudge/scoring-config").json()
+    review = payload["gates"]["review"]
+    assert review["total"] == 90
+    assert review["pending"] == 0
+    assert review["approved"] == 90
+    assert review["legacy"] == 90
+    # plan 尚未声明 rubric，状态机如实显示「未声明」，不假装已经冻结。
+    assert payload["gates"]["rubric"]["status"] == "none"
+
+
+def test_calibration_status_is_report_only(client: TestClient) -> None:
+    payload = client.get("/api/openjudge/calibration").json()
+    assert payload["checked"] is True
+    assert payload["valid"] is False
+    assert set(payload["missing"]) == set(grade.load_plan().judges)
+    assert payload["required_n"] == store.MIN_CALIBRATION_N
+    assert payload["required_spearman"] == store.MIN_CALIBRATION_SPEARMAN
+
+
 def test_case_detail_exposes_scoring_contract(client: TestClient) -> None:
     batch_id = seed_batch()
     result = {
@@ -199,3 +219,15 @@ def test_case_detail_exposes_scoring_contract(client: TestClient) -> None:
     assert scoring["passed"] is False
     assert "sum(normalized * weight)" in scoring["formula"]
     assert scoring["judge_failed"][0]["contribution"] == pytest.approx(0.25 * 0.35)
+
+
+def test_run_rejects_unreviewed_case(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_start(**_: object) -> dict[str, object]:
+        raise benchmark.ReviewError("未审核用例：c1")
+
+    monkeypatch.setattr("devops_agent.openjudge.api.service.start", fake_start)
+    response = client.post("/api/openjudge/runs", json={"case_ids": ["c1"]})
+    assert response.status_code == 422
+    assert "未审核用例" in response.json()["detail"]

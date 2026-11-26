@@ -20,6 +20,12 @@ from typing import Any
 TRACKS = ("A", "B", "C", "D", "E")
 RISKS = ("low", "medium", "high_risk")
 PERMISSIONS = ("readonly", "workspace", "execute", "auto", "unrestricted")
+REVIEW_STATUSES = ("draft", "approved", "rejected")
+REVIEW_FIELDS = ("review_status", "reviewer", "reviewed_at", "review_note")
+
+
+class ReviewError(ValueError):
+    """进入门禁的用例未完成人工审核。"""
 
 # 各赛道最低条数（SPEC §4 锁定配比），validate 用它防止题库被悄悄删薄
 TRACK_QUOTA = {"A": 28, "B": 24, "C": 14, "D": 12, "E": 12}
@@ -38,6 +44,7 @@ _TOP_KEYS = {
     "expected",
     "judge",
     "offline",
+    *REVIEW_FIELDS,
 }
 _EXPECTED_KEYS = {
     "events",
@@ -120,6 +127,10 @@ class Case:
     expected: Expected
     judge: dict[str, Any] = field(default_factory=dict)
     offline: bool = False
+    review_status: str = "draft"
+    reviewer: str = ""
+    reviewed_at: str = ""
+    review_note: str = ""
 
     @property
     def prompt(self) -> str:
@@ -239,6 +250,10 @@ def parse_case(raw: dict[str, Any]) -> Case:
     risk = _require(str(raw.get("risk", "")), RISKS, case_id, "风险等级")
     permission = _require(str(raw.get("permission", "")), PERMISSIONS, case_id, "权限档位")
     # step4: turns/expected 递归解析后构造
+    review_status = _require(
+        str(raw.get("review_status", "draft")), REVIEW_STATUSES, case_id, "审核状态"
+    )
+    # step5: 审核 record 随用例一起不可变化
     return Case(
         id=case_id,
         track=track,
@@ -253,6 +268,10 @@ def parse_case(raw: dict[str, Any]) -> Case:
         expected=_parse_expected(raw.get("expected"), case_id),
         judge=dict(raw.get("judge") or {}),
         offline=bool(raw.get("offline", False)),
+        review_status=review_status,
+        reviewer=str(raw.get("reviewer", "")),
+        reviewed_at=str(raw.get("reviewed_at", "")),
+        review_note=str(raw.get("review_note", "")),
     )
 
 
@@ -356,6 +375,11 @@ def _case_problems(case: Case, known_fixtures: set[str]) -> list[str]:
     return problems
 
 
+def unreviewed_ids(cases: list[Case]) -> list[str]:
+    """ approved 必须带 reviewer；其余状态都视为未审核。 """
+    return [case.id for case in cases if case.review_status != "approved" or not case.reviewer]
+
+
 def validate(cases: list[Case], fixtures: Path, *, strict: bool = True) -> list[str]:
     """校验题库：配比、fixture 存在、断言非空、确认轮与权限匹配。
 
@@ -375,6 +399,10 @@ def validate(cases: list[Case], fixtures: Path, *, strict: bool = True) -> list[
         for track, quota in TRACK_QUOTA.items():
             if counts[track] < quota:
                 problems.append(f"赛道 {track} 仅 {counts[track]} 条，低于配额 {quota}")
+        # step4: strict 同时守审核门禁
+        pending = unreviewed_ids(cases)
+        if pending:
+            problems.append(f"未审核用例：{', '.join(pending)}")
     return problems
 
 

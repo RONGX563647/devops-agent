@@ -50,6 +50,8 @@ export interface OjBatchSummary {
   failures: OjFailure[];
   pareto: { check: string; count: number }[];
   meta?: Record<string, string>;
+  /** 批次执行时的校准状态；老批次没有该字段，展示为「未知」。 */
+  calibration?: OjCalibrationStatus;
 }
 
 export interface OjBatch {
@@ -197,6 +199,41 @@ export interface OjRubric {
   created_at?: string;
 }
 
+/** 三道可信度门禁：状态全部由服务端判定，前端只做展示与下钻入口。 */
+export interface OjReviewGate {
+  total: number;
+  approved: number;
+  pending: number;
+  /** 历史批量导入的条数，用于提示「待逐条复核」。 */
+  legacy: number;
+  pending_ids: string[];
+}
+
+export interface OjRubricGate {
+  ref: string;
+  name: string;
+  version: string;
+  sha: string;
+  /** none / missing / draft / frozen。 */
+  status: string;
+  reviewer: string;
+  ready: boolean;
+}
+
+export interface OjCalibrationStatus {
+  checked: boolean;
+  valid: boolean;
+  missing: string[];
+  required_n: number;
+  required_spearman: number;
+  calibration_ids?: number[];
+}
+
+export interface OjGates {
+  review: OjReviewGate;
+  rubric: OjRubricGate;
+}
+
 export interface OjHealth {
   has_data: boolean;
   latest_batch: OjBatch | null;
@@ -235,6 +272,8 @@ export interface OjJudgeSpec {
   grader: string;
   weight: number;
   scale: [number, number];
+  /** 该裁判引用的 rubric，如 repo_qa_quality@v1；空串表示未引用。 */
+  rubric?: string;
 }
 
 export interface OjTrackRule {
@@ -248,6 +287,8 @@ export interface OjScoringConfig {
   plan: { name: string; sha: string; judges: OjJudgeSpec[] };
   pass_judge: number;
   track_rules: Record<string, OjTrackRule>;
+  /** 老服务端没有该字段，UI 降级为「门禁状态未知」。 */
+  gates?: OjGates;
 }
 
 /** 趋势图上的一个批次点。 */

@@ -187,12 +187,40 @@ def _compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _calibration(args: argparse.Namespace) -> int:
+    payload = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    items = payload if isinstance(payload, list) else [payload]
+    with store.connect() as conn:
+        store.init_db(conn)
+        for item in items:
+            store.insert_calibration(
+                conn,
+                metric=str(item["metric"]),
+                judge_model=str(item["judge_model"]),
+                rubric_sha=str(item.get("rubric_sha", "")),
+                n=int(item["n"]),
+                spearman=float(item["spearman"]),
+                active=bool(item.get("active", True)),
+                reviewer=str(item.get("reviewer", "")),
+                meta=dict(item.get("meta") or {}),
+            )
+    print(f"imported {len(items)} calibration record(s)")
+    return 0
+
+
 async def _rubric(args: argparse.Namespace) -> int:
     from devops_agent.openjudge import rubric
 
     if args.action == "verify":
         payload = rubric.load(args.name, args.version)
         print(json.dumps({"sha": payload["sha"], "meta": payload["meta"]}, ensure_ascii=False))
+        return 0
+    if args.action == "approve":
+        try:
+            payload = rubric.approve(args.name, args.version, reviewer=args.reviewer)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        print(json.dumps(payload, ensure_ascii=False))
         return 0
     samples = []
     if args.samples:
@@ -266,10 +294,16 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--db")
     compare.set_defaults(func=_compare)
 
-    rubric = sub.add_parser("rubric", help="生成或校验 Rubric")
-    rubric.add_argument("action", choices=["generate", "verify"])
+    calibration = sub.add_parser("calibration", help="导入裁判校准记录")
+    calibration.add_argument("action", choices=["import"])
+    calibration.add_argument("--file", required=True, help="校准记录 JSON，可为数组")
+    calibration.set_defaults(func=_calibration)
+
+    rubric = sub.add_parser("rubric", help="生成、校验或冻结 Rubric")
+    rubric.add_argument("action", choices=["generate", "verify", "approve"])
     rubric.add_argument("--name", default="repo_qa_quality")
     rubric.add_argument("--version", default="v1")
+    rubric.add_argument("--reviewer", default="")
     rubric.add_argument(
         "--task", default="基于真实文件回答，给出路径:行号，找不到就明说，不得编造。"
     )

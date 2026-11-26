@@ -105,7 +105,17 @@ async def execute(
     models = settings.resolved(opts.target_model, opts.judge_model)
     suite = benchmark.suite_sha(cases)
     plan = grade.load_plan(opts.plan)
+    rubric_sha = grade.rubric_sha(plan)
     started = datetime.now(UTC).isoformat()
+    # step1b: 裁判校准门禁；未校准时只报告不参与通过判定
+    with store.connect(opts.db) as conn:
+        store.init_db(conn)
+        calibration = store.calibration_gate(
+            conn,
+            metrics=list(plan.judges),
+            judge_model=models["judge_model"],
+            rubric_sha=rubric_sha,
+        )
     # step2: 采集轨迹（唯一驱动模型的一步）
     traces = await _capture(
         cases,
@@ -120,11 +130,15 @@ async def execute(
         raise RunCancelled
     # step3: 规则门禁全覆盖，语义裁判仅规则通过者
     results = await grade.grade_traces(
-        cases, traces, plan=plan, judge=opts.judge, judge_model_name=models["judge_model"]
+        cases,
+        traces,
+        plan=plan,
+        judge=opts.judge,
+        judge_model_name=models["judge_model"],
+        judge_gate=calibration["valid"],
     )
-    summary = report.summarize(
-        cases, traces, results, meta=meta_of(cases, plan, suite, models=models)
-    )
+    meta = meta_of(cases, plan, suite, models=models, calibration=calibration)
+    summary = report.summarize(cases, traces, results, meta=meta)
     out_dir = opts.out_dir or DEFAULT_OUT_DIR
     write_artifacts(out_dir, traces, summary)
     # step4: 汇总 + 写盘 + 入库，返回 batch_id
@@ -138,6 +152,7 @@ def meta_of(
     suite: str,
     *,
     models: dict[str, str] | None = None,
+    calibration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """批次可比性元数据：题库/计划/Rubric/模型任一变化都应让两次结果不可直接比较。
 
@@ -150,11 +165,15 @@ def meta_of(
     except Exception:  # pragma: no cover - 可选依赖
         oj_version = ""
     active = models or settings.resolved()
+    status = calibration or {"checked": False, "valid": True, "missing": [], "calibration_ids": []}
+    ids = status.get("calibration_ids") or []
     return {
         "suite_sha": suite,
         "plan": plan.name,
         "plan_sha": grade.plan_sha(plan),
-        "rubric_sha": "",
+        "rubric_sha": grade.rubric_sha(plan),
+        "calibration": status,
+        "calibration_id": ids[0] if ids else None,
         "refs_sha": "",
         "prompt_sha": prompt_sha(""),
         "model": active["target_model"],
@@ -209,6 +228,7 @@ def persist(
             finished_at=datetime.now(UTC).isoformat(),
             verdict=str(summary["verdict"]),
             summary=summary,
+            calibration_id=summary["meta"].get("calibration_id"),
         )
         # step2: 按 case_id 配对结果与轨迹
         by_case = {item["case_id"]: item for item in results}

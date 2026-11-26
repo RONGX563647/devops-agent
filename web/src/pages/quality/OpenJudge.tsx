@@ -6,6 +6,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   fetchOpenJudgeBatch,
   fetchOpenJudgeBatches,
+  fetchOpenJudgeCalibration,
   fetchOpenJudgeCase,
   fetchOpenJudgeCases,
   fetchOpenJudgeCompare,
@@ -100,6 +101,7 @@ export function OpenJudge() {
   const status = params.get('status') ?? '';
   const subject = params.get('subject') ?? '';
   const verdictFilter = params.get('verdict') ?? '';
+  const focus = params.get('focus') ?? '';
   const pageSize = parsePageSize(params.get('pageSize'));
   const onlyFailed = params.get('failed') === '1';
   const offset = Math.max(0, Number(params.get('offset') ?? 0) || 0);
@@ -138,6 +140,12 @@ export function OpenJudge() {
     queryKey: ['oj-scoring-config'],
     queryFn: fetchOpenJudgeScoringConfig,
     staleTime: 5 * 60 * 1000,
+  });
+  const calibrationQuery = useQuery({
+    queryKey: ['oj-calibration'],
+    queryFn: fetchOpenJudgeCalibration,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
   });
   const casesQuery = useQuery({
     queryKey: ['oj-cases', activeId, track, status, subject, onlyFailed, pageSize, offset],
@@ -178,10 +186,28 @@ export function OpenJudge() {
 
   const resultRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
+  const scoreFlowRef = useRef<HTMLDivElement>(null);
+  const focusHandled = useRef('');
   const [toast, setToast] = useState<string | null>(null);
   const [openCase, setOpenCase] = useState<{ id: number; caseId: string } | null>(null);
   const [initialTab, setInitialTab] = useState<DrawerTab>('basis');
   const [highlightTrack, setHighlightTrack] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (focus !== 'scoreflow' || !summary || focusHandled.current === focus) return;
+    focusHandled.current = focus;
+    const timer = window.setTimeout(() => {
+      const node = scoreFlowRef.current;
+      if (!node || typeof node.scrollIntoView !== 'function') return;
+      const focusHeading = () =>
+        node.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true });
+      // DOM lib 把返回值声明为 void，但个别实现会返回 Promise；用 unknown 承接后再判定。
+      const result: unknown = node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (result instanceof Promise) void result.then(focusHeading);
+      else focusHeading();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [focus, summary]);
 
   useEffect(() => {
     if (!toast) return;
@@ -314,14 +340,18 @@ export function OpenJudge() {
                 <MetricCard label="未判分" value={summary.kpi.not_judged_cases ?? 0} />
               </div>
 
-              <ScoreFlow
-                key={activeId}
-                summary={summary}
-                config={configQuery.data ?? null}
-                defaultOpen={summary.verdict !== 'pass'}
-                onInspect={inspect}
-                onReasons={() => showReasons()}
-              />
+              <div ref={scoreFlowRef}>
+                <ScoreFlow
+                  key={activeId}
+                  summary={summary}
+                  config={configQuery.data ?? null}
+                  gates={configQuery.data?.gates}
+                  calibration={summary.calibration ?? calibrationQuery.data}
+                  defaultOpen={summary.verdict !== 'pass' || focus === 'scoreflow'}
+                  onInspect={inspect}
+                  onReasons={() => showReasons()}
+                />
+              </div>
 
               <div ref={trackRef} className="panel">
                 <h2>

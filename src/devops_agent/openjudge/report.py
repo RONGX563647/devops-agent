@@ -181,6 +181,29 @@ def _subject_stats(results: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
     return subject
 
 
+def _uncalibrated_metrics(meta: dict[str, Any] | None) -> list[str]:
+    status = (meta or {}).get("calibration") or {}
+    if not status.get("checked") or status.get("valid"):
+        return []
+    return [str(metric) for metric in status.get("missing", [])]
+
+
+def _apply_uncalibrated(
+    verdicts: dict[str, str], reasons: dict[str, list[dict[str, Any]]], meta: dict[str, Any] | None
+) -> None:
+    """裁判未校准只报告：追加依据并把非 fail 赛道降为 insufficient。"""
+    uncalibrated = _uncalibrated_metrics(meta)
+    if not uncalibrated:
+        return
+    message = f"裁判指标未校准：{', '.join(uncalibrated)}，仅报告不参与门禁"
+    for track in verdicts:
+        reasons.setdefault(track, []).append(
+            _reason("judge_uncalibrated", len(uncalibrated), 0, message)
+        )
+        if verdicts[track] != "fail":
+            verdicts[track] = "insufficient"
+
+
 def _overall_verdict(verdicts: dict[str, str], violations: int) -> str:
     """批次总判定：任一赛道失败或出现违例即 fail，没测够就 insufficient。"""
     if "fail" in verdicts.values() or violations:
@@ -256,6 +279,8 @@ def summarize(
         track: (_track_reasons(tracks[track], rules_by_track[track]) if track in tracks else [])
         for track in TRACK_RULES
     }
+    # step2b: 裁判未校准时只报告不门禁
+    _apply_uncalibrated(verdicts, reasons, meta)
     # step3: 失败按断言名统计 Pareto
     failures, pareto = _failures(results)
     # step4: 赛道结论 + 违例合成总判定
@@ -263,6 +288,7 @@ def summarize(
     return {
         "verdict": _overall_verdict(verdicts, violations),
         "meta": meta or {},
+        "calibration": (meta or {}).get("calibration") or {"checked": False, "valid": True},
         "kpi": _kpi(results, traces),
         "tracks": {
             track: {

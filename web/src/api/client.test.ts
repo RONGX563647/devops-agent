@@ -7,6 +7,7 @@ import {
   fetchHealth,
   fetchInputStages,
   fetchOpenJudgeBatches,
+  fetchOpenJudgeCalibration,
   fetchOpenJudgeCases,
   fetchOpenJudgeRun,
   fetchOpenJudgeRuns,
@@ -122,6 +123,14 @@ describe('client', () => {
     const data = await fetchOpenJudgeScoringConfig();
     expect(spy).toHaveBeenCalledWith('/api/openjudge/scoring-config');
     expect(data.pass_judge).toBe(0.6);
+  });
+
+  it('fetchOpenJudgeCalibration 读取当前校准状态', async () => {
+    const spy = mockJson({ checked: true, valid: false, missing: ['correctness'] });
+    const data = await fetchOpenJudgeCalibration();
+    expect(spy).toHaveBeenCalledWith('/api/openjudge/calibration');
+    expect(data.valid).toBe(false);
+    expect(data.missing).toEqual(['correctness']);
   });
 
   it('fetchOpenJudgeBatches 把 verdict 拼进查询串', async () => {

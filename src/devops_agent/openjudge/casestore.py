@@ -196,11 +196,26 @@ def check(raw: dict[str, Any]) -> benchmark.Case:
 def save(raw: dict[str, Any]) -> dict[str, Any]:
     """新增或覆盖一条用例（同 id 覆盖），原子写覆盖层。"""
     check(raw)
+    case_id = str(raw["id"])
+    old = get_raw(case_id)
+    if old:
+        keys = set(old) | set(raw)
+        changed = any(
+            old.get(key) != raw.get(key) for key in keys if key not in benchmark.REVIEW_FIELDS
+        )
+        if changed:
+            raw = dict(raw)
+            raw.update(
+                review_status="draft",
+                reviewer="",
+                reviewed_at="",
+                review_note="内容变更，需重新审核",
+            )
     rows = overlay_raw()
-    rows[str(raw["id"])] = raw
+    rows[case_id] = raw
     _write_overlay(rows.values())
-    _drop_deleted(str(raw["id"]))
-    return {"id": str(raw["id"]), "source": "overlay"}
+    _drop_deleted(case_id)
+    return {"id": case_id, "source": "overlay"}
 
 
 def delete(case_id: str) -> bool:

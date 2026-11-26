@@ -9,14 +9,26 @@ from __future__ import annotations
 import sqlite3
 
 
+def _add_columns(
+    conn: sqlite3.Connection, table: str, columns: tuple[tuple[str, str], ...]
+) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, kind in columns:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+
+
 def migrate_case_columns(conn: sqlite3.Connection) -> None:
     """老库补列：先查 PRAGMA 再 ALTER，重复执行安全。"""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(oj_cases)").fetchall()}
-    for name, kind in (
-        ("judge_norm", "REAL"),
-        ("rule_passed", "INTEGER"),
-        ("violations", "INTEGER"),
-    ):
-        if name not in existing:
-            conn.execute(f"ALTER TABLE oj_cases ADD COLUMN {name} {kind}")
+    _add_columns(
+        conn,
+        "oj_cases",
+        (
+            ("judge_norm", "REAL"),
+            ("rule_passed", "INTEGER"),
+            ("violations", "INTEGER"),
+        ),
+    )
+    _add_columns(conn, "oj_rubrics", (("reviewed_at", "TEXT NOT NULL DEFAULT ''"),))
+    _add_columns(conn, "oj_batches", (("calibration_id", "INTEGER"),))
     conn.commit()

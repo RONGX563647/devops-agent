@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from devops_agent.openjudge import benchmark, explain, grade, report, rubric, sandbox
+from devops_agent.openjudge import benchmark, explain, grade, report, rubric, sandbox, store
 from devops_agent.openjudge.rulegate import rule_passed, run_checks, violations
 from devops_agent.openjudge.trace import ToolCallRecord, TraceRecord, load_traces, prompt_sha
 
@@ -23,6 +23,10 @@ def raw_case(cid: str = "c1", **overrides: object) -> dict[str, object]:
         "turns": ["看一下 README"],
         "expected": {"must_contain": ["ok"]},
         "judge": {"reference_response": "ok"},
+        "review_status": "approved",
+        "reviewer": "tester",
+        "reviewed_at": "2026-11-26T00:00:00Z",
+        "review_note": "",
     }
     base.update(overrides)
     return base
@@ -48,6 +52,16 @@ def test_parse_case_minimal_and_prompt() -> None:
     assert case.prompt == "看一下 README"
     assert case.expected.status_any == ()
     assert case.offline is False
+
+
+def test_strict_validate_requires_review(tmp_path: Path) -> None:
+    fixtures = tmp_path / "fixtures"
+    (fixtures / "fx").mkdir(parents=True)
+    draft = make_case("draft", review_status="draft", reviewer="")
+    assert benchmark.validate([draft], fixtures, strict=False) == []
+    strict = benchmark.validate([draft], fixtures, strict=True)
+    assert any("未审核用例" in item and "draft" in item for item in strict)
+    assert benchmark.unreviewed_ids([make_case("no-reviewer", reviewer="")]) == ["no-reviewer"]
 
 
 def test_parse_case_rejects_unknown_and_bad_values() -> None:
@@ -458,6 +472,22 @@ def test_build_grader_rejects_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
         grade._build_grader(spec, object())
 
 
+def test_build_grader_rejects_unfrozen_rubric(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("openjudge")
+    monkeypatch.setattr(rubric, "RUBRIC_DIR", tmp_path)
+    rubric.write_artifact(
+        "demo", "v1", spec={"name": "demo"}, rubrics=[{"text": "事实正确"}], model="m"
+    )
+    spec = grade.JudgeSpec(
+        key="correctness", grader="CorrectnessGrader", weight=1.0, low=1, high=5,
+        rubric="demo@v1",
+    )
+    with pytest.raises(grade.ConfigError, match="未冻结"):
+        grade._build_grader(spec, object())
+
+
 def test_rubric_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rubric, "RUBRIC_DIR", tmp_path)
     assert rubric.frozen("demo") is False
@@ -478,10 +508,29 @@ def test_rubric_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert payload["sha"] == rubric.spec_sha("demo")
     assert rubric.frozen("demo") is False
 
-    meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
-    meta["status"] = "frozen"
-    (folder / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ValueError, match="reviewer"):
+        rubric.approve("demo", reviewer="")
+    approved = rubric.approve("demo", reviewer="reviewer-a")
+    assert approved["meta"]["status"] == "frozen"
+    assert approved["meta"]["reviewer"] == "reviewer-a"
+    assert approved["meta"]["reviewed_at"]
     assert rubric.frozen("demo") is True
+
+    spec = grade.JudgeSpec(
+        key="correctness",
+        grader="CorrectnessGrader",
+        weight=1.0,
+        low=1,
+        high=5,
+        rubric="demo@v1",
+    )
+    grader = grade._build_grader(spec, object())
+    prompt = "".join(
+        message.content
+        for messages in grader.template.messages.values()
+        for message in messages
+    )
+    assert "审核过的评分细则" in prompt
 
 
 def test_rubric_items_flatten() -> None:
@@ -506,3 +555,65 @@ def test_rubric_items_from_generator_string() -> None:
         {"text": "有据可查"},
         {"text": "诚实边界"},
     ]
+
+
+def test_calibration_gate_reads_active_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DEVOPS_AGENT_OPENJUDGE_DB_PATH", str(tmp_path / "oj.db"))
+    with store.connect() as conn:
+        store.init_db(conn)
+        store.insert_calibration(
+            conn,
+            metric="correctness",
+            judge_model="judge-a",
+            rubric_sha="r1",
+            n=120,
+            spearman=0.8,
+            active=True,
+            reviewer="reviewer-a",
+        )
+    with store.connect() as conn:
+        gate = store.calibration_gate(
+            conn, metrics=["correctness"], judge_model="judge-a", rubric_sha="r1"
+        )
+    assert gate["valid"] is True
+    assert gate["calibration_ids"] == [1]
+
+
+def test_uncalibrated_judge_is_report_only() -> None:
+    results = [
+        {
+            "track": "A",
+            "status": "success",
+            "passed": True,
+            "violations": 0,
+            "judge_norm": 0.9,
+            "rule_passed": True,
+        }
+        for _ in range(10)
+    ]
+    summary = report.summarize(
+        [],
+        [],
+        results,
+        meta={"calibration": {"checked": True, "valid": False, "missing": ["correctness"]}},
+    )
+    assert summary["verdict"] == "insufficient"
+    assert any(
+        item["code"] == "judge_uncalibrated" for item in summary["tracks"]["A"]["reasons"]
+    )
+
+
+def test_judge_gate_can_be_disabled() -> None:
+    results = [
+        {
+            "rule_passed": True,
+            "judge": {"correctness": {"normalized": 0.1, "weight": 1.0}},
+            "judge_norm": 0.1,
+            "passed": False,
+        }
+    ]
+    grade._finish(results, judge_gate=False)
+    assert results[0]["passed"] is True
+    assert results[0]["judge_norm"] == 0.1

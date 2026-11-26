@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
   cancelOpenJudgeRun,
+  fetchOpenJudgeBatches,
   fetchOpenJudgeLibrary,
   fetchOpenJudgeRun,
   startOpenJudgeRun,
@@ -29,6 +30,7 @@ vi.mock('../../../api/client', () => {
     startOpenJudgeRun: vi.fn(),
     fetchOpenJudgeRun: vi.fn(),
     fetchOpenJudgeLibrary: vi.fn(),
+    fetchOpenJudgeBatches: vi.fn(),
     cancelOpenJudgeRun: vi.fn(),
   };
 });
@@ -36,6 +38,7 @@ vi.mock('../../../api/client', () => {
 const mockStart = vi.mocked(startOpenJudgeRun);
 const mockRun = vi.mocked(fetchOpenJudgeRun);
 const mockLibrary = vi.mocked(fetchOpenJudgeLibrary);
+const mockBatches = vi.mocked(fetchOpenJudgeBatches);
 const mockCancel = vi.mocked(cancelOpenJudgeRun);
 
 function makeRun(overrides: Partial<OjRun> = {}): OjRun {
@@ -69,6 +72,7 @@ beforeEach(() => {
   mockStart.mockReset();
   mockRun.mockReset();
   mockLibrary.mockReset();
+  mockBatches.mockReset();
   mockCancel.mockReset();
   mockStart.mockResolvedValue({ run_id: 11, total: 28 });
   mockRun.mockResolvedValue(makeRun());
@@ -109,6 +113,46 @@ beforeEach(() => {
       risks: ['low', 'high'],
       permissions: ['readonly', 'workspace'],
     },
+  });
+  // 默认让 a-1 / b-07 都是历史失败用例，保持原选择器测试语义。
+  mockBatches.mockResolvedValue({
+    items: [
+      {
+        id: 1,
+        verdict: 'fail',
+        model: 'm',
+        suite_sha: 'abcdef123456',
+        plan_sha: 'p',
+        started_at: '',
+        finished_at: '',
+        summary: {
+          verdict: 'fail',
+          kpi: {} as never,
+          tracks: {},
+          subjects: {},
+          failures: [
+            {
+              case_id: 'a-1',
+              track: 'A',
+              status: 'failed',
+              violations: 0,
+              failed_checks: [],
+              repro: '',
+            },
+            {
+              case_id: 'b-07',
+              track: 'B',
+              status: 'failed',
+              violations: 0,
+              failed_checks: [],
+              repro: '',
+            },
+          ],
+          pareto: [],
+        },
+      },
+    ],
+    total: 1,
   });
 });
 
@@ -213,5 +257,54 @@ describe('RunBar', () => {
     fireEvent.click(screen.getByText('清空'));
     expect(screen.queryByRole('checkbox', { name: /b-07/ })).toBeTruthy();
     expect((screen.getByRole('checkbox', { name: /b-07/ }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('点跑全部按 limit=0 且不带赛道发起全量评测', async () => {
+    renderBar();
+    fireEvent.click(screen.getByText('跑全部'));
+
+    await waitFor(() =>
+      expect(mockStart).toHaveBeenCalledWith({ track: '', limit: 0, judge: false }),
+    );
+  });
+
+  it('选择器只列历史失败用例，未失败的不出现', async () => {
+    mockBatches.mockResolvedValue({
+      items: [
+        {
+          id: 2,
+          verdict: 'fail',
+          model: 'm',
+          suite_sha: 'abcdef123456',
+          plan_sha: 'p',
+          started_at: '',
+          finished_at: '',
+          summary: {
+            verdict: 'fail',
+            kpi: {} as never,
+            tracks: {},
+            subjects: {},
+            failures: [
+              {
+                case_id: 'a-1',
+                track: 'A',
+                status: 'failed',
+                violations: 0,
+                failed_checks: [],
+                repro: '',
+              },
+            ],
+            pareto: [],
+          },
+        },
+      ],
+      total: 1,
+    });
+    renderBar();
+    fireEvent.click(screen.getByText('选择用例'));
+
+    expect(await screen.findByRole('checkbox', { name: /a-1/ })).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: /b-07/ })).toBeNull();
+    expect(screen.getByText(/仅显示历史批次中失败过的用例（共 1 条）/)).toBeTruthy();
   });
 });

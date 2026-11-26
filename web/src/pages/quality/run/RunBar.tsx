@@ -9,11 +9,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ApiError,
   cancelOpenJudgeRun,
+  fetchOpenJudgeBatches,
   fetchOpenJudgeLibrary,
   fetchOpenJudgeRun,
   startOpenJudgeRun,
 } from '../../../api/client';
-import type { OjRunConflictDetail } from '../../../types';
+import type { OjRunConflictDetail, OjRunRequest } from '../../../types';
 
 const TRACK_OPTIONS: { value: string; label: string }[] = [
   { value: 'A', label: 'A 仓库问答' },
@@ -65,28 +66,42 @@ interface CasePickerProps {
   onClear: () => void;
 }
 
-/** 题库多选面板：搜索后勾选，选满上限后其余项只读。 */
+/** 失败用例多选面板：只列历史批次里失败过的用例，按 id IR 取题库元数据。 */
 function CasePicker({ selected, onToggle, onClear }: CasePickerProps) {
   const [search, setSearch] = useState('');
   const query = useQuery({
     queryKey: ['oj-library', 'run-picker'],
     queryFn: () => fetchOpenJudgeLibrary(),
   });
+  const batches = useQuery({
+    queryKey: ['oj-batches', 'failure-ids'],
+    queryFn: () => fetchOpenJudgeBatches(50),
+  });
 
-  if (query.isLoading) return <p className="muted">加载题库…</p>;
-  if (query.error || !query.data) return <p className="muted">题库不可用</p>;
+  if (query.isLoading || batches.isLoading) return <p className="muted">加载失败用例…</p>;
+  if (query.error || !query.data || batches.error || !batches.data) {
+    return <p className="muted">失败用例不可用</p>;
+  }
 
+  // 失败用例 id 来自各批次 summary.failures（单一来源），再去题库取元数据。
+  const failedIds = new Set(
+    batches.data.items.flatMap((batch) =>
+      (batch.summary?.failures ?? []).map((failure) => failure.case_id),
+    ),
+  );
   const keyword = search.trim().toLowerCase();
   const items = query.data.items.filter(
     (item) =>
-      !keyword ||
-      item.id.toLowerCase().includes(keyword) ||
-      item.subject.toLowerCase().includes(keyword) ||
-      item.track.toLowerCase().includes(keyword),
+      failedIds.has(item.id) &&
+      (!keyword ||
+        item.id.toLowerCase().includes(keyword) ||
+        item.subject.toLowerCase().includes(keyword) ||
+        item.track.toLowerCase().includes(keyword)),
   );
 
   return (
     <div className="oj-case-picker">
+      <p className="hint">仅显示历史批次中失败过的用例（共 {failedIds.size} 条）。</p>
       <div className="tag-row">
         <input
           type="search"
@@ -117,7 +132,11 @@ function CasePicker({ selected, onToggle, onClear }: CasePickerProps) {
             </label>
           );
         })}
-        {items.length === 0 && <p className="muted">没有匹配的用例</p>}
+        {items.length === 0 && (
+          <p className="muted">
+            {failedIds.size === 0 ? '历史批次里没有失败用例' : '没有匹配的失败用例'}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -139,6 +158,12 @@ export function RunBar({ onFinished }: RunBarProps) {
   const [notice, setNotice] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const finishedRef = useRef<number | null>(null);
+  const lastBodyRef = useRef<OjRunRequest | null>(null);
+
+  const submit = (body: OjRunRequest) => {
+    lastBodyRef.current = body;
+    start.mutate(body);
+  };
 
   const runQuery = useQuery({
     queryKey: ['oj-run', runId],
@@ -162,12 +187,7 @@ export function RunBar({ onFinished }: RunBarProps) {
     );
 
   const start = useMutation({
-    mutationFn: () =>
-      startOpenJudgeRun(
-        hasCases
-          ? { case_ids: caseIds, judge }
-          : { track: track || undefined, limit, judge },
-      ),
+    mutationFn: (body: OjRunRequest) => startOpenJudgeRun(body),
     onSuccess: (data) => {
       setRunId(data.run_id);
       setStartError(null);
@@ -258,9 +278,23 @@ export function RunBar({ onFinished }: RunBarProps) {
           type="button"
           className="primary-btn"
           disabled={start.isPending || active}
-          onClick={() => start.mutate()}
+          onClick={() =>
+            submit(
+              hasCases
+                ? { case_ids: caseIds, judge }
+                : { track: track || undefined, limit, judge },
+            )
+          }
         >
           {start.isPending ? '发起中…' : '开始运行'}
+        </button>
+        <button
+          type="button"
+          disabled={start.isPending || active || hasCases}
+          title="跑全部 90 条用例（含所有赛道），耗时较长"
+          onClick={() => submit({ track: '', limit: 0, judge })}
+        >
+          跑全部
         </button>
         {active && run && (
           <button type="button" disabled={cancel.isPending} onClick={() => cancel.mutate(run.id)}>
@@ -306,7 +340,12 @@ export function RunBar({ onFinished }: RunBarProps) {
                 任务{STATUS_TEXT[run.status] ?? run.status}
                 {run.error ? `：${run.error}` : '，可调整参数后重试。'}
               </p>
-              <button type="button" onClick={() => start.mutate()}>
+              <button
+                type="button"
+                onClick={() => {
+                  if (lastBodyRef.current) submit(lastBodyRef.current);
+                }}
+              >
                 重试
               </button>
             </>

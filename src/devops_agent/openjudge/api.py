@@ -202,14 +202,14 @@ def openjudge_series(days: int = Query(30, ge=1, le=365)) -> dict[str, object]:
 class RunStartIn(BaseModel):
     track: str = ""
     case_ids: list[str] = Field(default_factory=list)
-    limit: int = Field(default=service.DEFAULT_LIMIT, ge=1, le=service.MAX_LIMIT)
+    limit: int = Field(default=service.DEFAULT_LIMIT, ge=0, le=service.MAX_LIMIT)
     judge: bool = False
     concurrency: int = Field(default=2, ge=1, le=service.MAX_CONCURRENCY)
 
 
 @router.post("/runs", status_code=202)
 async def openjudge_start_run(body: RunStartIn) -> dict[str, object]:
-    """在线发起一次评测。track 与 case_ids 二选一；默认不启用裁判。"""
+    """在线发起评测。track 与 case_ids 二选一；limit=0 跑全量，默认不启用裁判。"""
     if body.case_ids and body.track.strip():
         raise HTTPException(status_code=400, detail="track 与 case_ids 二选一，不能同时提供")
     try:

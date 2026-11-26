@@ -5006,6 +5006,7 @@ a:hover {
   max-height: 85vh;
   margin-top: 0;
   overflow-y: auto;
+  background: var(--surface);
   box-shadow: -8px 0 28px rgb(15 23 42 / 18%);
 }
 .oj-drawer-head {

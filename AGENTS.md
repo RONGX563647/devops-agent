@@ -140,6 +140,10 @@ git fetch origin && git checkout main && git pull
    `skills/modern-web-guidance/guides/` 是随发布仓库同步的离线副本。
    DO NOT trigger：后端（SQL / ORM / API 路由）、基础设施与脚本（CI/CD、Docker、Python/Go、
    Git）、纯工具与琐碎改动（Vite / tsconfig / ESLint / 测试 / 复制重命名）不调用。
+9. **代码理解图谱是辅助，不是事实来源**：Understand Anything 生成的 `.ua/` 属过程态，
+   已被 `.gitignore` 排除，禁止提交 `knowledge-graph.json` 等产物；图谱不进 CI、
+   不替代测试，边与摘要只能用作导航线索，结论必须回到源码与测试核对。安装与跑法见
+   `docs/wiki/Understand-Anything.md`。
 
 ---
 

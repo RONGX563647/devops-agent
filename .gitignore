@@ -11,6 +11,11 @@ venv/
 # runtime workspace (NOT committed — process state lives here, not source)
 /workspace/
 
+# 代码理解图谱产物（Understand Anything）：同样是过程态，随代码漂移且体积不小。
+# 取图方式是本地重跑，不是提交——理由见 docs/wiki/Understand-Anything.md §4。
+/.ua/
+/.understand-anything/
+
 # secrets & env
 .env
 .env.*

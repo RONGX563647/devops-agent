@@ -12,6 +12,7 @@
 | [Permissions.md](Permissions.md) | 5 档权限的构成、确认挂起与续跑协议、`prefix` 沉淀规则、会话隔离 |
 | [Observability-and-Eval.md](Observability-and-Eval.md) | SQLite 表结构、健康分口径、评测五子命令、7 类硬失败、S1–S8 lint |
 | [Development-Workflow.md](Development-Workflow.md) | worktree + PR 流程、五道本地门禁、CI 三段、nightly 评测 |
+| [Understand-Anything.md](Understand-Anything.md) | 代码理解图谱的安装、跑法、产物为何不入库、worktree 下的两个坑 |
 
 设计决策另见 [ADR](../adr) 与 [SPEC](../specs)：
 - [ADR-0001 可观测性前端](../adr/0001-agent-observability-frontend.md)

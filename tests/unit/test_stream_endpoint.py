@@ -200,6 +200,15 @@ def test_run_stream_keeps_secret_out_of_model_input(
         assert "{{secret:openai_key}}" in echoed
         # 明文仍在保险箱里，工具边界才解得开
         assert vault_mod.get_vault().get("openai_key") == secret
+        # 观测库与对外 API 都不能残留明文：这两个面曾经只挡住模型侧。
+        run_id = int(frames[-1]["run_id"])
+        with repo.connect(tmp_path / "sec.db") as conn:
+            stored = repo.get_run(conn, run_id)
+        assert stored is not None
+        assert secret not in stored.input
+        assert "{{secret:openai_key}}" in stored.input
+        history = client.get("/api/runs").json()["items"]
+        assert all(secret not in str(item.get("input", "")) for item in history)
     finally:
         vault_mod.reset_vault()
 

@@ -31,7 +31,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from devops_agent.gateway.deps import _profile_or_403, _recorder_for, _registry
-from devops_agent.gateway.input import _load_attachments, _prepare_input
+from devops_agent.gateway.input import _load_attachments, _prepare_input, redact_for_record
 from devops_agent.gateway.schemas import RunRequest
 from devops_agent.gateway.sse import _SSE_HEADERS, _frames, _named_frame, _sse_frame
 from devops_agent.input.events import events as parse_events
@@ -259,7 +259,10 @@ async def run_stream(
         try:
             # 1) 建立流心跳并登记 run
             yield ": ping\n\n"  # 模型首 token 前先有字节，别让代理把空窗当空闲连接
-            recorder.start(req.session_id, req.user_input)
+            # 观测库的 input 用脱敏后的正文：用户贴进聊天框的 key 不能明文持久化，
+            # 也不能经 /api/runs 原样回到前端。管线那侧仍用原文走完整解析，
+            # 占位符幂等（_protect_placeholders 已保证），模型侧行为不变。
+            recorder.start(req.session_id, redact_for_record(req.user_input))
             # 2) 结清上一轮挂起：上一轮停在 ASKING 时不清，本轮会直接 RUN_ERROR
             if pending_of(entry.runtime) and not await _settle_abandoned(entry.runtime):
                 raise RuntimeError(

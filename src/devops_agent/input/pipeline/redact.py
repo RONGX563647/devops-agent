@@ -76,9 +76,22 @@ class _SecretNamer:
         return name
 
 
+# 与 secrets.vault 的 _HINT_KEEP_CHARS / _HINT_MIN_LEN 保持一致：短值一个字符都不露。
+# 不跨层 import vault——那会把 cryptography 拖进纯 stdlib 的输入管线（离线门禁要能跑）；
+# 两边由 tests/unit/test_secrets.py 的一致性用例钉住，改一处就会红。
+_HINT_KEEP_CHARS = 4
+_HINT_MIN_LEN = 12
+
+
 def _fingerprint(secret: str) -> str:
-    """只暴露前 4 位与长度：足够认出是哪个凭据，又不构成泄漏。"""
-    return f"{secret[:4]}…（{len(secret)} 位）"
+    """给人看的识别串：长值露前 4 位与长度，短值只给长度。
+
+    早期版本无条件 `secret[:4]`，短 key 会把整串露进 input_stages.detail——
+    那里整段落库并推给前端，与保险箱的严格阈值不一致，属于同源规则分叉。
+    """
+    if len(secret) <= _HINT_MIN_LEN:
+        return f"（{len(secret)} 位）"
+    return f"{secret[:_HINT_KEEP_CHARS]}…（{len(secret)} 位）"
 
 
 def _protect_placeholders(text: str) -> tuple[str, list[str]]:

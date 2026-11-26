@@ -190,9 +190,9 @@ def test_builtin_deny_injected_in_every_mode() -> None:
     for key in ("readonly", "workspace", "execute", "unrestricted", "auto"):
         context = compile_context(PROFILES[key])
         assert context.deny_rules, f"{key} 档缺少 builtin deny"
-        bash_deny = [rule.rule_content for rule in context.deny_rules.get("Bash", [])]
-        assert ".env" in bash_deny, f"{key} 档的 Bash 未禁 .env"
-        assert ".git/" in bash_deny, f"{key} 档的 Bash 未禁 .git/"
+        bash_deny = [str(rule.rule_content) for rule in context.deny_rules.get("Bash", [])]
+        assert any(".env" in pattern for pattern in bash_deny), f"{key} 档的 Bash 未禁 .env"
+        assert any(".git" in pattern for pattern in bash_deny), f"{key} 档的 Bash 未禁 .git"
         # 引擎实判：auto(dont_ask) 在旧实现下对工作区内的 .env 直接 allow，
         # 这是最需要锁死的一档。
         assert bash_decision(PROFILES[key], "cat .env", Path.cwd()) == "deny"
@@ -201,8 +201,8 @@ def test_builtin_deny_injected_in_every_mode() -> None:
 def test_context_for_unrestricted_carries_profile_deny_rules() -> None:
     context = compile_context(PROFILES["unrestricted"])
     assert context.mode == PermissionMode.BYPASS
-    contents = [rule.rule_content for rule in context.deny_rules.get("Bash", [])]
-    assert ".git/" in contents
+    contents = [str(rule.rule_content) for rule in context.deny_rules.get("Bash", [])]
+    assert any(".git" in pattern for pattern in contents)
 
 
 def test_context_for_execute_injects_command_allowlist() -> None:
@@ -237,25 +237,25 @@ def test_custom_deny_appends_to_builtin() -> None:
         source="caller",
     )
     context = compile_context(PROFILES["auto"], extra_deny={"Bash": [whole_tool]})
-    contents = [rule.rule_content for rule in context.deny_rules["Bash"]]
-    assert ".env" in contents
-    assert ".git/" in contents
-    assert None in contents  # caller 的整工具拒绝也保留
+    raw = [rule.rule_content for rule in context.deny_rules["Bash"]]
+    assert any(pattern and ".env" in pattern for pattern in raw)
+    assert any(pattern and ".git" in pattern for pattern in raw)
+    assert None in raw  # caller 的整工具拒绝也保留
 
 
 def test_custom_deny_overrides_same_rule_only() -> None:
     """同 (tool, content, behavior) 的规则以 caller 为准，其余内置规则不受牵连。"""
     override = PermissionRule(
-        tool_name="Bash",
+        tool_name="Write",
         rule_content=".env",
         behavior=PermissionBehavior.DENY,
         source="caller",
     )
-    context = compile_context(PROFILES["workspace"], extra_deny={"Bash": [override]})
-    env_rules = [rule for rule in context.deny_rules["Bash"] if rule.rule_content == ".env"]
+    context = compile_context(PROFILES["workspace"], extra_deny={"Write": [override]})
+    env_rules = [rule for rule in context.deny_rules["Write"] if rule.rule_content == ".env"]
     assert len(env_rules) == 1
     assert env_rules[0].source == "caller"
-    assert any(rule.rule_content == ".git/" for rule in context.deny_rules["Bash"])
+    assert any(rule.rule_content == ".git" for rule in context.deny_rules["Write"])
     # 未被 Bash 覆盖的其他 builtin（Write/Edit 的 .git/）同样保留
     assert context.deny_rules["Write"]
 

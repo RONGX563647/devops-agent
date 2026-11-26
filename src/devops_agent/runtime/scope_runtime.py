@@ -135,6 +135,7 @@ class AgentScopeRuntime:
             profile.tools,
             self._workdir,
             middlewares=self._toolkit_middlewares or None,
+            scope=profile.scope,
         )
 
     def _maybe_rebuild_model(self, web_search: bool | None) -> None:

@@ -39,6 +39,7 @@ from agentscope.tool import (
 )
 from agentscope.tool._base import ToolBase
 
+from devops_agent.tools.guard import build_guard
 from devops_agent.tools.names import READONLY_TOOL_NAMES as READONLY_NAMES
 from devops_agent.tools.names import WRITE_TOOL_NAMES as WRITE_NAMES
 
@@ -68,7 +69,7 @@ class _WorkdirBackend(LocalBackend):
         return self._cwd_root
 
 
-def _factories(cwd: str, middlewares: Middlewares) -> dict[str, Callable[[], ToolBase]]:
+def _factories(cwd: str, middlewares: Middlewares, scope: str) -> dict[str, Callable[[], ToolBase]]:
     """工具名 → 构造器。用惰性构造避免为没选中的工具白建 backend。
 
     middlewares 必须逐工具挂 —— 框架把它挂在 ToolBase 上，
@@ -86,7 +87,9 @@ def _factories(cwd: str, middlewares: Middlewares) -> dict[str, Callable[[], Too
         """每个工具独占一个 backend 实例，避免将来有状态时互相污染。"""
         return _WorkdirBackend(cwd)
 
-    mws = list(middlewares) if middlewares else None
+    # 守卫在最外层：先判路径，命中就短路，后面的密钥注入与工具执行都不跑。
+    # 这里是它唯一的挂载点 —— 由调用方记得传等于迟早漏挂。
+    mws: list[ToolMiddlewareBase] = [build_guard(cwd, scope), *(middlewares or [])]
     return {
         "bash": lambda: Bash(cwd=cwd, middlewares=mws, backend=backend()),
         "read": lambda: Read(middlewares=mws, backend=backend()),
@@ -101,14 +104,17 @@ def build_toolkit_for(
     names: Sequence[str],
     workdir: str | os.PathLike[str],
     middlewares: Middlewares = None,
+    *,
+    scope: str = "workspace",
 ) -> Toolkit:
     """按名字装配工具集（档位切换的唯一入口）。
 
     未知名直接抛 ValueError —— 静默跳过会让「放开档少了写工具」这种问题
     表现成「权限切了但模型还是不改文件」，很难查。
+    `scope` 决定敏感路径守卫是否把「工作区内」当硬边界（只有 readonly 档是）。
     """
     cwd = str(Path(workdir).resolve())
-    factories = _factories(cwd, middlewares)
+    factories = _factories(cwd, middlewares, scope)
     unknown = [name for name in names if name not in factories]
     if unknown:
         raise ValueError(f"未知工具: {', '.join(unknown)}")
@@ -123,12 +129,14 @@ def build_toolkit(tools: Sequence[FunctionTool] | None = None) -> Toolkit:
 def build_readonly_toolkit(
     workdir: str | os.PathLike[str],
     middlewares: Middlewares = None,
+    *,
+    scope: str = "readonly",
 ) -> Toolkit:
     """装配内置只读工具集：shell + 读文件 + 路径查找 + 文本检索。
 
     只读会话的固定组合；写工具不得进入这里（要写就显式走 build_toolkit_for）。
     """
-    return build_toolkit_for(READONLY_TOOL_NAMES, workdir, middlewares)
+    return build_toolkit_for(READONLY_TOOL_NAMES, workdir, middlewares, scope=scope)
 
 
 def shell_name() -> str:

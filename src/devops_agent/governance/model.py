@@ -13,12 +13,17 @@
 
 本模块不 import agentscope、不读环境变量、不做 IO：它只有数据。
 环境变量解析在 `presets.py`，框架对象编译在 `compile.py`。
+
+规则由 `paths.py` 的敏感名单**生成**，不是手写四条：手写时代价是漏项与拼写错误，
+生成后加一个名字就自动覆盖六个工具 × 三种拼写（拼写覆盖率见
+`tests/unit/test_permission_guard.py` 的参数化用例）。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from devops_agent.governance import paths
 from devops_agent.tools.names import READONLY_TOOL_NAMES, WRITE_TOOL_NAMES
 
 # 只读四件套：shell + 读文件 + 找文件 + 搜内容
@@ -116,9 +121,15 @@ DEFAULT_AVAILABLE: tuple[str, ...] = ("readonly", "workspace", "execute", "auto"
 # 字典序首个是 "auto"（无人值守），等于配置错误把用户推向最不想有人盯的档位。
 SAFETY_ORDER: tuple[str, ...] = ("readonly", "workspace", "execute", "auto", "unrestricted")
 
+# 能力边界的严重程度：规则带 scope 时表示「生效下限」（见 compile._active_rules）。
+SCOPE_ORDER: dict[str, int] = {"readonly": 0, "workspace": 1, "container": 2}
+
 # 白名单属于「档位的能力」，不是「部署的配置」：execute 档存在的理由就是它。
 # 前缀形如 "pytest:*"，框架把复合命令拆成子命令逐条匹配，所以
 # "pytest; rm -rf /" 里的 rm 匹配不上任何一条，整条不会被放行。
+#
+# 刻意不含 npx / pnpm / yarn / make：前三个会去远端拉包（代码来源不可审计），
+# make 执行的是任意 Makefile 目标。要跑它们就让用户显式确认一次。
 ALLOW_PREFIXES: dict[str, tuple[str, ...]] = {
     "execute": (
         "pytest:*",
@@ -129,10 +140,6 @@ ALLOW_PREFIXES: dict[str, tuple[str, ...]] = {
         "npm test:*",
         "npm ci:*",
         "npm install:*",
-        "npx:*",
-        "pnpm:*",
-        "yarn:*",
-        "make:*",
         "cargo:*",
         "go test:*",
         "go build:*",
@@ -146,19 +153,85 @@ class Rule:
 
     `pattern` 的语义由工具决定（Bash 是子串/通配/`:*` 前缀，文件工具是 fnmatch
     glob），所以这里只存字符串，翻译成框架对象在 `compile.py`。
+    `scope` 是**生效下限**：`container` 的规则只在 `unrestricted` 档装配。
     """
 
     tool: str
     pattern: str | None
     behavior: str = "deny"
     source: str = "builtin"
+    scope: str = "readonly"
+
+
+# 解释器「执行一段代码」的开关：bypass 档跳过框架的 safety-ask，所以这一档必须
+# 显式 deny，否则 `python -c "open('.env')"` 只受子串匹配约束，chr() 拼接即可绕过。
+# 其余档位不动：那里框架会 ASK，把 ask 改成 deny 会让日常 `python -c` 直接变死。
+INTERPRETER_FLAGS: tuple[str, ...] = (
+    "python -c",
+    "python3 -c",
+    "py -c",
+    "bash -c",
+    "sh -c",
+    "node -e",
+    "perl -e",
+    "ruby -e",
+    "pwsh -c",
+    "powershell -c",
+)
+
+# 破坏性命令：同样只在 bypass 档 deny（其余档位框架的 danger safety-ask 会问）。
+DANGER_COMMANDS: tuple[str, ...] = (
+    "rm -rf",
+    "rm -fr",
+    "mkfs",
+    "dd if=",
+    ":(){",
+    "shutdown",
+    "reboot",
+    "chmod -R 777",
+    "chmod -R 0777",
+    "> /dev/sd",
+)
+
+# 文件类工具：读、写、改都能指定到具体文件
+_FILE_TOOLS: tuple[str, ...] = ("Read", "Write", "Edit")
+# 目录类工具：Glob/Grep 的 path 只到目录一级
+_DIR_TOOLS: tuple[str, ...] = ("Read", "Write", "Edit", "Glob", "Grep")
+# 只保护写入的目录用这组（编辑器配置读没风险）
+_WRITE_DIR_TOOLS: tuple[str, ...] = ("Write", "Edit")
+
+
+def _file_rules(name: str) -> list[Rule]:
+    """一个敏感文件名 → 文件类工具的 glob 规则 + Bash 的子串规则。"""
+    rules = [Rule(tool=tool, pattern=p) for p in paths.file_patterns(name) for tool in _FILE_TOOLS]
+    rules.extend(Rule(tool="Bash", pattern=p) for p in paths.bash_patterns(name, kind="file"))
+    return rules
+
+
+def _dir_rules(name: str, tools: tuple[str, ...]) -> list[Rule]:
+    """一个敏感目录 → 指定工具的 glob 规则 + Bash 的子串规则。"""
+    rules = [Rule(tool=tool, pattern=p) for p in paths.dir_glob_patterns(name) for tool in tools]
+    rules.extend(Rule(tool="Bash", pattern=p) for p in paths.bash_patterns(name, kind="dir"))
+    return rules
+
+
+def _deny_rules() -> tuple[Rule, ...]:
+    """由敏感名单生成 builtin deny（六个工具 × 各自需要的拼写形式）。"""
+    rules: list[Rule] = []
+    for name in sorted(paths.SENSITIVE_FILES):
+        rules.extend(_file_rules(name))
+    for name in sorted(paths.SENSITIVE_DIRS):
+        rules.extend(_dir_rules(name, _DIR_TOOLS))
+    # 编辑器配置只保护写入：读它没风险，拦下来只会让模型白撞一次
+    for name in sorted(paths.WRITE_ONLY_DIRS):
+        rules.extend(_dir_rules(name, _WRITE_DIR_TOOLS))
+    rules.extend(
+        Rule(tool="Bash", pattern=pattern, scope="container")
+        for pattern in DANGER_COMMANDS + INTERPRETER_FLAGS
+    )
+    return tuple(rules)
 
 
 # builtin deny：对所有档位无条件装配（框架层 deny 优先于 allow/ask）。
-# 这是点防御，不是隔离：Bash 走子串匹配，挡不住 `python -c "..."` 那类构造。
-BUILTIN_DENY: tuple[Rule, ...] = (
-    Rule(tool="Bash", pattern=".git/"),
-    Rule(tool="Bash", pattern=".env"),
-    Rule(tool="Write", pattern=".git/"),
-    Rule(tool="Edit", pattern=".git/"),
-)
+# 这是点防御，不是隔离：Bash 侧仍是子串匹配，真正的边界在 tools/guard.py。
+BUILTIN_DENY: tuple[Rule, ...] = _deny_rules()

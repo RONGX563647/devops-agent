@@ -26,6 +26,9 @@ dependencies = [
 [project.optional-dependencies]
 # PDF 附件抽正文：没装时上传 PDF 会明确报「缺少 pypdf」，不影响其他格式
 parse = ["pypdf>=4.0"]
+# 外部内容的安全裁剪（SPEC-0012）：净化用 nh3、正文抽取用 trafilatura；
+# 没装时退化为标签剥离，并由 /health 与阶段详情如实上报
+sanitize = ["nh3>=0.2", "trafilatura>=1.8"]
 # OpenJudge 评测基准：第三方包只在 devops_agent/openjudge/ 内 import，保持可选依赖隔离
 openjudge = ["py-openjudge==0.2.5"]
 dev = [
@@ -38,6 +41,9 @@ dev = [
     "import-linter>=2.0",
     "mutmut>=3.0",
     "types-PyYAML>=6.0",
+    # CI 覆盖真实净化路径：运行时仍是 optional extra，测试环境必装
+    "nh3>=0.2",
+    "trafilatura>=1.8",
 ]
 
 [tool.setuptools.packages.find]

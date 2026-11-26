@@ -92,14 +92,17 @@ def prepare(
 
     text, normalize_stage = _normalize(user_input)
     refs, detect_stage = _detect(text, root)
-    blocks, ref_misses, expand_stage = _expand(refs, root, _remote_fetch_enabled(remote_fetch))
+    blocks, ref_misses, thin_refs, expand_stage = _expand(
+        refs, root, _remote_fetch_enabled(remote_fetch)
+    )
     attached, attach_misses, attach_stage = _attach(attachments)
     text, all_blocks, redact_stage = _redact(text, blocks + attached, namer, on_secret)
     # 失败说明也要进模型上下文，因此同样过一遍脱敏（URL 里可能带 token）。
     # 这些内容来自用户原文或文件名，正文那一步已经走过 sink，这里不重复入库。
     misses = [_redact_text(miss, namer, None)[0] for miss in (*ref_misses, *attach_misses)]
+    thin = tuple(_redact_text(value, namer, None)[0] for value in thin_refs)
     text, all_blocks, budget_stage = _budget(text, all_blocks, _build_policy())
-    text, compose_stage = _compose(text, all_blocks, misses)
+    text, compose_stage = _compose(text, all_blocks, misses, thin)
 
     return PreparedInput(
         original=user_input,

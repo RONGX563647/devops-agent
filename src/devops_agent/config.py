@@ -385,6 +385,29 @@ class InputPolicy(BaseModel):
     max_redirects: int = Field(default=3, ge=0, le=10)
     # 是否允许抓取内网 / 回环 / 链路本地地址；默认拒绝（防服务端替人访问本地服务）
     allow_private_addresses: bool = False
+    # 允许访问的端口：默认只放 80/443，避免把公网上的 Redis/ES 当网页抓
+    allowed_ports: list[int] = Field(default_factory=lambda: [80, 443])
+    # 域名白/黑名单：空表示不限制（白名单非空时即「只允许这些」）
+    allowed_hosts: list[str] = Field(default_factory=list)
+    denied_hosts: list[str] = Field(default_factory=list)
+
+    # --- 内容安全裁剪（SPEC-0012）-------------------------------------
+    # 单条材料裁剪后的字符上限：超出按 head_ratio 保留头尾
+    per_url_chars: int = Field(default=8000, ge=200, le=200_000)
+    # 判「内容不足（thin）」的阈值：低于它就不再当完整资料
+    min_chars: int = Field(default=400, ge=0, le=100_000)
+    # 抓到多少字就认为「够用、可以提前停止」
+    min_total_chars: int = Field(default=1200, ge=0, le=200_000)
+    # 一轮材料总字符上限
+    total_chars: int = Field(default=24_000, ge=1000, le=400_000)
+    # 一轮预抓取的总时间预算（毫秒）
+    total_ms: int = Field(default=8000, ge=500, le=120_000)
+    # 裁剪时保留头部的比例，其余给尾部（网页结论常在尾部）
+    head_ratio: float = Field(default=0.7, gt=0, le=1)
+    # 是否扫描「疑似指令注入」段落（只标记，不删除）
+    injection_scan: bool = True
+    # 是否给网络材料加 <<untrusted-web>> 边界标记
+    wrap_untrusted: bool = True
 
 
 @cache

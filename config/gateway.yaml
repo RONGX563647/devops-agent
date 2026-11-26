@@ -1,0 +1,29 @@
+# 网关的部署策略旋钮（对应 config.py 的 GatewayPolicy → gateway/settings.py）。
+#
+# 这里只放「随部署环境变化、运维或产品会想调」的值。
+# 三类值永远不进来：
+#   1. HTTP 状态码与错误码 —— 在 gateway/errors.py，前后端共同契约；
+#   2. SSE 帧名与字段 —— 在 gateway/contract.py，改了前端必须同步；
+#   3. runs.status 的枚举值 —— 在 observability/models.RunStatus，同时决定 DDL 的 CHECK。
+# 把它们写进配置只会让「代码 / 前端 / 数据库」三处各存一份默认值，然后漂移。
+gateway:
+  stream:
+    # 同一次 run 最多打扰用户几次确认。模型被拒后通常会换个写法重试，
+    # 重试会产生新的 tool_call_id，按 id 去重挡不住，只能按 run 计数兜底。
+    ask_limit: 3
+    # 挂起有效期（秒）：用户关掉页面后不能永远停在「等待确认」。
+    park_ttl_seconds: 600
+    # 结清上一轮遗留挂起时最多追跑几轮：被拒后换个方案再试一次是合理的，
+    # 再被拒就是模型自己的问题，不必无限追。
+    settle_rounds: 2
+    # SSE 静默补帧间隔（秒）：避免前端 watchdog 把长时间思考判成连接假死。
+    heartbeat_seconds: 15
+    # 确认次数读不到时（观测库不可用）怎么处理：
+    #   reject = 按超限处理、自动拒绝，宁可不打扰用户（默认，与历史行为一致）
+    #   park   = 照常弹卡片，把判断权交回用户
+    on_counter_unavailable: reject
+
+  sessions:
+    # 内存里的会话实例上限（LRU）。回收不等于丢失：DB 里的 session_states 不动，
+    # 确认续跑时缓存未命中就从快照重建，所以这里可以放心取小值。
+    max_entries: 16

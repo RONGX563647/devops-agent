@@ -56,6 +56,68 @@ permission:
       source: profile
   ask_rules: []
 
+# 确认协议：风险分级与规则沉淀（对应 runtime/risk.py、runtime/rules.py）。
+#
+# 这些是「域知识」而不是部署开关：改错会直接改变「什么命令算高危」「哪些命令
+# 能被一次点击永久放行」。所以与权限策略同住一份文件，并在加载期校验正则可编译
+# —— 写错一个正则不该等到用户点确认时才炸。
+confirm:
+  # 下发给前端的命令原文上限（只用于展示，超长由界面折叠，不截断执行）
+  display_limit: 2000
+
+  risk:
+    # 明确的破坏性命令：确认卡片标红，并且不允许「本会话允许」。
+    # 一律用单引号，保持正则里的反斜杠是字面量（YAML 双引号会解释 \s）。
+    danger_patterns:
+      - 'rm\s+-[a-zA-Z]*r[a-zA-Z]*f'
+      - 'rm\s+-[a-zA-Z]*f[a-zA-Z]*r'
+      - ':\s*\(\s*\)\s*\{'
+      - 'mkfs'
+      - 'dd\s+if='
+      - 'shutdown'
+      - 'reboot'
+      - 'chmod\s+-R\s+0?777'
+      - '>\s*/dev/sd'
+    # 会落盘但不算破坏性：卡片标黄，允许沉淀规则
+    write_patterns:
+      - 'sed\s+-i'
+      - '>>?'
+      - '\btouch\b'
+      - '\bmkdir\b'
+      - '\brm\b'
+      - '\bmv\b'
+      - '\bcp\b'
+      - '\btee\b'
+
+  rules:
+    # 确认作用域：这一次 / 精确这条命令 / 这个命令前缀。
+    # 顺序即「由窄到宽」，前端按它渲染选项。
+    scopes: [once, exact, prefix]
+
+    # 需要看「子命令」的程序：前缀落到第二个词，避免一次点击放行整个工具。
+    # 例：`git commit -m x` 沉淀成 `git commit:*`，而不是 `git:*`。
+    subcommand_programs:
+      [git, gh, npm, pnpm, yarn, npx, pip, uv, poetry, cargo, go, docker,
+       docker-compose, kubectl, helm, terraform, make, dotnet, mvn, gradle,
+       apt, apt-get, brew, systemctl, journalctl, az, aws, gcloud, conda, alembic]
+
+    # 复合命令分隔符：命中任意一个就不沉淀 —— 多段命令本该逐段判定，
+    # `cd /repo && rm -rf build` 沉淀成 `cd:*` 等于顺带放行了后面那半段。
+    separators: ["&&", "||", ";", "|", "\n"]
+
+    # 包装层：先剥掉再判定程序。不剥的话 `timeout 30 npm test` 会沉淀成
+    # `timeout:*` —— 一条放行所有被 timeout 包住命令的规则，比不沉淀更糟。
+    wrappers: [timeout, time, nice, nohup, stdbuf, env, command, exec]
+
+    # 一旦沉淀成前缀就等于开了任意执行的门，这类程序永不沉淀：
+    # `rm:*` 会连 `rm -rf /` 一起放过，而沉淀时的那次高危判定管不到以后。
+    never_persist: [rm, rmdir, mkfs, dd, shutdown, reboot, chmod, chown, sudo, su]
+    # 解释器同理：`bash:*` / `python -c` 就是任意代码执行
+    never_persist_interpreters: [bash, sh, zsh, fish, cmd, powershell, pwsh]
+
+    # 这些程序按「`-m` 后的模块」取前缀：`python -m pytest:*` 而不是 `python:*`
+    python_programs: [python, python3, py]
+
 # 模型参数（max_iters / 两级重试 / 采样 / 上下文窗口）已迁到 config/model.yaml：
 # 它们要能在前端改，而 policy.yaml 是「权限与运行时策略」，混在一起会让
 # 「谁能改什么」说不清。这里不再保留同名键，避免两个默认值打架。

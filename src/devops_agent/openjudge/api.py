@@ -16,7 +16,16 @@ from typing import TypeVar
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from devops_agent.openjudge import benchmark, casestore, explain, grade, report, service, store
+from devops_agent.openjudge import (
+    benchmark,
+    casestore,
+    explain,
+    grade,
+    report,
+    service,
+    settings,
+    store,
+)
 
 router = APIRouter(prefix="/api/openjudge", tags=["openjudge"])
 
@@ -170,6 +179,49 @@ def _latest_tracks(conn: sqlite3.Connection) -> dict[str, dict[str, object] | No
     return {track: store.latest_track_stats(conn, track) for track in benchmark.TRACKS}
 
 
+def _review_gate() -> dict[str, object]:
+    """题库审核摘要：只有 approved 可入门禁，legacy-import 单列待复核。"""
+    cases = casestore.load_cases()
+    pending = benchmark.unreviewed_ids(cases)
+    return {
+        "total": len(cases),
+        "approved": len(cases) - len(pending),
+        "pending": len(pending),
+        "legacy": sum(1 for case in cases if case.reviewer == "legacy-import"),
+        "pending_ids": pending[:5],
+    }
+
+
+def _calibration_status() -> dict[str, object]:
+    """裁判校准状态；库不可用时 checked=false，前端显示「未知」而非「通过」。"""
+    plan = grade.load_plan()
+    payload = _read(
+        lambda conn: store.calibration_gate(
+            conn,
+            metrics=list(plan.judges),
+            judge_model=settings.resolved()["judge_model"],
+            rubric_sha=grade.rubric_sha(plan),
+        )
+    )
+    status = payload or {
+        "checked": False,
+        "valid": True,
+        "missing": [],
+        "calibration_ids": [],
+    }
+    return {
+        **status,
+        "required_n": store.MIN_CALIBRATION_N,
+        "required_spearman": store.MIN_CALIBRATION_SPEARMAN,
+    }
+
+
+@router.get("/calibration")
+def openjudge_calibration() -> dict[str, object]:
+    """当前生效的裁判校准：供 ScoreFlow 展示，不改变批次 verdict。"""
+    return _calibration_status()
+
+
 @router.get("/scoring-config")
 def openjudge_scoring_config() -> dict[str, object]:
     """评分契约的唯一来源：计划/门槛/赛道规则都来自执行它们的代码。"""
@@ -184,12 +236,14 @@ def openjudge_scoring_config() -> dict[str, object]:
                     "grader": spec.grader,
                     "weight": spec.weight,
                     "scale": [spec.low, spec.high],
+                    "rubric": spec.rubric,
                 }
                 for spec in plan.judges.values()
             ],
         },
         "pass_judge": explain.PASS_JUDGE,
         "track_rules": copy.deepcopy(report.TRACK_RULES),
+        "gates": {"review": _review_gate(), "rubric": grade.rubric_gate(plan)},
     }
 
 
@@ -220,6 +274,8 @@ async def openjudge_start_run(body: RunStartIn) -> dict[str, object]:
             concurrency=body.concurrency,
             case_ids=body.case_ids,
         )
+    except benchmark.ReviewError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if "busy" in payload:

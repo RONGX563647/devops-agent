@@ -52,6 +52,22 @@ def frozen(name: str, version: str = "v1") -> bool:
         return False
 
 
+def approve(name: str, version: str = "v1", reviewer: str = "") -> dict[str, Any]:
+    """人工冻结 rubric；reviewer 为空时拒绝，避免无人签字的标准进入判分。"""
+    reviewer = reviewer.strip()
+    if not reviewer:
+        raise ValueError("冻结 rubric 必须提供 reviewer")
+    payload = load(name, version)
+    meta = payload["meta"]
+    meta["status"] = "frozen"
+    meta["reviewer"] = reviewer
+    meta["reviewed_at"] = datetime.now(UTC).isoformat()
+    (rubric_dir(name, version) / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return {"sha": spec_sha(name, version), "meta": meta}
+
+
 def write_artifact(
     name: str,
     version: str,
@@ -61,6 +77,7 @@ def write_artifact(
     model: str,
     status: str = "draft",
     reviewer: str = "",
+    reviewed_at: str = "",
 ) -> Path:
     folder = rubric_dir(name, version)
     folder.mkdir(parents=True, exist_ok=True)
@@ -73,6 +90,7 @@ def write_artifact(
         "version": version,
         "status": status,
         "reviewer": reviewer,
+        "reviewed_at": reviewed_at,
         "model": model,
         "language": "ZH",
         "created_at": datetime.now(UTC).isoformat(),

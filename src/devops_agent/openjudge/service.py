@@ -35,6 +35,12 @@ def load_cases(track: str = "", limit: int = DEFAULT_LIMIT) -> list[benchmark.Ca
     return casestore.load_cases(track=track, limit=limit)
 
 
+def _ensure_reviewed(cases: list[benchmark.Case]) -> None:
+    pending = benchmark.unreviewed_ids(cases)
+    if pending:
+        raise benchmark.ReviewError(f"未审核用例：{', '.join(pending)}")
+
+
 def _select_cases(
     track: str, limit: int, case_ids: list[str] | None
 ) -> tuple[list[benchmark.Case], str]:
@@ -43,10 +49,13 @@ def _select_cases(
         ordered = list(dict.fromkeys(case_ids))
         if len(ordered) > MAX_LIMIT:
             raise ValueError(f"case_ids 最多 {MAX_LIMIT} 条")
-        return casestore.load_cases_by_ids(ordered), ""
-    if track and track not in benchmark.TRACKS:
-        raise ValueError(f"未知赛道：{track}")
-    return load_cases(track, limit), track
+        selected, active_track = casestore.load_cases_by_ids(ordered), ""
+    else:
+        if track and track not in benchmark.TRACKS:
+            raise ValueError(f"未知赛道：{track}")
+        selected, active_track = load_cases(track, limit), track
+    _ensure_reviewed(selected)
+    return selected, active_track
 
 
 async def start(

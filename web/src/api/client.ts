@@ -9,6 +9,7 @@ import type {
   ModelConfig,
   ModelPatch,
   OjBatch,
+  OjCalibrationStatus,
   OjCaseDetail,
   OjCaseDocument,
   OjCaseDocumentBody,
@@ -331,6 +332,11 @@ export function fetchOpenJudgeBatches(
 /** OpenJudge：判分方案、门槛与赛道规则（单一来源）。 */
 export function fetchOpenJudgeScoringConfig(): Promise<OjScoringConfig> {
   return getJson<OjScoringConfig>('/api/openjudge/scoring-config');
+}
+
+/** OpenJudge：当前裁判校准状态；门槛值一并由服务端下发。 */
+export function fetchOpenJudgeCalibration(): Promise<OjCalibrationStatus> {
+  return getJson<OjCalibrationStatus>('/api/openjudge/calibration');
 }
 
 /** OpenJudge：单批次详情（含 summary）。 */

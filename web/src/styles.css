@@ -4945,6 +4945,17 @@ a:hover {
   border: 0;
   font-size: var(--text-xs);
 }
+.quality-flow-entry {
+  min-block-size: 24px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.quality-flow-entry:focus-visible,
+#score-flow-heading:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
 .oj-failures {
   padding: 0;
   margin: 0;
@@ -4990,6 +5001,41 @@ a:hover {
   background: var(--accent-soft);
   border-radius: 50%;
   font-size: var(--text-2xs);
+}
+.oj-gate-block {
+  margin: 12px 0 10px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+.oj-gate-block h3 {
+  margin: 0 0 8px;
+  font-size: var(--text-sm);
+}
+.oj-gate-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.oj-gate-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  min-inline-size: 0;
+  padding: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-xs);
+  background: var(--surface-muted);
+  font-size: var(--text-2xs);
+}
+.oj-gate-list li > .muted {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
 }
 .oj-drawer-overlay {
   position: fixed;

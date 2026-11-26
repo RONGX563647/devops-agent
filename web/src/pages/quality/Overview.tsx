@@ -14,6 +14,7 @@ import { verdictClass, verdictText } from './labels';
 
 interface Props {
   onShowBatches: () => void;
+  onShowScoreFlow: () => void;
 }
 
 function lastPoint(points: OjSeriesPoint[]): OjSeriesPoint | null {
@@ -56,7 +57,7 @@ function conclusionOf(point: OjSeriesPoint): string {
   return `${base} —— 通过率 ${formatPercent(point.pass_rate)}（n=${point.cases}）`;
 }
 
-export function Overview({ onShowBatches }: Props) {
+export function Overview({ onShowBatches, onShowScoreFlow }: Props) {
   const series = useQuery({
     queryKey: ['oj-series', 30],
     queryFn: () => fetchOpenJudgeSeries(30),
@@ -119,9 +120,14 @@ export function Overview({ onShowBatches }: Props) {
             </div>
           ))}
         </div>
-        <button type="button" className="primary-btn" onClick={onShowBatches}>
-          看批次明细
-        </button>
+        <div className="tag-row">
+          <button type="button" className="primary-btn" onClick={onShowBatches}>
+            看批次明细
+          </button>
+          <button type="button" className="oj-link-btn" onClick={onShowScoreFlow}>
+            看评分流程
+          </button>
+        </div>
       </section>
 
       <section className="panel">

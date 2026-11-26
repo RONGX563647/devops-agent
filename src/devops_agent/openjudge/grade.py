@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,6 +28,11 @@ from devops_agent.openjudge.explain import (
     total_score,
     write_skip_entries,
 )
+from devops_agent.openjudge.judge_model import judge_model as judge_model
+from devops_agent.openjudge.rubric_gate import frozen_rubric_items as _frozen_rubric_items
+from devops_agent.openjudge.rubric_gate import rubric_gate as rubric_gate
+from devops_agent.openjudge.rubric_gate import rubric_sha as rubric_sha
+from devops_agent.openjudge.rubric_gate import rubric_template as _rubric_template
 from devops_agent.openjudge.rulegate import rule_passed, run_checks, violations
 from devops_agent.openjudge.trace import TraceRecord
 
@@ -119,6 +123,7 @@ class JudgeSpec:
     weight: float
     low: float
     high: float
+    rubric: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +149,7 @@ def load_plan(path: Path | None = None) -> Plan:
             weight=float(spec.get("weight", 0)),
             low=float(scale[0]),
             high=float(scale[1]),
+            rubric=str(spec.get("rubric", "")),
         )
     total = sum(spec.weight for spec in judges.values())
     if abs(total - 1.0) > 1e-6:
@@ -155,52 +161,14 @@ def plan_sha(plan: Plan) -> str:
     import hashlib
 
     blob = json.dumps(
-        {key: (s.grader, s.weight, s.low, s.high) for key, s in plan.judges.items()},
+        {key: (s.grader, s.weight, s.low, s.high, s.rubric) for key, s in plan.judges.items()},
         sort_keys=True,
     )
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
-def judge_model(name: str = "") -> Any:
-    """按现有网关构造裁判模型；不用 Qwen / DashScope 专属 SDK。
-
-    模型名的取值顺序：显式参数 > 界面配置（`oj_settings.judge_model`）> 环境变量。
-    界面能换裁判是刻意的：裁判与被测模型同源时会系统性放水，而「换个裁判再看看」
-    过去要改环境变量重启进程，代价高到没人会真去做。
-    """
-    try:
-        from openjudge.models import OpenAIChatModel
-    except ImportError as exc:  # pragma: no cover - 取决于可选依赖
-        raise ConfigError("未安装 py-openjudge：uv pip install py-openjudge==0.2.5") from exc
-    from devops_agent.openjudge import settings
-
-    api_key = os.environ.get("DEVOPS_AGENT_API_KEY", "").strip()
-    base_url = os.environ.get("DEVOPS_AGENT_BASE_URL", "").strip()
-    model = name.strip() or settings.resolved()["judge_model"]
-    missing = [
-        label
-        for label, value in (
-            ("DEVOPS_AGENT_API_KEY", api_key),
-            ("DEVOPS_AGENT_BASE_URL", base_url),
-            ("裁判模型（界面「用例与模型」或 DEVOPS_AGENT_MODEL）", model),
-        )
-        if not value
-    ]
-    if missing:
-        raise ConfigError(f"缺少配置: {', '.join(missing)}")
-    # temperature 不是所有 OpenAI 兼容网关都接受，统一走 client_args 透传会 400；
-    # 计划里不写温度，使用服务端默认，兼容矩阵记录在 docs/openjudge.md。
-    return OpenAIChatModel(
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-        max_retries=3,
-        timeout=90.0,
-    )
-
-
 def _build_grader(spec: JudgeSpec, model: Any) -> Any:
-    """按 plan 里的类名构造 Grader；未知类名在加载期就报错，不留假字段。"""
+    """按 plan 里的类名构造 Grader；未知类名与未冻结 rubric 都在加载期报错。"""
     from openjudge.graders.agent.action.action_loop import ActionLoopDetectionGrader
     from openjudge.graders.agent.tool.tool_parameter_check import ToolParameterCheckGrader
     from openjudge.graders.agent.tool.tool_selection import ToolSelectionGrader
@@ -209,17 +177,40 @@ def _build_grader(spec: JudgeSpec, model: Any) -> Any:
     from openjudge.graders.common.relevance import RelevanceGrader
     from openjudge.models.schema.prompt_template import LanguageEnum
 
+    items = _frozen_rubric_items(spec.rubric) if spec.rubric else []
+    if items and spec.grader == "ActionLoopDetectionGrader":
+        raise ConfigError("ActionLoopDetectionGrader 不支持 rubric 注入")
+    template = None
+    if items:
+        defaults = {
+            "CorrectnessGrader": CorrectnessGrader,
+            "RelevanceGrader": RelevanceGrader,
+            "InstructionFollowingGrader": InstructionFollowingGrader,
+            "ToolSelectionGrader": ToolSelectionGrader,
+            "ToolParameterCheckGrader": ToolParameterCheckGrader,
+        }
+        source = defaults.get(spec.grader)
+        if source is None:
+            raise ValueError(f"plan 中未知 Grader: {spec.grader}")
+        template = _rubric_template(source.DEFAULT_TEMPLATE, items)
+
     if spec.grader == "ActionLoopDetectionGrader":
         return ActionLoopDetectionGrader()
     table = {
-        "CorrectnessGrader": lambda: CorrectnessGrader(model=model, language=LanguageEnum.ZH),
-        "RelevanceGrader": lambda: RelevanceGrader(model=model, language=LanguageEnum.ZH),
-        "InstructionFollowingGrader": lambda: InstructionFollowingGrader(
-            model=model, language=LanguageEnum.ZH
+        "CorrectnessGrader": lambda: CorrectnessGrader(
+            model=model, language=LanguageEnum.ZH, template=template
         ),
-        "ToolSelectionGrader": lambda: ToolSelectionGrader(model=model, language=LanguageEnum.ZH),
+        "RelevanceGrader": lambda: RelevanceGrader(
+            model=model, language=LanguageEnum.ZH, template=template
+        ),
+        "InstructionFollowingGrader": lambda: InstructionFollowingGrader(
+            model=model, language=LanguageEnum.ZH, template=template
+        ),
+        "ToolSelectionGrader": lambda: ToolSelectionGrader(
+            model=model, language=LanguageEnum.ZH, template=template
+        ),
         "ToolParameterCheckGrader": lambda: ToolParameterCheckGrader(
-            model=model, language=LanguageEnum.ZH
+            model=model, language=LanguageEnum.ZH, template=template
         ),
     }
     builder = table.get(spec.grader)
@@ -342,6 +333,7 @@ async def grade_traces(
     model: Any | None = None,
     judge: bool = True,
     judge_model_name: str = "",
+    judge_gate: bool = True,
 ) -> list[dict[str, Any]]:
     """对轨迹逐条判分；`judge=False` 只跑规则门禁（离线 PR 用）。"""
     active_plan = plan or load_plan()
@@ -370,7 +362,7 @@ async def grade_traces(
 
     # step2: judge=False 到此为止
     if not judge:
-        _finish(results)
+        _finish(results, judge_gate=judge_gate)
         return results
 
     # step3: 需裁判则构造模型，缺配置抛 ConfigError
@@ -378,11 +370,11 @@ async def grade_traces(
         model = judge_model(judge_model_name)
     # step4: 语义分并回后算 passed
     await _apply_judge(active_plan, model, cases, traces, results)
-    _finish(results)
+    _finish(results, judge_gate=judge_gate)
     return results
 
 
-def _finish(results: list[dict[str, Any]]) -> None:
+def _finish(results: list[dict[str, Any]], *, judge_gate: bool = True) -> None:
     """合并规则与语义结论，得出单条用例是否通过。
 
     单条门槛 0.60 而不是 0.75：裁判与被测模型同源（deepseek-v4.1-flash），
@@ -393,9 +385,12 @@ def _finish(results: list[dict[str, Any]]) -> None:
     for result in results:
         judged = result["judge"]
         result["judge_norm"] = total_score(judged) if judged else None
-        result["passed"] = bool(result["rule_passed"]) and (
-            result["judge_norm"] is None or result["judge_norm"] >= PASS_JUDGE
+        judge_ok = (
+            not judge_gate
+            or result["judge_norm"] is None
+            or result["judge_norm"] >= PASS_JUDGE
         )
+        result["passed"] = bool(result["rule_passed"]) and judge_ok
 
 
 _JUDGE_GROUPS = ("content", "instruction", "tool", "loop")

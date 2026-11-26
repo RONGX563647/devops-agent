@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchOpenJudgeBatch,
   fetchOpenJudgeBatches,
+  fetchOpenJudgeCalibration,
   fetchOpenJudgeCase,
   fetchOpenJudgeCaseDocument,
   fetchOpenJudgeLibrary,
@@ -27,6 +28,7 @@ vi.mock('../api/client', () => ({
   fetchOpenJudgeSuites: vi.fn(),
   fetchOpenJudgeBatches: vi.fn(),
   fetchOpenJudgeBatch: vi.fn(),
+  fetchOpenJudgeCalibration: vi.fn(),
   fetchOpenJudgeCases: vi.fn(),
   fetchOpenJudgeCase: vi.fn(),
   fetchOpenJudgeCompare: vi.fn(),
@@ -49,6 +51,7 @@ const mockSeries = vi.mocked(fetchOpenJudgeSeries);
 const mockSuites = vi.mocked(fetchOpenJudgeSuites);
 const mockBatches = vi.mocked(fetchOpenJudgeBatches);
 const mockBatch = vi.mocked(fetchOpenJudgeBatch);
+const mockCalibration = vi.mocked(fetchOpenJudgeCalibration);
 const mockCases = vi.mocked(fetchOpenJudgeCases);
 const mockCompare = vi.mocked(fetchOpenJudgeCompare);
 const mockCoverage = vi.mocked(fetchOpenJudgeCoverage);
@@ -157,6 +160,13 @@ function makeScoringConfig() {
       A: { pass_rate: 0.6, judge: 0.6, min_n: 10 },
       B: { pass_rate: 0.6, judge: 0.6, min_n: 10, max_violations: 0 },
     },
+    gates: {
+      review: { total: 90, approved: 85, pending: 5, legacy: 70, pending_ids: ['a-new'] },
+      rubric: {
+        ref: 'repo_qa_quality@v1', name: 'repo_qa_quality', version: 'v1',
+        sha: 'rubric123456789', status: 'frozen', reviewer: 'liu', ready: true,
+      },
+    },
   };
 }
 
@@ -181,6 +191,7 @@ beforeEach(() => {
   mockSuites.mockReset();
   mockBatches.mockReset();
   mockBatch.mockReset();
+  mockCalibration.mockReset();
   mockCases.mockReset();
   mockCompare.mockReset();
   mockCoverage.mockReset();
@@ -229,6 +240,13 @@ beforeEach(() => {
   });
   mockBatches.mockResolvedValue({ items: [makeOjBatch()], total: 1 });
   mockBatch.mockResolvedValue(makeOjBatch());
+  mockCalibration.mockResolvedValue({
+    checked: true,
+    valid: false,
+    missing: ['correctness'],
+    required_n: 100,
+    required_spearman: 0.7,
+  });
   mockCase.mockResolvedValue(makeCaseDetail());
   mockScoringConfig.mockResolvedValue(makeScoringConfig());
   mockCases.mockResolvedValue({
@@ -387,10 +405,28 @@ describe('Quality 三个视图', () => {
     fireEvent.click(screen.getByText('运行与批次'));
 
     expect(await screen.findByText('评分流程')).toBeTruthy();
-    fireEvent.click(screen.getByText('展开依据'));
+    const toggle = screen.getByRole('button', { name: '展开依据' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(toggle);
     expect(await screen.findByText('归一化合成')).toBeTruthy();
     expect(screen.getByText(/判分方案 oj-plan-v1/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: '收起依据' }).getAttribute('aria-expanded')).toBe('true');
     expect(mockScoringConfig).toHaveBeenCalled();
+  });
+
+  it('评分流程展示三道门禁，未校准只报告不参与通过判定', async () => {
+    renderQuality();
+    fireEvent.click(screen.getByText('运行与批次'));
+
+    expect(await screen.findByText('可信度门禁')).toBeTruthy();
+    expect(screen.getByText('用例审核')).toBeTruthy();
+    expect(screen.getByText('已审 85/90')).toBeTruthy();
+    expect(screen.getByText('rubric 冻结')).toBeTruthy();
+    expect(screen.getByText('已冻结 repo_qa_quality@v1')).toBeTruthy();
+    expect(screen.getByText('裁判校准')).toBeTruthy();
+    expect(screen.getByText('未校准')).toBeTruthy();
+    expect(screen.getByText(/缺 correctness/)).toBeTruthy();
+    expect(mockCalibration).toHaveBeenCalled();
   });
 
   it('失败列表可定位到固定抽屉并在四个 Tab 间切换', async () => {
@@ -401,7 +437,7 @@ describe('Quality 三个视图', () => {
     expect(await screen.findByRole('dialog', { name: '用例诊断' })).toBeTruthy();
     expect(screen.getByText('判定依据')).toBeTruthy();
     expect(screen.getByRole('tab', { name: '规则断言' }).getAttribute('aria-selected')).toBe('true');
-    fireEvent.click(screen.getByText('语义裁判'));
+    fireEvent.click(screen.getByRole('tab', { name: '语义裁判' }));
     expect(await screen.findByText('CorrectnessGrader')).toBeTruthy();
     fireEvent.click(screen.getByText('轨迹证据'));
     expect(await screen.findByText('对话轮次（1）')).toBeTruthy();

@@ -1,6 +1,6 @@
 # SPEC-0008：质量前端可用性改造
 
-- 状态：待评审（仅方案，未实施、未提交）
+- 状态：已实施（PR #104，squash 合并提交 `5fb60d1`）；本文件保留原方案与证据，实施差异见文末“实施记录”。
 - 范围：`web/src/pages/quality/**`、`web/src/styles.css`（OpenJudge 段）、
   `web/src/api/client.ts`、`web/src/types/openjudge.ts`；P0-1 另需
   `src/devops_agent/openjudge/{api,service,casestore}.py`；P0-4 另需
@@ -328,3 +328,11 @@ flowchart TD
 6. P0-1（跨前后端契约，放最后，单独一个 PR 便于回归）
 
 每一步独立 PR、独立 CI；P0-1 与其余前端改动分开，避免契约问题污染纯 UI 改动。P0-4 必须后端先行：先有可解释的判定依据，再接前端展示，避免 UI 自己造一套分数口径。
+
+## 8. 实施记录
+
+- 实施范围：P0-1 ~ P0-4、P1-1 ~ P1-2、P2-1 全部完成，统一在 PR #104（合并提交 `5fb60d1`）落地，未按原建议拆成多个 PR。
+- 后端：`GET /api/openjudge/scoring-config`、`case_ids` 精确选例、`explain.py` / `migrations.py`、跳过项显式化、verdict reasons、repro 命令修正均已实现。
+- 前端：RunBar 用例多选、结果区聚焦、固定诊断抽屉、五阶段评分流程、四 Tab 证据链、失败定位、批次筛选与 URL query、verdict 文案统一、高度链与滚动修复均已实现。
+- 差异：评分流程面板只在「运行与批次」视图可见；本轮 SPEC-0009 增加全局固定入口与 `focus=scoreflow` 深链，修正这一可见性缺口。
+- 验证：Python coverage 93.1%、complexity max CC 10；前端 340 tests、85.42% lines、build 通过；PR #104 的 `quality` / `frontend` CI 均通过。

@@ -430,3 +430,5 @@ class _Stub:
     def __init__(self, case_id: str, track: str) -> None:
         self.id = case_id
         self.track = track
+        self.review_status = "approved"
+        self.reviewer = "tester"

@@ -16,7 +16,23 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from devops_agent.openjudge import explain, grade, migrations
+from devops_agent.openjudge import calibration, explain, grade, migrations
+from devops_agent.openjudge import compare as compare_lib
+from devops_agent.openjudge.calibration import (
+    MIN_CALIBRATION_N as MIN_CALIBRATION_N,
+)
+from devops_agent.openjudge.calibration import (
+    MIN_CALIBRATION_SPEARMAN as MIN_CALIBRATION_SPEARMAN,
+)
+from devops_agent.openjudge.calibration import (
+    active_calibration as active_calibration,
+)
+from devops_agent.openjudge.calibration import (
+    calibration_gate as calibration_gate,
+)
+from devops_agent.openjudge.calibration import (
+    insert_calibration as insert_calibration,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DB = _REPO_ROOT / "workspace" / "evals" / "openjudge.db"
@@ -29,6 +45,7 @@ CREATE TABLE IF NOT EXISTS oj_batches (
     plan_sha TEXT NOT NULL DEFAULT '',
     rubric_sha TEXT NOT NULL DEFAULT '',
     prompt_sha TEXT NOT NULL DEFAULT '',
+    calibration_id INTEGER,
     model TEXT NOT NULL DEFAULT '',
     oj_version TEXT NOT NULL DEFAULT '',
     config_id TEXT NOT NULL DEFAULT '',
@@ -67,6 +84,7 @@ CREATE TABLE IF NOT EXISTS oj_rubrics (
     sha TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'draft',
     reviewer TEXT NOT NULL DEFAULT '',
+    reviewed_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     meta_json TEXT NOT NULL DEFAULT '{}'
 );
@@ -94,7 +112,7 @@ CREATE TABLE IF NOT EXISTS oj_settings (
     payload_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL DEFAULT ''
 );
-"""
+""" + calibration.SCHEMA
 
 
 def now_iso() -> str:
@@ -139,13 +157,15 @@ def insert_batch(
     verdict: str,
     summary: dict[str, Any],
     refs_sha: str = "",
+    calibration_id: int | None = None,
 ) -> int:
     cursor = conn.execute(
         """
         INSERT INTO oj_batches (
-            suite_sha, refs_sha, plan_sha, rubric_sha, prompt_sha, model, oj_version,
-            config_id, started_at, finished_at, status, verdict, summary_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?, ?)
+            suite_sha, refs_sha, plan_sha, rubric_sha, prompt_sha, calibration_id,
+            model, oj_version, config_id, started_at, finished_at, status, verdict,
+            summary_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?, ?)
         """,
         (
             suite_sha,
@@ -153,6 +173,7 @@ def insert_batch(
             plan_sha,
             rubric_sha,
             prompt_sha,
+            calibration_id,
             model,
             oj_version,
             config_id,
@@ -216,10 +237,12 @@ def insert_rubric(
     reviewer: str,
     meta: dict[str, Any] | None = None,
 ) -> int:
+    payload = meta or {}
     cursor = conn.execute(
         """
-        INSERT INTO oj_rubrics (name, version, sha, status, reviewer, created_at, meta_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO oj_rubrics
+            (name, version, sha, status, reviewer, reviewed_at, created_at, meta_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             name,
@@ -227,8 +250,9 @@ def insert_rubric(
             sha,
             status,
             reviewer,
+            str(payload.get("reviewed_at", "")),
             datetime.now(UTC).isoformat(),
-            json_dumps(meta or {}),
+            json_dumps(payload),
         ),
     )
     conn.commit()
@@ -345,71 +369,15 @@ def rubrics(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return rows
 
 
-def _compare_reasons(base: dict[str, Any], head: dict[str, Any]) -> list[str]:
-    reasons: list[str] = []
-    for key, label in (
-        ("suite_sha", "题库"),
-        ("plan_sha", "判分计划"),
-        ("rubric_sha", "Rubric"),
-        ("refs_sha", "参考答案"),
-    ):
-        if base.get(key) != head.get(key):
-            reasons.append(f"{label}变化（{key}）")
-    return reasons
-
-
-def _track_deltas(base_tracks: dict[str, Any], head_tracks: dict[str, Any]) -> dict[str, Any]:
-    tracks: dict[str, Any] = {}
-    for track in sorted(set(base_tracks) | set(head_tracks)):
-        old = base_tracks.get(track, {})
-        new = head_tracks.get(track, {})
-        tracks[track] = {
-            "base_pass_rate": old.get("pass_rate"),
-            "head_pass_rate": new.get("pass_rate"),
-            "delta": (new.get("pass_rate", 0) - old.get("pass_rate", 0)) if old and new else None,
-            "base_judge": old.get("judge_avg"),
-            "head_judge": new.get("judge_avg"),
-        }
-    return tracks
-
-
-def _case_counts(batch: dict[str, Any]) -> int:
-    return int(batch["summary"].get("kpi", {}).get("cases", 0) or 0)
-
-
-def _flips(base_cases: dict[str, Any], head_cases: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        {"case_id": case_id, "base": base_cases[case_id], "head": head_cases[case_id]}
-        for case_id in sorted(set(base_cases) & set(head_cases))
-        if base_cases[case_id] != head_cases[case_id]
-    ]
-
-
 def compare(conn: sqlite3.Connection, base_id: int, head_id: int) -> dict[str, Any] | None:
     """两个批次的赛道 delta、MDE、可比性与翻转用例。"""
-    # step1: 两批次都要读到，缺一返回 None
     base = get_batch(conn, base_id)
     head = get_batch(conn, head_id)
     if base is None or head is None:
         return None
-    # step2: 比四个指纹，变化即不可比
-    reasons = _compare_reasons(base, head)
-    # step3: mde 取 1/最小样本量
-    smallest = min(_case_counts(base), _case_counts(head))
     base_cases = {row["case_id"]: row["passed"] for row in _passed_rows(conn, base_id)}
     head_cases = {row["case_id"]: row["passed"] for row in _passed_rows(conn, head_id)}
-    # step4: 逐赛道算通过率变化 + 列翻转用例
-    return {
-        "base": base_id,
-        "head": head_id,
-        "comparable": not reasons,
-        "not_comparable_reasons": reasons,
-        "mde": 1.0 / smallest if smallest else None,
-        "tracks": _track_deltas(
-            base["summary"].get("tracks", {}), head["summary"].get("tracks", {})
-        ),
-        "flips": _flips(base_cases, head_cases),
-    }
+    return compare_lib.compare_detail(base, head, base_cases, head_cases)
 
 
 def _passed_rows(conn: sqlite3.Connection, batch_id: int) -> list[dict[str, Any]]:

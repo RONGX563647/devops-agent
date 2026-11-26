@@ -1,16 +1,12 @@
 """FastAPI 应用装配（composition root）—— 只做注入与挂载。
 
-本模块最后装配：各路由模块不 import 它，依赖方向始终是「路由 → app」。
+装配根最后执行：路由模块不 import 它，依赖方向始终是「路由 → app」。
+进程级单例（运行时 / 设置 / 会话注册表）经 `create_app()` 注入，而非 import 期副作用，
+测试因此能拿独立实例；生产入口仍是模块级 `app = create_app()`。
 
-为什么有 `create_app()`：进程级单例（运行时、设置、会话注册表）应该由装配根注入，
-而不是靠 import 期的模块副作用。之前测试只能 `app.state.runtime = ...` 再手工复位
-三个 state 键，一旦漏复位就污染后续用例；现在测试可以 `create_app(runtime=...)`
-拿一个干净实例，生产入口仍是模块级 `app = create_app()`。
-
-三处刻意的顺序约束：
-1. `load_env()` 只在这里调一次，且必须在选运行时之前 —— 否则凭据读不到；
-2. 不把 `load_env()` 放进 `select_runtime()` 内部 —— 否则测试里 monkeypatch.delenv
-   会被 .env 重新填回来；
+三处顺序约束：
+1. `load_env()` 只调一次，且早于任何「读 env 做决定」的代码；
+2. 不把它放进 `select_runtime()` —— 否则测试里 monkeypatch.delenv 会被 .env 填回；
 3. 启动告警在挂完路由之后，失败不影响服务可用。
 """
 

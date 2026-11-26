@@ -85,6 +85,35 @@ BUILTIN_DENY  # builtin deny 规则（Bash / Write / Edit）
 不登记的话，`accept_edits` 档写文件会被判成「工作区外」→ 每次都要确认，
 用户看到的是「明明选了工作区可写，写个文件还要问」。
 
+### 敏感路径的三道防线
+
+只靠声明式规则不够，这是实测结论（[SPEC-0010](../specs/0010-permission-single-source.md) §1.2）：
+没有任何单条 glob 能覆盖全部拼写 —— `.git/config` 的相对形式所有候选都漏、`.ENV`
+因为大小写全漏、`fnmatch` 的 `*` 还跨分隔符。
+
+| 层 | 位置 | 职责 | 命中后 |
+|---|---|---|---|
+| ① 声明式 | `governance/model.py` 生成 | 常见写法在引擎层就拒，省一次工具调用 | `deny` |
+| ② 中间件 | `tools/guard.py` | `realpath` + 大小写 + 分隔符归一后按路径段判 | `ToolResultState.DENIED`，**不执行工具** |
+| ③ Bash 分词 | 同上，`shlex` | 逐个 token 判敏感路径 | 同上 |
+
+- `SENSITIVE_FILES` / `SENSITIVE_DIRS` 在 [governance/paths.py](../../src/devops_agent/governance/paths.py)，
+  是框架 `DEFAULT_DANGEROUS_FILES` 的**超集**（`test_sensitive_lists_cover_framework_defaults`
+  负责对账：框架加了新名字，那条测试会红）。
+- 守卫挂在 `build_toolkit_for` 里，**默认生效**：靠调用方记得传等于迟早漏挂一条路。
+- `Grep` 不整体拒绝，只注入 `--glob !<name>` 排除敏感文件 —— 拒搜索太粗，
+  「结果里带出 `.env` 内容」才是要防的事。
+- `readonly` 档额外把「工作区内」当硬边界（`scope=readonly`）。**Bash 侧不做这个边界**：
+  `/bin/sh`、`/usr/bin/env` 这类绝对路径是正常执行的一部分，按根边界判会把只读档打废；
+  真正的边界靠容器/只读挂载，与「这是防误操作 UX 层」的定位一致。
+
+### bypass 档为什么要把 danger 命令写进 deny
+
+`BYPASS` 按契约跳过所有 tool safety-ask（`rm -rf /`、写 `~/.bashrc`、命令注入模式），
+只剩 deny/ask 规则。所以 `unrestricted` 档必须自己 deny：`DANGER_COMMANDS` 与
+`INTERPRETER_FLAGS`（`python -c` / `bash -c` / `node -e` …）都带 `scope="container"`，
+只在放开档装配 —— 别档保持框架的 ASK，否则日常 `python -c` 会直接变死。
+
 ## 4. 工具集与执行面
 
 工具名唯一事实源是 [tools/names.py](../../src/devops_agent/tools/names.py)（零依赖，
@@ -95,9 +124,9 @@ READONLY_TOOL_NAMES = ("bash", "read", "glob", "grep")
 WRITE_TOOL_NAMES = ("write", "edit")
 ```
 
-- `build_toolkit_for(names, workdir, middlewares)` 是档位切换唯一入口。
+- `build_toolkit_for(names, workdir, middlewares, *, scope)` 是档位切换唯一入口。
   未知工具名抛 `ValueError`：静默跳过会把「放开档少了写工具」表现成
-  「权限切了但模型还是不写文件」。
+  「权限切了但模型还是不写文件」。`scope` 只影响敏感路径守卫是否把工作区当硬边界。
 - 每个工具**独占一个 `LocalBackend(workdir=cwd)`**。不给 backend 时框架自建
   `workdir=None` 的实例，相对路径回落到服务进程 cwd，表现为「Grep/Glob 不传 path 就搜错地方」。
 - shell 统一用内置 `Bash`：它按命令判定只读（`ls`/`cat`/`git status` 直接放行）；

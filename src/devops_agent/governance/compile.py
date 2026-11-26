@@ -21,7 +21,13 @@ from agentscope.permission import (
     PermissionRule,
 )
 
-from devops_agent.governance.model import ALLOW_PREFIXES, BUILTIN_DENY, PermissionProfile, Rule
+from devops_agent.governance.model import (
+    ALLOW_PREFIXES,
+    BUILTIN_DENY,
+    SCOPE_ORDER,
+    PermissionProfile,
+    Rule,
+)
 
 # 附加工作目录：原来写在 policy.yaml 的 `permission.working_directories`（永远是空列表）
 WORKDIRS_ENV = "DEVOPS_AGENT_WORKDIRS"
@@ -67,6 +73,16 @@ def _merge_deny_rules(
     return merged
 
 
+def _active_rules(profile: PermissionProfile) -> tuple[Rule, ...]:
+    """按生效下限过滤：`scope=container` 的规则只在放开档装配。
+
+    同一条 `rm -rf` 在 workspace 档必须留 ASK（框架的 safety-ask 会问人），在
+    bypass 档必须 DENY（那一档按契约跳过 safety-ask，Ask 不会有人回答）。
+    """
+    ceiling = SCOPE_ORDER[profile.scope]
+    return tuple(rule for rule in BUILTIN_DENY if SCOPE_ORDER[rule.scope] <= ceiling)
+
+
 def _allow_rules(profile: PermissionProfile) -> tuple[Rule, ...]:
     """档位的放行规则：只有 execute 档带命令白名单，其余档位为空。"""
     return tuple(
@@ -106,7 +122,7 @@ def compile_context(
         mode=PermissionMode(profile.mode),
         working_directories=_working_dirs(workdir),
         allow_rules=_to_rule_map(_allow_rules(profile)),
-        deny_rules=_merge_deny_rules(_to_rule_map(BUILTIN_DENY), extra_deny),
+        deny_rules=_merge_deny_rules(_to_rule_map(_active_rules(profile)), extra_deny),
         ask_rules={},
     )
 

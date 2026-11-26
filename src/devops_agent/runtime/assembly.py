@@ -164,7 +164,10 @@ def _build_agent(parts: RuntimeParts) -> RuntimeParts:
         system_prompt=parts.system_prompt,
         model=build_chat_model(enable_search=parts.web_search, params=parts.params),
         toolkit=build_toolkit_for(
-            parts.profile.tools, parts.workdir, middlewares=parts.toolkit_mws
+            parts.profile.tools,
+            parts.workdir,
+            middlewares=parts.toolkit_mws,
+            scope=parts.profile.scope,
         ),
         middlewares=[note_mw, CompressionMiddleware(sink)],
         context_config=build_context_config(parts.params),

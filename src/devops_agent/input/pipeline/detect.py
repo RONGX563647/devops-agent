@@ -1,7 +1,8 @@
 """引用候选识别：URL / 本地路径 / git 引用。
 
 顺序固定为 git → url → path：先认 .git 仓库，网址才不会把仓库地址当网页，
-路径再兜底。超过 MAX_REFERENCES 的部分直接丢弃，避免一条消息把预算吃光。
+路径再兜底。超过上限的部分直接丢弃，但丢弃的条数要写在阶段 detail 里——
+静默截断会让用户以为「8 个链接都读了」，模型也以为自己拿齐了。
 """
 
 from __future__ import annotations
@@ -12,9 +13,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Final
 
+from devops_agent.config import load_input
+
 from .model import KIND_LABELS, Reference, Stage, _elapsed_ms, _stage
 
-# 单条输入里最多解析的引用条数，避免一条消息挂 50 个链接把预算吃光
+# 默认上限，与 InputPolicy.max_references 一致；运行期一律读 config/input.yaml。
+# 保留常量是为了导出面（pipeline.__init__ 再导出）与对账测试。
 MAX_REFERENCES: Final = 5
 
 # 引用识别：git 必须先于 url 匹配，否则 xxx.git 会被当成普通网址
@@ -86,18 +90,26 @@ def _detect(text: str, root: Path | None) -> tuple[list[Reference], Stage]:
     """识别输入里的 URL / 本地路径 / git 引用（只登记，不读取）。
 
     顺序固定为 git → url → path：先认 .git 仓库，网址才不会把仓库地址当网页，
-    路径再兜底。超过 MAX_REFERENCES 的部分直接丢弃，避免一条消息把预算吃光。
+    路径再兜底。超过上限的部分丢弃，并在 detail 里写明丢了几条。
     """
     start = time.perf_counter()
+    limit = load_input().max_references
     refs: list[Reference] = []
     seen: set[str] = set()
+    dropped = 0
     for kind, value in _candidates(text, root):
-        if len(refs) >= MAX_REFERENCES or value in seen:
+        if value in seen:
             continue
         seen.add(value)
+        if len(refs) >= limit:
+            dropped += 1
+            continue
         refs.append(Reference(kind=kind, value=value))
 
     summary, detail = _ref_summary(refs)
+    if dropped:
+        note = f"另有 {dropped} 条超出上限未登记（max_references={limit}，见 config/input.yaml）"
+        detail = f"{detail}\n{note}".strip()
     return refs, _stage(
         "detect",
         status="ok" if refs else "skip",

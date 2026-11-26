@@ -1,0 +1,20 @@
+# 输入管线的抓取与体积上限（对应 src/devops_agent/config.py 的 InputPolicy）。
+#
+# 这些是「部署策略」而不是域知识：不同机器、不同网络环境需要不同的超时与体积。
+# 改这里不需要动代码；缺文件时回落 InputPolicy 的字段默认值，两边由
+# tests/unit/test_input_pipeline.py 的对账用例钉住。
+input:
+  # 单条远程抓取超时（秒）
+  fetch_timeout_seconds: 5.0
+  # 单条远程响应体上限（字节），超出部分截断
+  fetch_max_bytes: 524288          # 512 KiB
+  # 单个本地引用文件最多读取的字节数
+  max_file_bytes: 262144           # 256 KiB
+  # 单条输入最多登记的引用条数，防止一条消息把预算吃光
+  max_references: 5
+  # 重定向最多跟几跳（每跳都会重新校验目标地址）
+  max_redirects: 3
+  # 是否允许抓取内网 / 回环 / 链路本地地址。
+  # 默认 false：开启远程抓取后，服务端不该替谁去访问元数据服务（169.254.169.254）
+  # 或本机端口（127.0.0.1）。确需抓内网时再显式打开。
+  allow_private_addresses: false

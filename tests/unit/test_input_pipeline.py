@@ -1,12 +1,15 @@
 """输入解析管线单元测试：每个阶段的判定、计量与降级行为。"""
 
+import urllib.error
 from pathlib import Path
 
 import pytest
 
 from devops_agent import input as input_pkg
+from devops_agent.config import InputPolicy, load_input
 from devops_agent.input import pipeline as pipe
 from devops_agent.input.attachments import Attachment
+from devops_agent.input.pipeline.fetch import _guard_url
 
 
 def _stage(prepared: pipe.PreparedInput, name: str) -> pipe.Stage:
@@ -108,7 +111,7 @@ def test_failed_reference_reaches_model_context(
         "讲解 https://example.com/x", workspace_root=tmp_path, remote_fetch=True
     )
     assert "### 本轮未能取到的材料" in prepared.text
-    assert "https://example.com/x → 抓取失败：TimeoutError" in prepared.text
+    assert "抓取失败：TimeoutError" in prepared.text
     assert "同一目标失败两次就停止尝试" in prepared.text
     compose = _stage(prepared, "compose")
     # 以前只拼成功材料，全失败等于原样透传 —— 模型完全不知道材料没拿到
@@ -165,10 +168,85 @@ def test_expand_fetches_remote_when_enabled(
 
 
 def test_expand_remote_disabled_by_default(tmp_path: Path) -> None:
+    """远程抓取关闭是「没尝试」，不是「失败」。
+
+    回归：这条以前断言 status == "error" —— 于是默认配置下每轮都显示
+    「1 条引用全部未取到」红灯，而模型那边又被刻意告知「什么都没缺」。
+    """
     prepared = pipe.prepare("总结 https://example.com/doc", workspace_root=tmp_path)
     expand = _stage(prepared, "expand")
-    assert expand.status == "error"
+    assert expand.status == "skip"
+    assert expand.summary == "未开启远程抓取，跳过 1 条 URL"
+    assert expand.failed == 0
+    assert prepared.degraded == 0
     assert "远程抓取未开启" in expand.detail
+
+
+def test_expand_all_failures_still_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """真尝试过的全失败仍然是 error：区分「没试」与「试了不行」。"""
+
+    def boom(url: str) -> str:
+        raise TimeoutError("timeout")
+
+    monkeypatch.setattr(pipe, "_fetch_text", boom)
+    prepared = pipe.prepare("看 https://example.com/a", workspace_root=tmp_path, remote_fetch=True)
+    expand = _stage(prepared, "expand")
+    assert expand.status == "error"
+    assert expand.failed == 1
+    assert expand.summary == "1 条引用全部未取到"
+
+
+def test_expand_mixed_skip_and_success_is_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """部分跳过只是附注：本地引用取到了，阶段就该是 ok。"""
+    (tmp_path / "ok.md").write_text("有效内容", encoding="utf-8")
+    prepared = pipe.prepare("看 ./ok.md 和 https://example.com/a", workspace_root=tmp_path)
+    expand = _stage(prepared, "expand")
+    assert expand.status == "ok"
+    assert expand.summary == "1 条成功 · 1 条跳过"
+    assert expand.failed == 0
+
+
+def test_http_error_reports_status_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """失败原因要可行动：至少给出 HTTP 状态码，而不是只有异常类名。"""
+
+    def boom(url: str) -> str:
+        raise urllib.error.HTTPError(url, 404, "Not Found", hdrs=None, fp=None)
+
+    monkeypatch.setattr(pipe, "_fetch_text", boom)
+    prepared = pipe.prepare("看 https://example.com/x", workspace_root=tmp_path, remote_fetch=True)
+    expand = _stage(prepared, "expand")
+    assert "HTTP 404" in expand.detail
+
+
+def test_url_guard_rejects_loopback() -> None:
+    """开启远程抓取也不该替谁访问本机端口：地址守卫按解析到的 IP 判断。"""
+    with pytest.raises(ValueError, match="非公网地址"):
+        _guard_url("http://127.0.0.1:8080/admin", InputPolicy())
+
+
+def test_url_guard_rejects_non_http_scheme() -> None:
+    with pytest.raises(ValueError, match="http/https"):
+        _guard_url("file:///etc/passwd", InputPolicy())
+
+
+def test_url_guard_allows_private_when_explicitly_configured() -> None:
+    _guard_url("http://127.0.0.1:8080/admin", InputPolicy(allow_private_addresses=True))
+
+
+def test_detect_reports_truncation(tmp_path: Path) -> None:
+    """静默截断会让用户以为全都读了：detail 必须写明还有几条没登记。"""
+    text = " ".join(f"https://example.com/{i}" for i in range(pipe.MAX_REFERENCES + 2))
+    prepared = pipe.prepare(text, workspace_root=tmp_path)
+    detect = _stage(prepared, "detect")
+    assert detect.items == pipe.MAX_REFERENCES
+    assert "另有 2 条超出上限未登记" in detect.detail
+
+
+def test_input_policy_matches_checked_in_yaml() -> None:
+    """input.yaml 与 InputPolicy 的默认值必须一致：两边各写一份，靠这条对账防漂移。"""
+    assert load_input() == InputPolicy()
 
 
 def test_redact_replaces_secrets_in_text_and_blocks(tmp_path: Path) -> None:

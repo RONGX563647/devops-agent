@@ -365,6 +365,38 @@ def load_gateway() -> GatewayPolicy:
     return GatewayPolicy.model_validate(data.get("gateway", data))
 
 
+class InputPolicy(BaseModel):
+    """输入管线的抓取与体积上限（input.yaml 的 input 段）。
+
+    这些以前是 `input/pipeline/fetch.py` 里的模块常量。放进配置的理由与网关一致：
+    超时与体积属于「部署环境」而不是「算法」—— 内网代理慢、抓大站点、CI 沙箱受限，
+    每种环境想要的数不一样，改配置不该改代码。
+    """
+
+    # 单条远程抓取超时（秒）
+    fetch_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    # 单条远程响应体上限（字节）
+    fetch_max_bytes: int = Field(default=512 * 1024, ge=4096, le=32 * 1024 * 1024)
+    # 单个本地引用文件最多读取的字节数
+    max_file_bytes: int = Field(default=256 * 1024, ge=4096, le=32 * 1024 * 1024)
+    # 单条输入最多登记的引用条数
+    max_references: int = Field(default=5, ge=1, le=50)
+    # 重定向最多跟几跳（每一跳都会重新校验目标地址）
+    max_redirects: int = Field(default=3, ge=0, le=10)
+    # 是否允许抓取内网 / 回环 / 链路本地地址；默认拒绝（防服务端替人访问本地服务）
+    allow_private_addresses: bool = False
+
+
+@cache
+def load_input() -> InputPolicy:
+    """加载并缓存输入管线策略（input.yaml 的 input 段）。
+
+    缺文件时回落内置默认，与其余 loader 同一降级策略。
+    """
+    data = _load_yaml("input.yaml")
+    return InputPolicy.model_validate(data.get("input", data))
+
+
 def clear_cache() -> None:
     """测试中切换配置目录后调用。"""
     load_policy.cache_clear()
@@ -372,3 +404,4 @@ def clear_cache() -> None:
     load_health.cache_clear()
     load_model.cache_clear()
     load_gateway.cache_clear()
+    load_input.cache_clear()

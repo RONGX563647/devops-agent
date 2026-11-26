@@ -22,12 +22,12 @@ from __future__ import annotations
 
 from .budget import MATERIAL_SHARE, MAX_TOTAL_CHARS, MIN_MATERIAL_CHARS
 from .detect import MAX_REFERENCES
+from .egress import fetch_text as _fetch_text
 from .fetch import (
     FETCH_MAX_BYTES,
     FETCH_TIMEOUT_SECONDS,
     MAX_FILE_BYTES,
     REMOTE_FETCH_OFF,
-    _fetch_text,
     _html_to_text,
 )
 from .model import (

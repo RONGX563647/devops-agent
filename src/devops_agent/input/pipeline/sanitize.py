@@ -91,9 +91,7 @@ def capabilities() -> dict[str, Any]:
     reason = ""
     if degraded:
         missing = [
-            name
-            for name, ok in (("nh3", has_nh3), ("trafilatura", has_trafilatura))
-            if not ok
+            name for name, ok in (("nh3", has_nh3), ("trafilatura", has_trafilatura)) if not ok
         ]
         reason = f"未安装 sanitize extra（缺 {', '.join(missing)}），已退化为标签剥离"
     return {

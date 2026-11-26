@@ -9,7 +9,8 @@ from devops_agent import input as input_pkg
 from devops_agent.config import InputPolicy, load_input
 from devops_agent.input import pipeline as pipe
 from devops_agent.input.attachments import Attachment
-from devops_agent.input.pipeline.fetch import _expand_summary, _guard_url
+from devops_agent.input.pipeline.egress import guard_url as _guard_url
+from devops_agent.input.pipeline.fetch import _expand_summary
 
 
 def _stage(prepared: pipe.PreparedInput, name: str) -> pipe.Stage:

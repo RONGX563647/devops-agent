@@ -14,13 +14,13 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 from devops_agent.gateway.contract import PENDING_STATUS, SSE_HEADERS, SSE_MEDIA_TYPE
-from devops_agent.gateway.deps import profile_or_403, registry_of, settings_of
-from devops_agent.gateway.ending import RunLimits
 from devops_agent.gateway.errors import ErrorCode, http_error
-from devops_agent.gateway.lease import claim_entry, hold
-from devops_agent.gateway.ports import PendingRun, PendingStore, RuntimePort
-from devops_agent.gateway.run import resume_turn
-from devops_agent.gateway.schemas import ConfirmRequest
+from devops_agent.gateway.routes.deps import profile_or_403, registry_of, settings_of
+from devops_agent.gateway.routes.schemas import ConfirmRequest
+from devops_agent.gateway.turn.ending import RunLimits
+from devops_agent.gateway.turn.lease import claim_entry, hold
+from devops_agent.gateway.turn.orchestrate import resume_turn
+from devops_agent.gateway.turn.ports import PendingRun, PendingStore, RuntimePort
 from devops_agent.governance.model import PermissionProfile
 from devops_agent.governance.presets import UnknownProfile, default_profile, resolve
 from devops_agent.observability.recorder import utc_now

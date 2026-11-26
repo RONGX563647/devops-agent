@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from devops_agent.gateway import input_prep
+from devops_agent.gateway.turn import input_prep
 
 
 class _BrokenStore:

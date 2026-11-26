@@ -3,11 +3,11 @@
 ## 1. 分层
 
 ```
-                     ┌──────────────────────────────────────────┐
-  HTTP / SSE   →     │ gateway/  路由(stream/confirm/sessions/health) │
-                     │   编排 run/lease/ending  ┊ 契约 contract/errors │
-                     │   端口 ports/settings    ┊ 保活 sse            │
-                     └───────────────┬──────────────────────────┘
+                     ┌────────────────────────────────────────────┐
+  HTTP / SSE   →     │ gateway/routes/  端点 + 请求体 + 依赖取用   │
+                     │ gateway/turn/    编排·租约·收尾·端口·保活   │
+                     │ gateway/叶子     contract / errors / settings│
+                     └───────────────┬────────────────────────────┘
                                      │ 只依赖协议
                      ┌───────────────▼──────────────────────────┐
    编排层             │ runtime/runtime.py  AgentRuntime 协议     │
@@ -43,16 +43,16 @@
 
 | 步骤 | 代码位置 | 说明 |
 |---|---|---|
-| 1. 解析请求 | `gateway/schemas.RunRequest` | `session_id` / `user_input` / `attachments` / `permission` / `web_search` |
-| 2. 档位校验 | `gateway/deps.profile_or_403` | 未开放档 → 403 `permission_not_available`，不静默降级 |
-| 3. 会话取用 | `gateway/lease.claim_entry` → `SessionRegistry.acquire` | 命中复用；档位或联网开关变了就重建（从 `session_states` 快照） |
-| 4. 并发互斥 | `gateway/lease.claim_entry`（同步） | 同会话第二次请求 → 409 `session_busy`，必须在返回响应前判 |
+| 1. 解析请求 | `gateway/routes/schemas.RunRequest` | `session_id` / `user_input` / `attachments` / `permission` / `web_search` |
+| 2. 档位校验 | `gateway/routes/deps.profile_or_403` | 未开放档 → 403 `permission_not_available`，不静默降级 |
+| 3. 会话取用 | `gateway/turn/lease.claim_entry` → `SessionRegistry.acquire` | 命中复用；档位或联网开关变了就重建（从 `session_states` 快照） |
+| 4. 并发互斥 | `gateway/turn/lease.claim_entry`（同步） | 同会话第二次请求 → 409 `session_busy`，必须在返回响应前判 |
 | 5. 首帧心跳 | `gateway/contract.PING_FRAME` | 模型首 token 需 2–3 秒，先让代理确认流已建立 |
-| 6. 结清遗留挂起 | `gateway/run.settle_abandoned` | 上一轮停在 ASKING 时按**拒绝**结清，追跑上限来自 `settle_rounds` |
-| 7. 输入管线 | `gateway/input_prep.prepare_input` → `input.prepare()` | 7 阶段；帧推前端并进 recorder；只有 `prepared.text` 进模型 |
-| 8. 运行事件流 | `gateway/ports.RuntimePort.stream` → `AgentScopeRuntime.stream` | 框架事件 → `event_to_dict()` → dict |
-| 9. 收尾 | `gateway/run.finish_or_park` | 决策在 `ending.decide_ending`（纯函数）：有挂起 → `event: parked`；否则 `recorder.finish()` → `event: done` |
-| 10. finally | `gateway/lease.SessionLease.close` | 兜底终态 → 快照落库 → 放锁 → 补做被延迟的参数热替换 |
+| 6. 结清遗留挂起 | `gateway/turn/orchestrate.settle_abandoned` | 上一轮停在 ASKING 时按**拒绝**结清，追跑上限来自 `settle_rounds` |
+| 7. 输入管线 | `gateway/turn/input_prep.prepare_input` → `input.prepare()` | 7 阶段；帧推前端并进 recorder；只有 `prepared.text` 进模型 |
+| 8. 运行事件流 | `gateway/turn/ports.RuntimePort.stream` → `AgentScopeRuntime.stream` | 框架事件 → `event_to_dict()` → dict |
+| 9. 收尾 | `gateway/turn/orchestrate.finish_or_park` | 决策在 `ending.decide_ending`（纯函数）：有挂起 → `event: parked`；否则 `recorder.finish()` → `event: done` |
+| 10. finally | `gateway/turn/lease.SessionLease.close` | 兜底终态 → 快照落库 → 放锁 → 补做被延迟的参数热替换 |
 
 输入阶段失败不阻断对话：`input_prep.prepare_input` 捕获一切异常后返回 `None`，
 `payload` 保持原始输入。
@@ -61,26 +61,26 @@
 
 ### gateway/
 
-按「变更原因」切，不按技术分层切（ADR-0004）。路由模块的走样判据：**出现 `if` 分支或 `try`
-就说明有逻辑放错了层**。
+按「变更原因」切职责（ADR-0004），再按层分子包（ADR-0005）。路由模块的走样判据：
+**出现 `if` 分支或 `try`，就说明有逻辑放错了层**。
 
-| 文件 | 唯一职责 | 什么时候会改 |
+| 位置 | 唯一职责 | 什么时候会改 |
 |---|---|---|
-| `app.py` | 装配根 `create_app()`：注入、挂载、启动告警 | 新增路由 / 新增进程级单例 |
-| `settings.py` | env 名 + `config/gateway.yaml` → 强类型策略 | 新增部署旋钮 |
-| `errors.py` | `ErrorCode` 枚举 + `STATUS_OF` 映射（**叶子**） | 新增错误码（前后端同步） |
+| `app.py` / `bootstrap.py` | 装配根 `create_app()`：注入、挂载、启动告警 | 新增路由 / 新增进程级单例 |
 | `contract.py` | SSE 帧、传输常量、挂起载荷（**叶子**） | 帧字段变（前端同步） |
-| `sse.py` | 保活：队列 + 心跳泵 | 保活机制变 |
-| `lease.py` | 会话租约：`claim_entry` / `hold` / `open_lease` / `close` | 并发模型变 |
-| `run.py` | 一轮编排：`run_turn` / `resume_turn` / `finish_or_park` | agent 流程变 |
-| `ending.py` | 收尾决策纯函数 + `RunLimits` | 收尾 UX 变 |
-| `ports.py` | `RuntimePort`（Null Object）+ `PendingStore` | 运行时能力面变 / 挂起态存储变 |
-| `input_prep.py` | 输入准备（失败即退化） | 解析管线接口变 |
-| `stream.py` / `confirm.py` / `sessions.py` / `health.py` | HTTP 契约映射 | 端点契约变 |
-| `deps.py` / `schemas.py` | 依赖取用 / 请求体 | 注入点或请求字段变 |
+| `errors.py` | `ErrorCode` 枚举 + `STATUS_OF` 映射（**叶子**） | 新增错误码（前后端同步） |
+| `settings.py` | env 名 + `config/gateway.yaml` → 强类型策略（**叶子**） | 新增部署旋钮 |
+| `turn/orchestrate.py` | 一轮编排：`run_turn` / `resume_turn` / `finish_or_park` | agent 流程变 |
+| `turn/lease.py` | 会话租约：`claim_entry` / `hold` / `open_lease` / `close` | 并发模型变 |
+| `turn/ending.py` | 收尾决策纯函数 + `RunLimits` | 收尾 UX 变 |
+| `turn/ports.py` | `RuntimePort`（Null Object）+ `PendingStore` | 运行时能力面变 / 挂起态存储变 |
+| `turn/input_prep.py` | 输入准备（失败即退化） | 解析管线接口变 |
+| `turn/sse.py` | 保活：队列 + 心跳泵（唯一消费者是编排） | 保活机制变 |
+| `routes/stream.py` · `confirm.py` · `sessions.py` · `health.py` | HTTP 契约映射 | 端点契约变 |
+| `routes/deps.py` · `schemas.py` | 依赖取用 / 请求体 | 注入点或请求字段变 |
 
-`.importlinter` 强制：`contract` / `errors` 不得依赖其他 gateway 模块；`gateway` 不得直接
-import `agentscope`。
+`.importlinter` 强制四条：叶子不得依赖 `app`/`bootstrap`/`routes`/`turn`；`turn` 不得依赖
+`routes`/`app`；`routes` 不得依赖 `app`；`gateway` 不得直接 import `agentscope`。
 
 ### runtime/
 

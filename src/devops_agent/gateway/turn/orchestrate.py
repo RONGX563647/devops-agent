@@ -5,7 +5,7 @@
 
 两者共用 `_guarded`（心跳 / 异常 / 释放）与 `finish_or_park`（三种结束语义），
 所以「这一轮怎么结束」只有一处实现。本模块不碰 HTTP —— 状态码与响应头在
-stream.py / confirm.py，帧字段在 contract.py。
+routes/stream.py、routes/confirm.py，帧字段在 contract.py。
 """
 
 from __future__ import annotations
@@ -24,15 +24,15 @@ from devops_agent.gateway.contract import (
     parked_frame,
     sse_frame,
 )
-from devops_agent.gateway.ending import Ending, RunLimits, decide_ending
-from devops_agent.gateway.input_prep import (
+from devops_agent.gateway.turn.ending import Ending, RunLimits, decide_ending
+from devops_agent.gateway.turn.input_prep import (
     load_attachments,
     prepare_input,
     redact_for_record,
 )
-from devops_agent.gateway.lease import SessionLease
-from devops_agent.gateway.ports import PendingStore, RuntimePort
-from devops_agent.gateway.sse import frames
+from devops_agent.gateway.turn.lease import SessionLease
+from devops_agent.gateway.turn.ports import PendingStore, RuntimePort
+from devops_agent.gateway.turn.sse import frames
 from devops_agent.input.events import events as parse_events
 from devops_agent.observability.models import RunStatus
 from devops_agent.observability.recorder import RunRecorder

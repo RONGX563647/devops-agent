@@ -16,8 +16,8 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from devops_agent.gateway.app import app
-from devops_agent.gateway.confirm import confirm_run
-from devops_agent.gateway.schemas import ConfirmRequest
+from devops_agent.gateway.routes.confirm import confirm_run
+from devops_agent.gateway.routes.schemas import ConfirmRequest
 from devops_agent.observability import repository as repo
 
 client = TestClient(app)

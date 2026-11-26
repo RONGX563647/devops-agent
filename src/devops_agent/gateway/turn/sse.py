@@ -18,7 +18,7 @@ from devops_agent.observability.recorder import RunRecorder
 # 保持「上游异常冒泡给调用方」的原语义。
 _Chunk = tuple[str, Any]
 
-# 心跳间隔的模块级默认值：调用方（run.py）通常显式传 limits.heartbeat_seconds，
+# 心跳间隔的模块级默认值：调用方（orchestrate.py）通常显式传 limits.heartbeat_seconds，
 # 这里保留一份默认，便于 sse 单测与「只想要个帧流」的脚本直接调用。
 DEFAULT_HEARTBEAT_S = 15.0
 

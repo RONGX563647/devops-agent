@@ -17,17 +17,19 @@ from typing import Any
 from fastapi import FastAPI
 
 from devops_agent.env import load_env
-from devops_agent.gateway import health as health_module
 from devops_agent.gateway.bootstrap import (
     describe_runtime,
     select_runtime,
     warn_missing_tools,
     warn_runtime,
 )
-from devops_agent.gateway.confirm import router as confirm_router
-from devops_agent.gateway.sessions import router as session_router
+from devops_agent.gateway.routes import (
+    confirm_router,
+    health_router,
+    session_router,
+    stream_router,
+)
 from devops_agent.gateway.settings import Settings
-from devops_agent.gateway.stream import router as stream_router
 from devops_agent.input.api import router as attachments_router
 from devops_agent.model_api import router as model_config_router
 from devops_agent.observability.api import router as observability_router
@@ -73,7 +75,7 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
         model_config_router,
     ):
         application.include_router(business_router)
-    application.include_router(health_module.router)
+    application.include_router(health_router)
     application.include_router(stream_router)
     application.include_router(confirm_router)
     application.include_router(session_router)

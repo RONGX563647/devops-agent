@@ -1,6 +1,6 @@
 """POST /run/stream —— 只做 HTTP 契约映射。
 
-三行有效逻辑：档位、占住会话、装响应；顺序与收尾在 run.py / lease.py。
+三行有效逻辑：档位、占住会话、装响应；顺序与收尾在 turn/orchestrate.py、turn/lease.py。
 **出现 `if` 分支或 `try`，就说明逻辑放错了层。**
 """
 
@@ -10,12 +10,12 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import StreamingResponse
 
 from devops_agent.gateway.contract import REQUEST_ID_HEADER, SSE_HEADERS, SSE_MEDIA_TYPE
-from devops_agent.gateway.deps import profile_or_403, registry_of, settings_of
-from devops_agent.gateway.ending import RunLimits
-from devops_agent.gateway.lease import open_lease
-from devops_agent.gateway.ports import PendingStore, RuntimePort
-from devops_agent.gateway.run import run_turn
-from devops_agent.gateway.schemas import RunRequest
+from devops_agent.gateway.routes.deps import profile_or_403, registry_of, settings_of
+from devops_agent.gateway.routes.schemas import RunRequest
+from devops_agent.gateway.turn.ending import RunLimits
+from devops_agent.gateway.turn.lease import open_lease
+from devops_agent.gateway.turn.orchestrate import run_turn
+from devops_agent.gateway.turn.ports import PendingStore, RuntimePort
 
 router = APIRouter()
 
@@ -44,7 +44,7 @@ async def run_stream(
         settings=settings,
         request_id=x_request_id or "",
     )
-    # 3) 编排：一轮的业务顺序（结清 → 解析 → 转发 → 收尾）在 run.py
+    # 3) 编排：一轮的业务顺序（结清 → 解析 → 转发 → 收尾）在 turn/orchestrate.py
     return StreamingResponse(
         run_turn(
             lease=lease,

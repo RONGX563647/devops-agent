@@ -9,6 +9,7 @@ export const BADGE: Record<TraceStep['kind'], string> = {
   model: '模型',
   error: '异常',
   parse: '解析',
+  memory: '记忆',
 };
 
 /** 搜索命中高亮：只标出命中片段，不改变行高。 */

@@ -29,7 +29,47 @@ SPAN_EVENT_TYPES = frozenset(
         "TOOL_RESULT_END",
         "REQUIRE_USER_CONFIRM",
         "EXCEED_MAX_ITERS",
+        # 记忆动作落成 span：检索/裁剪/压缩/写入各一条（START 只用于配对）
+        "MEMORY_RETRIEVE_END",
+        "MEMORY_TRIM",
+        "MEMORY_COMPRESS_END",
+        "MEMORY_WRITE_END",
     }
+)
+
+# 记忆/上下文事件的结构化字段：投影层原先把未知键全部丢弃，导致前端只看到空壳。
+_MEMORY_FIELDS = (
+    "layer",
+    "state",
+    "reason",
+    "memory",
+    "zones",
+    "budget",
+    "injected_chars",
+    "dropped",
+    "estimated",
+    "snapshot_version",
+    "chars",
+    "query",
+    "hits",
+    "ids",
+    "scores",
+    "backend",
+    "scope",
+    "top_k",
+    "tokens_before",
+    "tokens_after",
+    "version",
+    "trigger",
+    "latency_ms",
+    "stored",
+    "deduped",
+    "consolidated",
+    "dropped_tool_results",
+    "dropped_turns",
+    "deduped_reads",
+    "reclaimed_chars",
+    "summary_chars",
 )
 
 # 所有事件都带的基础字段（缺失补空串，保证 key 稳定）
@@ -90,6 +130,10 @@ def _from_duck_typed(event: object) -> dict[str, Any]:
         value = getattr(event, key, None)
         if value is not None:
             data[key] = _enum_value(value)
+    for key in _MEMORY_FIELDS:
+        value = getattr(event, key, None)
+        if value is not None:
+            data[key] = value
     for key in ("created_at", "session_id", "reply_id"):
         data[key] = getattr(event, key, "") or ""
     error = getattr(event, "error", None)
@@ -165,6 +209,10 @@ def _project(raw: dict[str, Any]) -> dict[str, Any]:
     for key in ("created_at", "session_id", "reply_id"):
         data[key] = raw.get(key, "") or ""
     for key in _SCALAR_FIELDS:
+        value = raw.get(key)
+        if value is not None:
+            data[key] = value
+    for key in _MEMORY_FIELDS:
         value = raw.get(key)
         if value is not None:
             data[key] = value

@@ -8,6 +8,7 @@ import { parseFrame } from './parse';
 import type { EventHandler, StreamState } from './state';
 import { INPUT_HANDLERS } from './handlers/input';
 import { LIFECYCLE_HANDLERS } from './handlers/lifecycle';
+import { MEMORY_HANDLERS } from './handlers/memory';
 import { MODEL_HANDLERS } from './handlers/model';
 import { TEXT_HANDLERS } from './handlers/text';
 import { TOOL_HANDLERS } from './handlers/tool';
@@ -20,6 +21,7 @@ export { parseContextHint, parseFrame, parseSummary } from './parse';
 const HANDLERS: Record<string, EventHandler> = {
   ...INPUT_HANDLERS,
   ...LIFECYCLE_HANDLERS,
+  ...MEMORY_HANDLERS,
   ...MODEL_HANDLERS,
   ...TEXT_HANDLERS,
   ...TOOL_HANDLERS,

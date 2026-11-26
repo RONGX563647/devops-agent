@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 
 from devops_agent.gateway.bootstrap import describe_runtime
+from devops_agent.memory.runtime import memory_status
 from devops_agent.tools.preflight import health_payload
 
 router = APIRouter()
@@ -27,8 +28,17 @@ def health(request: Request) -> dict[str, Any]:
     `runtime.kind` 说明跑的是真模型还是 Echo 回显：没有它，前端只能把回显当成
     「模型答非所问」；`tools` 段说明哪些外部依赖缺失（缺失时对应工具会持续失败）。
     """
+    status = memory_status()
     return {
         "status": HEALTH_STATUS_OK,
         "runtime": describe_runtime(request.app.state.runtime),
+        "memory": {
+            "short_term": status["short_term"],
+            "episodic": status["episodic"],
+            "long_term": status["long_term"],
+            "backend": status["backend"],
+            "reason": status["reason"],
+        },
+        "context": status["context"],
         **health_payload(),
     }

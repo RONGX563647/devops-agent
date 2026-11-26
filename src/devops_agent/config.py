@@ -18,6 +18,8 @@ from typing import Any, Literal, cast
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from devops_agent.memory_policy import MemoryPolicy
+
 CONFIG_DIR_ENV = "DEVOPS_AGENT_CONFIG_DIR"
 
 
@@ -420,6 +422,40 @@ def load_input() -> InputPolicy:
     return InputPolicy.model_validate(data.get("input", data))
 
 
+def _env_bool(name: str) -> bool | None:
+    """环境变量布尔：只在显式给了 0/1/true/false 时生效，其余视为未设置。"""
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return None
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+@cache
+def load_memory() -> MemoryPolicy:
+    """加载并缓存记忆策略（memory.yaml 的 memory 段），env 覆盖其后生效。
+
+    优先级：env > yaml > 内置默认。文件缺失时全部回落默认，服务照常启动。
+    """
+    data = _load_yaml("memory.yaml")
+    policy = MemoryPolicy.model_validate(data.get("memory", data))
+    updates: dict[str, Any] = {}
+    enabled = _env_bool("DEVOPS_AGENT_MEMORY_ENABLED")
+    if enabled is not None:
+        updates["enabled"] = enabled
+    user_id = os.environ.get("DEVOPS_AGENT_MEMORY_USER_ID")
+    if user_id:
+        updates["user_id"] = user_id
+    backend = os.environ.get("DEVOPS_AGENT_MEMORY_BACKEND")
+    if backend in ("auto", "mem0", "agentic", "local", "off"):
+        updates["long_term"] = policy.long_term.model_copy(update={"backend": backend})
+    scope = os.environ.get("DEVOPS_AGENT_MEMORY_SCOPE")
+    if scope in ("session", "user"):
+        updates["long_term"] = updates.get("long_term", policy.long_term).model_copy(
+            update={"scope": scope}
+        )
+    return policy.model_copy(update=updates) if updates else policy
+
+
 def clear_cache() -> None:
     """测试中切换配置目录后调用。"""
     load_policy.cache_clear()
@@ -428,3 +464,4 @@ def clear_cache() -> None:
     load_model.cache_clear()
     load_gateway.cache_clear()
     load_input.cache_clear()
+    load_memory.cache_clear()

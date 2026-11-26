@@ -21,8 +21,11 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from devops_agent.config import load_memory, load_model
 from devops_agent.governance.model import PermissionProfile
 from devops_agent.governance.presets import UnknownProfile, default_profile, resolve
+from devops_agent.memory.budget import compute_budget
+from devops_agent.memory.tokens import estimate_tokens
 from devops_agent.observability import repository as repo
 from devops_agent.runtime.profile_note import policy_note
 from devops_agent.runtime.prompt import build_system_prompt, resolve_workdir
@@ -30,17 +33,6 @@ from devops_agent.tools.schema import tool_schemas
 
 router = APIRouter(prefix="/api", tags=["context"])
 logger = logging.getLogger(__name__)
-
-
-def estimate_tokens(text: str) -> int:
-    """粗略估 token：中文约 1.4 字/token，ASCII/JSON 约 3.6 字符/token。
-
-    只是给界面一个量级（正确口径看模型回的 input_tokens），所以刻意不做
-    分词器依赖——多一个 tokenizer 依赖换不来这一位小数的精度。
-    系数按实测校准：409 字系统提示 + 10139 字符工具 schema ≈ 3060 token。
-    """
-    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
-    return int(cjk / 1.4 + (len(text) - cjk) / 3.6)
 
 
 def _session_profile_key(session: str | None) -> str:
@@ -75,6 +67,10 @@ def _fingerprint(prompt: str, schemas: list[dict[str, Any]]) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:8]
 
 
+def _short_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+
+
 def _tool_rows(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """把 OpenAI 形状的 schema 摊平成一行一个工具，带体积与完整参数定义。"""
     rows: list[dict[str, Any]] = []
@@ -93,6 +89,50 @@ def _tool_rows(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+def _session_facts(session: str | None) -> dict[str, Any]:
+    """快照与记忆的只读事实；读不到时返回零值，不让上下文接口整体失败。"""
+    policy = load_memory()
+    snapshot: dict[str, Any] = {
+        "version": policy.context.snapshot_version,
+        "chars": 0,
+        "messages": 0,
+        "summary_chars": 0,
+        "trimmed": False,
+    }
+    memory: dict[str, Any] = {
+        "episodic_version": 0,
+        "long_term_entries": 0,
+        "backend": "off",
+    }
+    if not session:
+        return {"snapshot": snapshot, "memory": memory}
+    try:
+        with repo.connect() as conn:
+            repo.init_db(conn)
+            saved = repo.load_session_state(conn, session)
+            active = repo.active_memory(conn, session)
+            scope_id = policy.user_id or f"session:{session}"
+            memory["long_term_entries"] = repo.count_long_term(
+                conn, policy.long_term.scope, scope_id
+            )
+        if active:
+            memory["episodic_version"] = int(active["version"])
+        if saved:
+            state_json = str(saved[0] or "")
+            snapshot["chars"] = len(state_json)
+            parsed = json.loads(state_json) if state_json else {}
+            middle = parsed.get("middle_context") or {}
+            snapshot["version"] = int(middle.get("snapshot_version", 1))
+            snapshot["messages"] = len(parsed.get("context") or [])
+            snapshot["summary_chars"] = len(str(parsed.get("summary") or ""))
+            memory["episodic_version"] = int(
+                (middle.get("memory") or {}).get("episodic_version", memory["episodic_version"])
+            )
+    except Exception:  # noqa: BLE001 - 存储故障只让这一块显示为零值
+        logger.warning("读取上下文事实失败: %s", session, exc_info=True)
+    return {"snapshot": snapshot, "memory": memory}
+
+
 @router.get("/context")
 async def get_context(
     session: str | None = None,
@@ -107,6 +147,22 @@ async def get_context(
     tools_chars = sum(tool["schema_chars"] for tool in tools)
     prompt_tokens = estimate_tokens(prompt)
     tools_tokens = sum(tool["tokens"] for tool in tools)
+    policy = load_memory()
+    settings = load_model()
+    budget = compute_budget(
+        context_size=settings.context_size,
+        trigger_ratio=settings.trigger_ratio,
+        reserve_ratio=settings.reserve_ratio,
+        max_tokens=settings.max_tokens,
+        prefix_tokens=prompt_tokens + tools_tokens,
+        short_term_ratio=policy.budget.short_term_ratio,
+        episodic_ratio=policy.budget.episodic_ratio,
+        long_term_ratio=policy.budget.long_term_ratio,
+        headroom_ratio=policy.budget.headroom_ratio,
+        episodic_enabled=policy.episodic.enabled,
+        long_term_enabled=policy.long_term.enabled,
+    )
+    facts = _session_facts(session)
     return {
         "profile": resolved.key,
         "profile_label": resolved.label,
@@ -123,4 +179,24 @@ async def get_context(
         "policy_note_tokens": estimate_tokens(note),
         "prefix_fingerprint": _fingerprint(prompt, schemas),
         "workdir": str(resolve_workdir()),
+        # 第 0 步：分区、预算与记忆事实（SPEC-0013 §5.9）
+        "zones": {
+            "prefix": {
+                "system_tokens": prompt_tokens,
+                "tools_tokens": tools_tokens,
+                "system_fingerprint": _short_hash(prompt),
+                "tools_fingerprint": _short_hash(
+                    json.dumps(schemas, ensure_ascii=False, sort_keys=True)
+                ),
+            },
+            "history": {
+                "messages": facts["snapshot"]["messages"],
+                "summary_chars": facts["snapshot"]["summary_chars"],
+            },
+            "tail": {"policy_note_tokens": estimate_tokens(note)},
+            "output_reserve": budget.output_reserve,
+        },
+        "budget": budget.as_dict(),
+        "memory": facts["memory"],
+        "snapshot": facts["snapshot"],
     }

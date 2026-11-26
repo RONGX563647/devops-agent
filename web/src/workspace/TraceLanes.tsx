@@ -1,4 +1,4 @@
-/** 轨迹泳道：模型 / 工具两条横向时间轴，块的宽度就是耗时。
+/** 轨迹泳道：模型 / 工具 / 记忆三条横向时间轴，块的宽度就是耗时。
  *
  * 位置与宽度都按会话时间归一化，所以同一轮里「模型想了 14 秒、工具跑了 2 秒」
  * 一眼能看出来，不用心算。只画真实占用，空隙留白——空闲多久由行尾占用率说明。
@@ -15,6 +15,7 @@ interface Props {
 const ROWS: { key: keyof Lanes; label: string; hint: string }[] = [
   { key: 'model', label: '模型', hint: '模型推理，含流式输出与思考耗时' },
   { key: 'tool', label: '工具', hint: '工具执行' },
+  { key: 'memory', label: '记忆', hint: '检索 / 裁剪 / 压缩 / 写入' },
 ];
 
 const RATIOS = [0, 0.25, 0.5, 0.75, 1];
@@ -63,7 +64,7 @@ function Bar({
 }
 
 export function TraceLanes({ lanes, activeStepId, onSelect }: Props) {
-  const all = [...lanes.model, ...lanes.tool];
+  const all = [...lanes.model, ...lanes.tool, ...lanes.memory];
   if (all.length === 0) {
     return <div className="lanes lanes-empty">这一轮还没有可绘制的时间区间。</div>;
   }
@@ -116,6 +117,7 @@ export function TraceLanes({ lanes, activeStepId, onSelect }: Props) {
       <div className="lanes-legend">
         <span><i data-lane="model" />模型</span>
         <span><i data-lane="tool" />工具</span>
+        <span><i data-lane="memory" />记忆</span>
         <span><i data-lane="error" />异常</span>
         <span className="mono">总长 {formatOffset(total)}</span>
       </div>

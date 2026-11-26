@@ -123,6 +123,23 @@ git fetch origin && git checkout main && git pull
    - 注释分三层：模块 docstring 写不变量与长「为什么」；函数 docstring 一句话职责，
      超过 20 行的编排函数写 3–6 条编号步骤；行内注释只写顺序、不变量、反直觉实现，
      单条不超过 3 行，禁止复述代码。长解释放 docstring / ADR，不在函数中间堆段落。
+8. **前端改动必用 modern-web-guidance skill**：凡修改 `web/**`（TS / TSX / CSS / HTML，
+   含 `web/src/pages/**`、`web/src/styles.css` 等），开始前必须先读取
+   `skills/modern-web-guidance/SKILL.md` 并按其流程执行：
+   1. `npx -y modern-web-guidance@latest search "<2–5 词英文能力名>" --skill-version 2026_11_16-268fb9ea`
+      检索相关 use case（框架名与业务名词不进 query，多特性拆多次 search）。
+   2. 对匹配的 `id`（及适用的 discipline guide，如 `html` / `css` / `a11y`）执行
+      `npx -y modern-web-guidance@latest retrieve "<id>"` 取完整指南。
+   3. 按指南校验实现：现代 API 与必要 fallback 均需落地，不擅自引入未要求的能力；
+      don't run `legacy-scan`（那是全库现代化审计用的，不是单点改动的入口）。
+   4. 交付回复末尾按 SKILL.md 要求写 `### Modern Web Guidance` 段，逐 `<id>` 披露
+      本轮采纳的非显然决策并附指南原文短引；未采纳则一句说明检查过哪些主题。
+   浏览器支持默认按指南的 Baseline Widely available 判定；项目若有自定义支持策略，
+   在 AGENTS.md 本条后追加，并按指南的兼容性数据决定是否允许省略 fallback。
+   该 skill 是指南检索器而非静态知识：内容以 `search` / `retrieve` 的当次输出为准，
+   `skills/modern-web-guidance/guides/` 是随发布仓库同步的离线副本。
+   DO NOT trigger：后端（SQL / ORM / API 路由）、基础设施与脚本（CI/CD、Docker、Python/Go、
+   Git）、纯工具与琐碎改动（Vite / tsconfig / ESLint / 测试 / 复制重命名）不调用。
 
 ---
 

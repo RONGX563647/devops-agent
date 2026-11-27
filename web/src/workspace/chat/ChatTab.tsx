@@ -23,7 +23,7 @@ import { GitHubIcon, GlobeIcon, PaperclipIcon, SendIcon, SparkIcon } from './ico
 import { AssistantMessage } from './Message';
 import { newId } from '../id';
 import { extractLinks } from '../links';
-import { ModelConfigPopover } from '../model-config/Popover';
+import { ModelConfigDrawer } from '../model-config/Drawer';
 import { PermissionCard } from '../PermissionCard';
 import { PermissionPicker } from '../PermissionPicker';
 import { SearchToggle } from './SearchToggle';
@@ -415,7 +415,7 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
           />
           <div className="composer-bar">
             <PermissionPicker current={view.permission} onChange={changePermission} />
-            <ModelConfigPopover
+            <ModelConfigDrawer
               session={session}
               config={modelConfig.data}
               contextTokens={view.contextTokens}

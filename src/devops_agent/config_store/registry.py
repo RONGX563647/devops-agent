@@ -136,8 +136,11 @@ ENV_OVERLAY: dict[str, tuple[tuple[str, str, str, tuple[str, ...]], ...]] = {
         ("long_term.scope", "DEVOPS_AGENT_MEMORY_SCOPE", "str", ("session", "user", "workspace")),
     ),
     "sandbox": (
-        ("mode", "DEVOPS_AGENT_SANDBOX_MODE", "str", ("local", "docker", "auto")),
+        ("mode", "DEVOPS_AGENT_SANDBOX_MODE", "str", ("local", "docker", "opensandbox", "auto")),
         ("required", "DEVOPS_AGENT_SANDBOX_REQUIRED", "bool", ()),
+        ("opensandbox.domain", "DEVOPS_AGENT_SANDBOX_OSB_DOMAIN", "str", ()),
+        ("opensandbox.image", "DEVOPS_AGENT_SANDBOX_OSB_IMAGE", "str", ()),
+        ("opensandbox.protocol", "DEVOPS_AGENT_SANDBOX_OSB_PROTOCOL", "str", ("http", "https")),
     ),
     "workspace": (
         ("enabled", "DEVOPS_AGENT_WORKSPACES_ENABLED", "bool", ()),

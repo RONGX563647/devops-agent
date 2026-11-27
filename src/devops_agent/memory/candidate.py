@@ -33,6 +33,17 @@ _SIGNAL = re.compile(
 _MIN_CHARS = 12
 _MIN_CHARS_WITH_SIGNAL = 6
 
+#: 「我先看一下工作区里实际的东西」这类元话语：描述下一步要做什么，不是结论。
+#: 只在与「无技术信号」同时成立时拒写 —— 这是零信息量却占掉 note 预算的典型
+#: 形态（SPEC-0019 §7.3），带路径/命令/后缀的回合照常写入。
+_META_OPENER = re.compile(
+    r"^[\s\-*>#]*(?:好的?[，,、]?\s*)?"
+    r"(?:我|我们|让我|现在|接下来|首先|先)"
+    r"[^\n]{0,24}"
+    r"(?:看一下?|看看|确认|理解|检查|分析|梳理|读|翻|找|开始|需要|打算|准备)"
+)
+_META_MAX_CHARS = 240
+
 
 def _bare(text: str) -> str:
     """去掉标点与问候词，留下「实质内容」；全空即寒暄/纯确认。"""
@@ -55,4 +66,11 @@ def is_candidate(user_text: str, assistant_text: str) -> tuple[bool, str]:
     floor = _MIN_CHARS_WITH_SIGNAL if has_signal else _MIN_CHARS
     if len(raw) < floor:
         return False, "too_short"
+    # 无技术信号 + 元话语开头 + 短：说的是「接下来要看什么」，写进长期层只是噪音
+    if (
+        not has_signal
+        and len(raw) <= _META_MAX_CHARS
+        and _META_OPENER.match(assistant_text.strip())
+    ):
+        return False, "meta_preamble"
     return True, ""

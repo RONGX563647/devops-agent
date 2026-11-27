@@ -6,7 +6,11 @@ import pytest
 from pydantic import ValidationError
 
 from devops_agent.config import clear_cache, load_sandbox
-from devops_agent.config_schema import SandboxDockerPolicy, SandboxPolicy
+from devops_agent.config_schema import (
+    SandboxDockerPolicy,
+    SandboxOpensandboxPolicy,
+    SandboxPolicy,
+)
 from devops_agent.config_store.registry import BY_KEY, DOMAINS, defaults_of, env_overlay
 
 
@@ -18,6 +22,30 @@ def test_defaults_keep_local_mode() -> None:
     assert policy.ttl_seconds == 900
     assert policy.docker.base_image == "python:3.11-slim"
     assert policy.docker.gateway_port == 5600
+    assert policy.opensandbox.image == "python:3.11-slim"
+    assert policy.opensandbox.protocol == "https"
+
+
+def test_opensandbox_mode_is_accepted() -> None:
+    policy = SandboxPolicy(mode="opensandbox")
+    assert policy.mode == "opensandbox"
+
+
+def test_opensandbox_rejects_empty_image() -> None:
+    with pytest.raises(ValidationError):
+        SandboxOpensandboxPolicy(image="")
+
+
+def test_opensandbox_rejects_non_positive_timeouts() -> None:
+    with pytest.raises(ValidationError):
+        SandboxOpensandboxPolicy(request_timeout_seconds=0)
+    with pytest.raises(ValidationError):
+        SandboxOpensandboxPolicy(timeout_seconds=0)
+
+
+def test_opensandbox_rejects_unknown_protocol() -> None:
+    with pytest.raises(ValidationError):
+        SandboxOpensandboxPolicy(protocol="ftp")
 
 
 def test_unknown_mode_is_rejected() -> None:
@@ -64,6 +92,24 @@ def test_env_overlay_reads_mode_and_required(monkeypatch: pytest.MonkeyPatch) ->
 def test_env_overlay_ignores_unknown_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     """非法 env 值沿用旧语义：视为未设置，不把整份配置拦在门外。"""
     monkeypatch.setenv("DEVOPS_AGENT_SANDBOX_MODE", "k8s")
+    assert env_overlay("sandbox") == {}
+
+
+def test_env_overlay_reads_opensandbox_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEVOPS_AGENT_SANDBOX_MODE", "opensandbox")
+    monkeypatch.setenv("DEVOPS_AGENT_SANDBOX_OSB_DOMAIN", "osb.example.com")
+    monkeypatch.setenv("DEVOPS_AGENT_SANDBOX_OSB_IMAGE", "img:golden")
+    monkeypatch.setenv("DEVOPS_AGENT_SANDBOX_OSB_PROTOCOL", "http")
+    assert env_overlay("sandbox") == {
+        "mode": "opensandbox",
+        "opensandbox.domain": "osb.example.com",
+        "opensandbox.image": "img:golden",
+        "opensandbox.protocol": "http",
+    }
+
+
+def test_env_overlay_ignores_unknown_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEVOPS_AGENT_SANDBOX_OSB_PROTOCOL", "ftp")
     assert env_overlay("sandbox") == {}
 
 

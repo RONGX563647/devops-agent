@@ -305,6 +305,10 @@ class MemoryRuntime:
     def cap_snapshot(self, agent: Agent) -> TrimReport:
         """序列化前收缩历史，避免 state_json 无上限增长。
 
+        只写回「因体积丢掉的整轮」。内容截断是请求期的临时行为，写回
+        `state.context` 会让它变成永久丢失——切档与重建会话都会触发快照，
+        而报告里只有 `changed` 一个信号时，分不清这两种丢失（SPEC-0019 §5.2）。
+
         裁剪必须发事件：`MEMORY_TRIM(reason=snapshot_cap)` 是「这一轮不是请求裁剪
         丢的历史，而是快照时丢的」的唯一证据，丢了它就只能看到上下文莫名变短
         （SPEC-0013 §18.2 M6）。
@@ -313,17 +317,17 @@ class MemoryRuntime:
         trimmed, report = trim_context_for_snapshot(
             context, self.policy.short_term, self.policy.context.snapshot_max_chars
         )
-        if report.changed:
-            agent.state.context = trimmed
-        if report.changed and report.dropped_turns > 0:
-            self.sink.emit(
-                events.frame(
-                    events.MEMORY_TRIM,
-                    layer="short",
-                    reason="snapshot_cap",
-                    **cast(dict[str, Any], report.as_dict()),
-                )
+        if report.dropped_turns <= 0:
+            return report
+        agent.state.context = trimmed
+        self.sink.emit(
+            events.frame(
+                events.MEMORY_TRIM,
+                layer="short",
+                reason="snapshot_cap",
+                **cast(dict[str, Any], report.as_dict()),
             )
+        )
         return report
 
     def status(self) -> dict[str, Any]:

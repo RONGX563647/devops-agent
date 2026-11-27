@@ -45,3 +45,11 @@ model:
   trigger_ratio: 0.8          # 框架硬约束 <= 0.9（要给压缩本身留空间）
   reserve_ratio: 0.1          # 必须 < trigger_ratio，否则框架校验会抛异常
   context_buffer_ratio: 0.2
+
+  # token 估算口径（SPEC-0016 §4）。预算执行、裁剪与对账都读这里。
+  # 换模型族时必须改 family：同一段 JSON 在 cl100k 与 o200k 上的密度差 20% 以上，
+  # 用错族会让估算系统性偏低/偏高，而漂移事件只能「告诉你漂了」，不能替你改。
+  tokenizer:
+    family: qwen              # cl100k | o200k | qwen | generic（未知按 generic）
+    precision: estimate       # estimate = 系数估算；exact = 装了 tiktoken 就用真编码器
+    per_message_overhead: 4   # 每条消息的角色/分隔符开销

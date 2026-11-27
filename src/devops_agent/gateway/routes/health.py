@@ -69,6 +69,13 @@ def health(request: Request) -> dict[str, Any]:
             "reason": status["reason"],
             # 快照损坏退回新会话的次数：非零说明「历史莫名清空」有据可查
             "restores": restore_stats(),
+            # 检索算法与写入摘要：回滚时改的就是这两项，探针要能看见当前值
+            "retrieval": status["retrieval"],
+            "summarize": status["summarize"],
+            # 预算闭合：ok=false 说明四项分账对不上阈值，压缩会比预算晚触发
+            "budget": status["budget"],
+            # 估算漂移：alpha 是实际/估算的中位数比率，1.0 表示没有修正
+            "tokens": status["tokens"],
             # 只放一个布尔：探针关心「记忆现在是不是在降级」，明细在 /api/memory/status
             "degraded": bool(status["health"]["degraded"]),
         },

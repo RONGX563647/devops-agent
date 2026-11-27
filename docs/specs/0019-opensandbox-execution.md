@@ -122,14 +122,14 @@
 @dataclass(frozen=True, slots=True)
 class ExecutionTarget:
     mode: Literal["local", "docker", "opensandbox"]
-    host_workdir: Path          # opensandbox：仅作稳定键与审计标签，不挂载
+    host_workdir: Path  # opensandbox：仅作稳定键与审计标签，不挂载
     tool_workdir: str
     backend: BackendBase
     shell: str
     workspace: WorkspaceBase | None = None
     degraded_reason: str = ""
-    sandbox_id: str = ""        # opensandbox 的实际实例标识（可空）
-    init_ms: int = 0            # ensure 创建耗时（用于验证预配置收益）
+    sandbox_id: str = ""  # opensandbox 的实际实例标识（可空）
+    init_ms: int = 0  # ensure 创建耗时（用于验证预配置收益）
 
     @property
     def uses_shared_backend(self) -> bool:

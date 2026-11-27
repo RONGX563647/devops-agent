@@ -85,7 +85,8 @@ def test_untrimmed_when_under_budget() -> None:
 
 def test_over_budget_truncates_only_old_results() -> None:
     messages = _history(*[_tool("Read", f"{index}" * 500) for index in range(3)])
-    trimmed, report = trim_messages(messages, POLICY, history_limit=400)
+    # 预算取 600：低于未裁剪的 697、高于只砍旧结果后的 563，才刚好落在 S3
+    trimmed, report = trim_messages(messages, POLICY, history_limit=600)
     assert report.stage == "s3"
     assert "已截断" in trimmed[2].content[0].output  # type: ignore[union-attr,index]
     assert trimmed[-1].content[0].output == "2" * 500  # type: ignore[union-attr,index]
@@ -166,7 +167,12 @@ def test_cap_snapshot_does_not_bake_request_trim(tmp_path) -> None:  # type: ign
 
 
 def test_estimate_includes_tool_output() -> None:
-    assert estimate_messages([_tool("Read", "x" * 5000)]) > 1000
+    """工具结果必须计入估算（旧实现按 `.text` 取值等于算 0，预算早退永远成立）。
+
+    阈值按 qwen 族系数（拉丁字母约 5.57 字/token）取 800，留出族切换的余量；
+    钉死的不是具体数值，而是「5000 字输出不能被当成几十 token」。
+    """
+    assert estimate_messages([_tool("Read", "x" * 5000)]) > 800
 
 
 def test_zero_exempt_and_off_budget_matches_old_behaviour() -> None:

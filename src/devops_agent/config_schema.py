@@ -280,6 +280,24 @@ class SandboxPolicy(BaseModel):
 # --- 模型参数（model.yaml 的 model 段）----------------------------------
 
 
+class TokenizerSettings(BaseModel):
+    """model.yaml 的 `model.tokenizer` 段：估算口径（SPEC-0016 §4.2）。
+
+    分族必须可配：同一段 JSON 在 `cl100k` 与 `o200k` 上的密度差 20% 以上，
+    一套系数打所有模型等于把误差写进预算。三项系数留 `None` 时取该族实测值，
+    只有「这台机器上的族系数确实不同」时才需要覆盖。
+    """
+
+    #: 模型族：决定三族系数；未知值按 generic（最保守）
+    family: Literal["cl100k", "o200k", "qwen", "generic"] = "generic"
+    #: estimate = L2 系数（默认，结果与是否装 tiktoken 无关）；exact = 装了就用 L1
+    precision: Literal["estimate", "exact"] = "estimate"
+    cjk_per_token: float | None = Field(default=None, gt=0, le=10)
+    letter_per_token: float | None = Field(default=None, gt=0, le=20)
+    symbol_per_token: float | None = Field(default=None, gt=0, le=10)
+    per_message_overhead: int = Field(default=4, ge=0, le=20)
+
+
 class ModelSettings(BaseModel):
     """model.yaml 的 model 段：模型参数的部署默认。
 
@@ -317,6 +335,8 @@ class ModelSettings(BaseModel):
     trigger_ratio: float = Field(default=0.8, gt=0, le=0.9)
     reserve_ratio: float = Field(default=0.1, gt=0, lt=0.9)
     context_buffer_ratio: float = Field(default=0.2, ge=0, le=1)
+    #: token 估算口径（族系数 / 可选真编码器）；预算与裁剪都读这里
+    tokenizer: TokenizerSettings = Field(default_factory=TokenizerSettings)
 
     def max_iters_for(self, domain: str) -> int:
         """按域取 max_iters，未声明的域回退 default。"""

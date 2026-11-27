@@ -128,17 +128,17 @@ default: dashscope-prod
 ```python
 # model_catalog/kinds.py
 KINDS: dict[str, KindSpec] = {
-    "openai_chat":   KindSpec(OpenAIChatModel, OpenAICredential, "openai"),
+    "openai_chat": KindSpec(OpenAIChatModel, OpenAICredential, "openai"),
     "openai_response": KindSpec(OpenAIResponseModel, OpenAICredential, "openai"),
     "dashscope_chat": KindSpec(DashScopeChatModel, DashScopeCredential, "dashscope"),
     "anthropic_chat": KindSpec(AnthropicChatModel, AnthropicCredential, "anthropic"),
-    "gemini_chat":   KindSpec(GeminiChatModel, GeminiCredential, "gemini"),
+    "gemini_chat": KindSpec(GeminiChatModel, GeminiCredential, "gemini"),
     "deepseek_chat": KindSpec(DeepSeekChatModel, DeepSeekCredential, "deepseek"),
     "moonshot_chat": KindSpec(MoonshotChatModel, MoonshotCredential, "openai"),
-    "xai_chat":      KindSpec(XAIChatModel, XAICredential, "openai"),
-    "minimax_chat":  KindSpec(MiniMaxChatModel, MiniMaxCredential, "openai"),
+    "xai_chat": KindSpec(XAIChatModel, XAICredential, "openai"),
+    "minimax_chat": KindSpec(MiniMaxChatModel, MiniMaxCredential, "openai"),
     "volcengine_chat": KindSpec(VolcengineChatModel, VolcengineCredential, "openai"),
-    "ollama_chat":   KindSpec(OllamaChatModel, OllamaCredential, "ollama"),
+    "ollama_chat": KindSpec(OllamaChatModel, OllamaCredential, "ollama"),
 }
 ```
 
@@ -150,7 +150,8 @@ KINDS: dict[str, KindSpec] = {
 OPENAI_FAMILY = {"openai", "dashscope", "deepseek", "moonshot", "xai", "volcengine", "minimax"}
 # base_url 字段名差异：Ollama 用 host，Gemini 无 base_url
 fields = {"api_key": key} if family == "gemini" else {"api_key": key, "base_url": url}
-if family == "ollama": fields = {"host": url}
+if family == "ollama":
+    fields = {"host": url}
 ```
 
 ### 4.4 匿名 `default` provider（零配置兼容）
@@ -159,9 +160,12 @@ if family == "ollama": fields = {"host": url}
 
 ```python
 ProviderSpec(
-    id="default", kind=_guess_kind(), label="默认网关",
+    id="default",
+    kind=_guess_kind(),
+    label="默认网关",
     base_url=os.environ.get("DEVOPS_AGENT_BASE_URL", ""),
-    api_key="env:DEVOPS_AGENT_API_KEY", discover="off",
+    api_key="env:DEVOPS_AGENT_API_KEY",
+    discover="off",
 )
 ```
 
@@ -336,6 +340,7 @@ def match(cards: list[ModelCard], model: str) -> tuple[ModelCard | None, str]:
 ```python
 CONTEXT_TRUSTED = {"calibrated", "discovered", "card", "stored", "session"}
 
+
 def context_uncalibrated(source: str) -> bool:
     trusted = source in CONTEXT_TRUSTED
     # 等价性兜底：匿名 provider 走 yaml 静态值，此时必须沿用旧判据，
@@ -349,9 +354,9 @@ def context_uncalibrated(source: str) -> bool:
 
 ```python
 {
-  "context_uncalibrated": False,
-  "context_source": "card",          # 直接回 sources 里的值，便于 UI 分支
-  "context_card_may_be_stale": True, # source == "card" 时提示「来自模型卡，可能滞后于网关」
+    "context_uncalibrated": False,
+    "context_source": "card",  # 直接回 sources 里的值，便于 UI 分支
+    "context_card_may_be_stale": True,  # source == "card" 时提示「来自模型卡，可能滞后于网关」
 }
 ```
 
@@ -422,9 +427,9 @@ class Source(StrEnum):
     STORED = "stored"
     YAML = "yaml"
     ENV = "env"
-    CALIBRATED = "calibrated"   # 新增：config/models[.local].yaml
-    DISCOVERED = "discovered"   # 新增：网关 /models 声明
-    CARD = "card"               # 新增：内置模型卡
+    CALIBRATED = "calibrated"  # 新增：config/models[.local].yaml
+    DISCOVERED = "discovered"  # 新增：网关 /models 声明
+    CARD = "card"  # 新增：内置模型卡
     FRAMEWORK = "framework-default"
 ```
 
@@ -449,7 +454,8 @@ model = cls(credential=cred_cls(**cred_fields), model=active.name, ...)
 ### 7.4 实例缓存
 
 ```python
-_cache: dict[tuple[str, str, str], ChatModelBase] = {}   # (provider, model, wire_sha)
+_cache: dict[tuple[str, str, str], ChatModelBase] = {}  # (provider, model, wire_sha)
+
 
 def wire_sha(active: ModelParams) -> str:
     """只对 MODEL_WIRE_KEYS 的当前值做 sha256。
@@ -472,9 +478,9 @@ def wire_sha(active: ModelParams) -> str:
 `bounds.py` 的增量为：
 
 ```python
-EDITABLE = ("provider", "model", ...)          # provider 排在最前：选它才能选模型
+EDITABLE = ("provider", "model", ...)  # provider 排在最前：选它才能选模型
 BOUNDS |= {
-    "provider": Bound("str", nullable=True),   # null = 用注册表 default
+    "provider": Bound("str", nullable=True),  # null = 用注册表 default
     "context_auto": Bound("bool", nullable=False),
 }
 READONLY["providers_file"] = "config/providers.yaml（网关清单与 key 变量名）"

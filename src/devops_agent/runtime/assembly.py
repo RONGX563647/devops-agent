@@ -132,6 +132,18 @@ class RuntimeParts:
     agent: Agent | None = None
 
 
+def _execution_paths(
+    workdir: str | os.PathLike[str] | None,
+    execution: ExecutionTarget | None,
+) -> tuple[Path, str, str | None, BackendFactory | None]:
+    """解析宿主目录、工具路径、shell 与 backend 工厂（执行面优先）。"""
+    if execution is None:
+        base = resolve_workdir(workdir)
+        return base, str(base), None, None
+    backend = execution.backend_factory if execution.is_docker else None
+    return execution.host_workdir, execution.tool_workdir, execution.shell, backend
+
+
 def _resolve_runtime_inputs(
     system_prompt: str | None,
     workdir: str | os.PathLike[str] | None,
@@ -152,12 +164,7 @@ def _resolve_runtime_inputs(
     `tool_workdir`（docker 为 `/workspace`），宿主路径只留在审计与挂载层。
     """
     resolved = profile if profile is not None else default_profile()
-    base = execution.host_workdir if execution is not None else resolve_workdir(workdir)
-    tool_workdir = execution.tool_workdir if execution is not None else str(base)
-    shell = execution.shell if execution is not None else None
-    backend_factory = (
-        execution.backend_factory if execution is not None and execution.is_docker else None
-    )
+    base, tool_workdir, shell, backend_factory = _execution_paths(workdir, execution)
     if web_search is not None:
         effective_search = web_search
     elif resolved.net is not None:

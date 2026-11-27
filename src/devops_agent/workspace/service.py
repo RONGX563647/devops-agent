@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from devops_agent.config_schema import WorkspacePolicy
-from devops_agent.workspace import errors, git, paths, store
+from devops_agent.workspace import errors, git, paths, queries, store
 from devops_agent.workspace.models import (
     RepoInfo,
     Repository,
@@ -166,7 +166,7 @@ class WorkspaceService:
             items: list[dict[str, Any]] = []
             for workspace in store.list_workspaces(conn, status=status):
                 repository = store.get_repository(conn, workspace.id)
-                items.append(self._summary(workspace, repository))
+                items.append(queries.summary(workspace, repository))
         return items
 
     def detail(self, workspace_id: str) -> dict[str, Any]:
@@ -177,9 +177,9 @@ class WorkspaceService:
             if workspace is None:
                 raise errors.WorkspaceError(errors.NOT_FOUND, "工作区不存在")
             repository = store.get_repository(conn, workspace_id)
-            payload = self._summary(workspace, repository)
+            payload = queries.summary(workspace, repository)
             payload["session_count"] = store.count_sessions(conn, workspace_id)
-            payload["long_term_count"] = store.count_long_term(conn, self._scope_id(workspace_id))
+            payload["long_term_count"] = store.count_long_term(conn, queries.scope_id(workspace_id))
         return payload
 
     # --- 更新与生命周期 -----------------------------------------------
@@ -263,7 +263,7 @@ class WorkspaceService:
                 )
             root = Path(workspace.root_path)
             patch, root_removed = self._cleanup_managed(repository, root, workspace_id, force=force)
-            memory_deleted = store.delete_long_term(conn, self._scope_id(workspace_id))
+            memory_deleted = store.delete_long_term(conn, queries.scope_id(workspace_id))
             store.delete(conn, workspace_id)
         return {
             "id": workspace_id,
@@ -401,7 +401,7 @@ class WorkspaceService:
     ) -> dict[str, Any]:
         """固定 `scope='workspace'` 的长期记忆列表（跨工作区不可见）。"""
         self._require_enabled()
-        scope_id = self._scope_id(workspace_id)
+        scope_id = queries.scope_id(workspace_id)
         with store.connect(self.db_path) as conn:
             workspace = store.get_workspace(conn, workspace_id)
             if workspace is None:
@@ -420,15 +420,7 @@ class WorkspaceService:
 
     def control(self) -> dict[str, Any]:
         """能力自述：开关、白名单、git 是否可用（/health 与前端共用）。"""
-        return {
-            "enabled": self.policy.enabled,
-            "allow_local_import": self.policy.allow_local_import,
-            "allow_git_import": self.policy.allow_git_import,
-            "allowed_local_roots": list(self.policy.allowed_local_roots),
-            "git_available": git.git_available(),
-            "max_workspaces": self.policy.max_workspaces,
-            "default_profile": self.policy.default_profile,
-        }
+        return queries.control(self.policy, git_available=git.git_available())
 
     # --- 内部 ---------------------------------------------------------
     def _require_enabled(self) -> None:
@@ -487,31 +479,6 @@ class WorkspaceService:
             created_at=repository.created_at or now,
         )
         return workspace, bound_repo
-
-    @staticmethod
-    def _scope_id(workspace_id: str) -> str:
-        return f"workspace:{workspace_id}"
-
-    @staticmethod
-    def _summary(workspace: Workspace, repository: Repository | None) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "id": workspace.id,
-            "name": workspace.name,
-            "owner": workspace.owner,
-            "root_path": workspace.root_path,
-            "default_profile": workspace.default_profile,
-            "status": workspace.status,
-            "created_at": workspace.created_at,
-            "updated_at": workspace.updated_at,
-            "archived_at": workspace.archived_at,
-            "source": repository.source if repository else "",
-            "managed": repository.managed if repository else False,
-            "remote_url": repository.remote_url if repository else "",
-            "branch": repository.branch if repository else "",
-            "base_commit": repository.base_commit if repository else "",
-            "detected_git": repository.detected_git if repository else False,
-        }
-        return payload
 
 
 __all__ = ["RepoInfo", "WorkspaceService"]

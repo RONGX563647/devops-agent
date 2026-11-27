@@ -20,6 +20,16 @@ CONTEXT_ASSEMBLED = "CONTEXT_ASSEMBLED"
 # 没有 CONTEXT_RESTORE：恢复发生在装配期，那时还没有 SSE 流可以承载事件；
 # 恢复失败改为结构化日志 + `/health` 计数（SPEC-0013 §18.2 M5）。
 
+# `reason` 是枚举而不是自由文本：前端按它做过滤与提示，异常细节另有字段。
+# 降级（error）与「确实没有」（miss）必须可区分，否则故障永远看起来像正常空结果。
+REASON_NO_MEMORY = "no_memory"
+REASON_UNCHANGED = "unchanged"
+REASON_EPISODIC_UNAVAILABLE = "episodic_unavailable"
+REASON_LONG_TERM_UNAVAILABLE = "long_term_unavailable"
+REASON_WRITE_FAILED = "write_failed"
+REASON_TURN_WRITE_FAILED = "turn_write_failed"
+REASON_REQUEST_TRIM = "request_trim"
+
 # 需要落成 span 的事件：START 只用于配对，不单独落库
 SPAN_MEMORY_EVENTS = frozenset(
     {MEMORY_RETRIEVE_END, MEMORY_TRIM, MEMORY_COMPRESS_END, MEMORY_WRITE_END}

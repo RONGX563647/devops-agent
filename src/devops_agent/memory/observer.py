@@ -15,7 +15,7 @@ from agentscope.agent import Agent
 from agentscope.message import Msg, UserMsg
 from agentscope.middleware import MiddlewareBase
 
-from devops_agent.memory import events
+from devops_agent.memory import events, health
 from devops_agent.memory.runtime import MemoryRuntime, estimate_prefix_tokens
 from devops_agent.memory.short_term import trim_messages
 from devops_agent.memory.tokens import estimate_tokens
@@ -126,16 +126,19 @@ class MemoryMiddleware(MiddlewareBase):
                 backend=self._runtime.backend_name,
             )
         )
-        card, hits, error = await self._runtime.recall(query)
+        result = await self._runtime.recall(query)
+        card, hits = result.card, result.hits
         marker = self._runtime.marker(card, hits, turn)
         unchanged = self._unchanged(agent, marker, turn)
         note = "" if unchanged else self._runtime.note(card, hits)
         self._remember(agent, marker)
-        state = "skipped" if unchanged else ("hit" if note else "miss")
-        reason = "unchanged" if unchanged else ("" if note else "no_memory")
-        if error:
-            # 故障优先于「有没有注入」：注入成功也可能是某一层坏了，必须说出来
-            state, reason = "error", error
+        # 降级优先于 hit/miss：后端挂了却显示「没命中」，等于把故障伪装成正常
+        if result.degraded:
+            state, reason = "error", result.reason
+        elif unchanged:
+            state, reason = "skipped", events.REASON_UNCHANGED
+        else:
+            state, reason = ("hit" if note else "miss"), ("" if note else events.REASON_NO_MEMORY)
         meta = {
             "episodic_version": marker["episodic_version"],
             "hits": len(hits),
@@ -143,6 +146,8 @@ class MemoryMiddleware(MiddlewareBase):
             "scores": [round(hit.score, 3) for hit in hits],
             "injected_chars": len(note),
             "query": query[: self._policy.trace.query_preview_chars],
+            "degraded": list(result.degraded),
+            "errors": dict(result.errors),
         }
         self._runtime.sink.emit(
             events.frame(
@@ -230,5 +235,16 @@ class MemoryMiddleware(MiddlewareBase):
                 await self._runtime.write_turn(
                     _input_text(input_kwargs.get("inputs")), _last_assistant_text(agent)
                 )
-            except Exception:  # noqa: BLE001 - 写入失败只影响记忆
-                pass
+            except Exception as exc:  # noqa: BLE001 - 写入失败只影响记忆
+                # 降级是设计，静默不是：写失败必须留一帧，否则记忆停摆没人看得见
+                health.note_failure("turn", events.REASON_TURN_WRITE_FAILED)
+                self._runtime.sink.emit(
+                    events.frame(
+                        events.MEMORY_WRITE_END,
+                        layer="turn",
+                        state="error",
+                        reason=events.REASON_TURN_WRITE_FAILED,
+                        exc_type=type(exc).__name__,
+                        exc_msg=str(exc)[:200],
+                    )
+                )

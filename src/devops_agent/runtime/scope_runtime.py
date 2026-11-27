@@ -266,6 +266,10 @@ class AgentScopeRuntime:
                 yield frame
             for frame in self._drain_memory():
                 yield frame
+        # 回合末的写入帧在 on_reply 的 finally 里产出，而它要等循环取下一个元素
+        # 才执行完 —— 只在循环体内 drain 会把这一帧漏掉（或记到下一轮头上）。
+        for frame in self._drain_memory():
+            yield frame
 
     # --- 挂起与恢复 ---------------------------------------------------
     def snapshot(self) -> str:
@@ -348,3 +352,5 @@ class AgentScopeRuntime:
                 yield frame
             for frame in self._drain_memory():
                 yield frame
+        for frame in self._drain_memory():
+            yield frame

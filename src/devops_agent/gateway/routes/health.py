@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request
 
 from devops_agent.config_store import health as config_health
 from devops_agent.config_store import mode as config_mode
-from devops_agent.gateway.bootstrap import describe_runtime, model_status
+from devops_agent.gateway.bootstrap import describe_runtime, describe_sandbox, model_status
 from devops_agent.memory.runtime import memory_status
 from devops_agent.memory.snapshot import restore_stats
 from devops_agent.tools.preflight import health_payload
@@ -56,6 +56,8 @@ def health(request: Request) -> dict[str, Any]:
         # 模型面：用的是哪个网关的哪个模型、窗口从哪来、哪个网关缺 key。
         # 与 runtime.kind 分开：后者说「真模型还是回显」，这里说「哪张能力卡」。
         "model": model_status(),
+        # 执行面：模式 / 实际生效 / 降级原因；Docker 不可用或回落本机时这里可见
+        "sandbox": describe_sandbox(request.app.state),
         "config": config_status(),
         "memory": {
             "short_term": status["short_term"],

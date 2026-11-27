@@ -18,13 +18,17 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
 
+from devops_agent.config import load_sandbox
 from devops_agent.config_store import schema
 from devops_agent.config_store.api import router as config_router
 from devops_agent.env import load_env
+from devops_agent.executor.manager import SandboxManager, SandboxUnavailable
 from devops_agent.gateway.bootstrap import (
     describe_runtime,
     load_settings,
@@ -50,7 +54,8 @@ from devops_agent.observability.api import router as observability_router
 from devops_agent.openjudge.api import router as openjudge_router
 from devops_agent.openjudge.api_edit import router as openjudge_edit_router
 from devops_agent.openjudge.memory.api import router as memory_eval_router
-from devops_agent.runtime.runtime import AgentRuntime
+from devops_agent.runtime.prompt import resolve_workdir
+from devops_agent.runtime.runtime import AgentRuntime, EchoRuntime
 from devops_agent.secrets.api import router as secrets_router
 from devops_agent.tools.api import router as tools_router
 from devops_agent.tools.context_api import router as context_router
@@ -74,9 +79,48 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
     load_env()
     # 1.5) 配置模式是静态错误必须当场报：`dbb` 不该被当成 file 静默跑
     schema.mode()
-    # 2) 运行时：显式注入优先，否则按凭据选择（配了 key 走真模型，否则 Echo）
-    application = FastAPI(title=APP_TITLE)
-    application.state.runtime = runtime if runtime is not None else pick_runtime()
+    injected = runtime
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        """启动期初始化执行面，退出时关闭全部工作区。
+
+        1) 未显式注入 runtime 时，读 sandbox 策略并 `ensure()` 执行目标；
+        2) 初始化成功后同步装配真实运行时（此时才有事件循环执行 async 初始化）；
+        3) `required=true` 且失败时记录错误，对话端点据此返回 503（不回落宿主）；
+        4) 关闭阶段统一 `close_all()`，容器残留只记录。
+        """
+        manager: SandboxManager | None = None
+        if injected is None:
+            manager = SandboxManager(load_sandbox())
+            application.state.sandbox_manager = manager
+            try:
+                target = await manager.ensure(resolve_workdir())
+            except SandboxUnavailable as exc:
+                application.state.sandbox_error = exc
+                logger.error("沙箱初始化失败，对话端点将返回 503：%s", exc)
+            else:
+                application.state.execution = target
+                application.state.runtime = pick_runtime(execution=target)
+                if target.degraded_reason:
+                    logger.warning("沙箱降级为 %s：%s", target.mode, target.degraded_reason)
+                else:
+                    logger.info(
+                        "执行面就绪：mode=%s tool_workdir=%s", target.mode, target.tool_workdir
+                    )
+                warn_runtime(application.state.runtime)
+        try:
+            yield
+        finally:
+            if manager is not None:
+                await manager.close_all()
+
+    # 2) 运行时：显式注入优先；否则先放 Echo 占位，lifespan 内初始化执行面后再装配
+    application = FastAPI(title=APP_TITLE, lifespan=lifespan)
+    application.state.runtime = runtime if runtime is not None else EchoRuntime()
+    application.state.execution = None
+    application.state.sandbox_manager = None
+    application.state.sandbox_error = None
     # 3) 策略与会话注册表：注册表懒建 —— 替换 runtime 后下一次请求自然用新工厂
     application.state.settings = load_settings()
     application.state.sessions = None
@@ -108,7 +152,9 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
     try:
         warn_missing_tools()
         warn_memory_backend()
-        warn_runtime(application.state.runtime)
+        # runtime 未注入时此刻只是 Echo 占位，真正装配在 lifespan 内，告警也在那里
+        if injected is not None:
+            warn_runtime(application.state.runtime)
     except Exception:  # noqa: BLE001 - 告警自身失败更不能拦住服务
         logger.warning("启动告警执行失败", exc_info=True)
     return application

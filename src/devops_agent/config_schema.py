@@ -212,6 +212,71 @@ class GatewayPolicy(BaseModel):
     sessions: GatewaySessionsPolicy = Field(default_factory=GatewaySessionsPolicy)
 
 
+# --- 沙箱执行面（sandbox 域）-------------------------------------------
+#
+# 执行面在进程启动期固定（`hot=restart`），这里只放「部署者能决定」的旋钮，
+# 不放容器实现细节：容器创建 / 镜像构建 / 文件同步全部由
+# `agentscope.workspace.DockerWorkspace` 承担。
+
+
+class SandboxDockerPolicy(BaseModel):
+    """DockerWorkspace 的构造参数（与内置签名逐项对应）。"""
+
+    # 基础镜像：必须自带 python3；生产建议用 digest 固定
+    base_image: str = Field(default="python:3.11-slim", min_length=1)
+    # 额外 Python 包装进 gateway venv（不是宿主环境）
+    extra_pip: list[str] = Field(default_factory=list)
+    # 显式透传进容器的环境变量；禁止放密钥（密钥仍走 SecretInjectionMiddleware）
+    env: dict[str, str] = Field(default_factory=dict)
+    # 容器内 gateway 端口；不映射到宿主机
+    gateway_port: int = Field(default=5600, ge=1, le=65_535)
+
+
+class SandboxOpensandboxPolicy(BaseModel):
+    """OpenSandboxWorkspace 的构造参数（与内置签名逐项对应）。
+
+    `api_key` 刻意不在此处：凭据只走环境变量（`DEVOPS_AGENT_SANDBOX_OSB_API_KEY`），
+    既不落 `config.db`，也不经 HTTP 往返，更不会出现在 `/health`。
+    """
+
+    # 预配置黄金镜像：必须已烘焙 gateway venv 与脚本（见 docker/sandbox.Dockerfile）；
+    # 生产建议用 digest 固定。空串非法。
+    image: str = Field(default="python:3.11-slim", min_length=1)
+    # 服务端地址；空串视为未配置 endpoint（required=true 时拒绝启动）
+    domain: str = ""
+    protocol: Literal["http", "https"] = "https"
+    # SDK HTTP 请求超时（秒）
+    request_timeout_seconds: float = Field(default=60.0, gt=0)
+    # 平台侧空闲保活；与 sandbox.ttl_seconds（本地缓存回收）相互独立
+    timeout_seconds: int = Field(default=1800, gt=0)
+    gateway_port: int = Field(default=5600, ge=1, le=65_535)
+    # 显式透传进沙箱的环境变量；禁止放密钥
+    env: dict[str, str] = Field(default_factory=dict)
+    # 额外 Python 包装进沙箱内 gateway venv
+    extra_pip: list[str] = Field(default_factory=list)
+    # 平台原生能力：原样透传，含义由 OpenSandbox 决定
+    resource: dict[str, str] = Field(default_factory=dict)
+    network_policy: dict[str, object] = Field(default_factory=dict)
+    entrypoint: list[str] = Field(default_factory=list)
+
+
+class SandboxPolicy(BaseModel):
+    """沙箱执行面：模式、是否允许回落、空闲回收与后端参数。
+
+    `mode` 是**请求**模式；实际生效模式由 `SandboxManager` 解析后写入
+    `ExecutionTarget.mode`。`required=True` 时任何回落都视为违约：
+    静默从容器降到宿主是安全事故，不是可用性优化。
+    """
+
+    mode: Literal["local", "docker", "opensandbox", "auto"] = "local"
+    # true：初始化失败不回落，对话端点 503；生产部署建议 true
+    required: bool = False
+    # 非聊天工作区（评测 case）空闲回收；聊天主工作区不回收
+    ttl_seconds: int = Field(default=900, gt=0)
+    docker: SandboxDockerPolicy = Field(default_factory=SandboxDockerPolicy)
+    opensandbox: SandboxOpensandboxPolicy = Field(default_factory=SandboxOpensandboxPolicy)
+
+
 # --- 模型参数（model.yaml 的 model 段）----------------------------------
 
 
@@ -385,4 +450,7 @@ __all__ = [
     "RiskPolicy",
     "RulePolicy",
     "RuntimePolicy",
+    "SandboxDockerPolicy",
+    "SandboxOpensandboxPolicy",
+    "SandboxPolicy",
 ]

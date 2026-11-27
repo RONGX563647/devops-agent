@@ -289,6 +289,7 @@ export interface TraceTiming {
 
 /** 轨迹步骤：由消息与过程步骤派生的只读视图。 */
 export interface TraceStep {
+  /** 会话内唯一（已带消息 id 前缀）；原始 step.id 只在单条消息内唯一。 */
   id: string;
   kind: 'text' | 'tool' | 'error' | 'parse' | 'model' | 'memory';
   /** 该步骤占用的资源：模型推理 / 工具执行 / 输入解析 / 记忆动作。 */
@@ -326,12 +327,14 @@ export interface TraceStep {
 
 /** 泳道段：某条资源泳道上的一段占用。 */
 export interface TraceSpan {
+  /** 会话内唯一，直接用作 React key；buildLanes 保证同泳道不重复。 */
   id: string;
   lane: 'model' | 'tool' | 'memory';
   start: number;
   end: number;
   status: 'ok' | 'error' | 'running';
   label: string;
+  /** 指向 TraceStep.id（同一份会话内唯一 id），点选与高亮靠它对上。 */
   stepId: string;
 }
 

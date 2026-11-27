@@ -12,6 +12,7 @@ from typing import Any
 
 from agentscope.message import Msg
 
+from devops_agent.memory.tokens import estimate_tokens
 from devops_agent.memory_policy import ShortTermPolicy
 
 _OMITTED = "[重复读取已省略]"
@@ -155,10 +156,21 @@ def _drop_old_turns(messages: list[Msg], max_turns: int, report: TrimReport) -> 
     return head + messages[keep_from:]
 
 
-def trim_messages(messages: list[Msg], policy: ShortTermPolicy) -> tuple[list[Msg], TrimReport]:
+def _token_size(messages: list[Msg]) -> int:
+    return sum(estimate_tokens(_output_text(msg.model_dump(mode="json"))) for msg in messages)
+
+
+def trim_messages(
+    messages: list[Msg],
+    policy: ShortTermPolicy,
+    *,
+    max_tokens: int | None = None,
+) -> tuple[list[Msg], TrimReport]:
     """对请求 messages 做一次确定性裁剪；返回新列表与统计。
 
-    顺序：工具结果头尾保留 → 重复读取去重 → 淘汰最旧轮次。
+    顺序：工具结果头尾保留 → 重复读取去重 → 淘汰最旧轮次 → 按 token 预算淘汰。
+    最后一步只在调用方给出 max_tokens 时执行，让短期面真正吃上下文预算，
+    而不是只按轮数裁。
     """
     report = TrimReport()
     # 去重必须看原文：先截断会让「同一份输出」变成同一段头尾，反而难以识别
@@ -167,6 +179,16 @@ def trim_messages(messages: list[Msg], policy: ShortTermPolicy) -> tuple[list[Ms
         trimmed = _dedupe_reads(trimmed, report)
     trimmed = [_truncate_blocks(msg, policy, report) for msg in trimmed]
     trimmed = _drop_old_turns(trimmed, policy.max_turns, report)
+    if max_tokens is not None:
+        # 预算只算历史面：系统提示/档位说明等头部已由 prefix 从预算里扣过
+        while True:
+            starts = _turn_starts(trimmed)
+            if len(starts) <= 1 or _token_size(trimmed[starts[0] :]) <= max_tokens:
+                break
+            dropped = trimmed[starts[0] : starts[1]]
+            report.dropped_turns += 1
+            report.reclaimed_chars += _size(dropped)
+            trimmed = trimmed[: starts[0]] + trimmed[starts[1] :]
     return trimmed, report
 
 
@@ -177,12 +199,18 @@ def _size(messages: list[Msg]) -> int:
 def trim_context_for_snapshot(
     messages: list[Msg], policy: ShortTermPolicy, max_chars: int
 ) -> tuple[list[Msg], TrimReport]:
-    """快照前的体积保护：先常规裁剪，再按字符上限继续丢最旧轮次。"""
+    """快照前的体积保护：先常规裁剪，再按字符上限继续丢最旧轮次。
+
+    整体大小只算一次，之后按「丢掉的那段」递减，避免每轮都全量序列化。
+    """
     trimmed, report = trim_messages(messages, policy)
-    while len(_turn_starts(trimmed)) > 1 and _size(trimmed) > max_chars:
+    total = _size(trimmed)
+    while len(_turn_starts(trimmed)) > 1 and total > max_chars:
         starts = _turn_starts(trimmed)
         dropped = trimmed[starts[0] : starts[1]]
+        dropped_size = _size(dropped)
         report.dropped_turns += 1
-        report.reclaimed_chars += _size(dropped)
+        report.reclaimed_chars += dropped_size
         trimmed = trimmed[: starts[0]] + trimmed[starts[1] :]
+        total -= dropped_size
     return trimmed, report

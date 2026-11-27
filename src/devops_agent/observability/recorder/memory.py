@@ -36,14 +36,17 @@ def memory_span(
     detail["state"] = state
     if reason:
         detail["reason"] = reason
+    # 明细统一在 memory 子对象里；顶层只是旧帧的兼容回退，别再把 0 当真值
+    duration = _as_int(detail.get("latency_ms", event.get("latency_ms", 0)))
+    query = str(detail.get("query", "") or event.get("query", "") or reason)
     return SpanRecord(
         id=None,
         run_id=run_id,
         type="memory",
         name=name,
         start_offset_ms=start_offset_ms,
-        duration_ms=_as_int(event.get("latency_ms", 0)),
-        input=str(event.get("query", "") or reason)[:_MAX_TEXT],
+        duration_ms=duration,
+        input=query[:_MAX_TEXT],
         output=json.dumps(detail, ensure_ascii=False)[:_MAX_TEXT],
         tokens=0,
         status=status,

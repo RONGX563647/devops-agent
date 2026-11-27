@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from devops_agent.memory_policy import LongTermPolicy
+from devops_agent.memory_policy import LongTermPolicy, MemoryPolicy
 from devops_agent.observability import repository as repo
 
 _WORDS = re.compile(r"[a-zA-Z0-9_]{2,}")
@@ -29,6 +29,18 @@ class Hit:
 
     def as_dict(self) -> dict[str, Any]:
         return {"id": self.id, "text": self.text, "score": self.score}
+
+
+def resolve_scope_id(policy: MemoryPolicy, session_id: str, scope: str | None = None) -> str:
+    """解析长期记忆的 scope_id：用户级优先用 user_id，否则回落到会话键。
+
+    `scope` 显式传入时以它为准（管理接口支持按查询参数切换），
+    没传就按策略默认。两条路径共用同一规则，避免读写落在不同分区。
+    """
+    effective = scope or policy.long_term.scope
+    if effective == "user" and policy.user_id:
+        return policy.user_id
+    return f"session:{session_id}"
 
 
 def _tokens(text: str) -> set[str]:
@@ -64,11 +76,12 @@ class LocalLongTerm:
         """词面召回 + 阈值过滤，按分数取前 top_k。"""
         with repo.connect(self._db_path) as conn:
             repo.init_db(conn)
+            # 候选池至少覆盖全部保留条目：只取最近几十条会让高价值旧结论永远召不回
             rows = repo.list_long_term(
                 conn,
                 scope=self._policy.scope,
                 scope_id=self._scope_id,
-                limit=max(top_k * 20, 50),
+                limit=max(self._policy.max_entries, top_k * 20),
             )
         hits = [
             Hit(id=int(row["id"]), text=str(row["text"]), score=score(query, str(row["text"])))

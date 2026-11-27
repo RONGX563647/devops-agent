@@ -90,7 +90,8 @@ def test_injects_episodic_note_once_per_reply(tmp_path) -> None:  # type: ignore
     assert runtime.sink.drain() == []
 
 
-def test_skips_injection_when_version_unchanged_across_turns(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_reinjects_memory_when_version_unchanged_across_turns(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """注入不写回历史：版本没变也必须每轮重新注入，否则记忆卡会从后续请求消失。"""
     runtime = _runtime(tmp_path)
     runtime.episodic.save(
         "s1", text="目标：修好登录", trigger="t", tokens_before=10, tokens_after=5, budget=8
@@ -99,7 +100,10 @@ def test_skips_injection_when_version_unchanged_across_turns(tmp_path) -> None: 
     agent = FakeAgent()
     messages = [SystemMsg(name="system", content="sys"), UserMsg(name="s1", content="继续")]
 
+    captured: dict[str, Any] = {}
+
     async def next_handler(**kwargs: Any) -> str:
+        captured["messages"] = kwargs["messages"]
         return "ok"
 
     asyncio.run(middleware.on_model_call(agent, {"messages": messages, "tools": []}, next_handler))
@@ -108,7 +112,33 @@ def test_skips_injection_when_version_unchanged_across_turns(tmp_path) -> None: 
     asyncio.run(middleware.on_model_call(agent, {"messages": messages, "tools": []}, next_handler))
     frames = runtime.sink.drain()
     retrieve = [frame for frame in frames if frame["type"] == events.MEMORY_RETRIEVE_END]
+    assert retrieve and retrieve[0]["state"] == "hit"
+    assert "修好登录" in _text(captured["messages"][-1])
+
+
+def test_skips_injection_when_budget_exhausted(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """前缀 + 输出预留吃满窗口时不再注入，并给出可解释的原因。"""
+    runtime = _runtime(tmp_path)
+    runtime.episodic.save(
+        "s1", text="目标：修好登录", trigger="t", tokens_before=10, tokens_after=5, budget=8
+    )
+    middleware = MemoryMiddleware(runtime)
+    agent = FakeAgent()
+    agent.model.context_size = 1
+    messages = [SystemMsg(name="system", content="sys"), UserMsg(name="s1", content="继续")]
+
+    captured: dict[str, Any] = {}
+
+    async def next_handler(**kwargs: Any) -> str:
+        captured["messages"] = kwargs["messages"]
+        return "ok"
+
+    asyncio.run(middleware.on_model_call(agent, {"messages": messages, "tools": []}, next_handler))
+    frames = runtime.sink.drain()
+    retrieve = [frame for frame in frames if frame["type"] == events.MEMORY_RETRIEVE_END]
     assert retrieve and retrieve[0]["state"] == "skipped"
+    assert retrieve[0]["reason"] == "budget_exhausted"
+    assert len(captured["messages"]) == len(messages)
 
 
 def test_compression_writes_episodic_version(tmp_path) -> None:  # type: ignore[no-untyped-def]

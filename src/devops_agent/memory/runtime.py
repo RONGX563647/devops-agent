@@ -23,7 +23,7 @@ from devops_agent.memory import events
 from devops_agent.memory.budget import Budget, compute_budget
 from devops_agent.memory.context import build_note, clip
 from devops_agent.memory.episodic import EpisodicMemory
-from devops_agent.memory.long_term import Hit, build_long_term
+from devops_agent.memory.long_term import Hit, build_long_term, resolve_scope_id
 from devops_agent.memory.short_term import trim_context_for_snapshot
 from devops_agent.memory.sink import MemorySink
 from devops_agent.memory.tokens import estimate_tokens
@@ -31,6 +31,20 @@ from devops_agent.observability import repository as repo
 
 # 长期写入只保留一段短文本：长期记忆是结论，不是原文仓库
 _MAX_WRITE_CHARS = 1000
+
+
+def _summary_chars(summary: object) -> int:
+    """摘要可能是字符串或文本块列表；只算字符数，用于扣除快照预算。"""
+    if isinstance(summary, str):
+        return len(summary)
+    if not isinstance(summary, list):
+        return 0
+    total = 0
+    for block in summary:
+        text = getattr(block, "text", "")
+        if isinstance(text, str):
+            total += len(text)
+    return total
 
 
 def _hit_hash(hits: list[Hit]) -> str:
@@ -76,11 +90,19 @@ class MemoryRuntime:
 
     def __post_init__(self) -> None:
         self.episodic = EpisodicMemory(self.policy.episodic, self.db_path)
-        scope_id = self.policy.user_id or f"session:{self.session_id}"
+        scope_id = resolve_scope_id(self.policy, self.session_id)
         self.long_term, self.backend_name = build_long_term(
             self.policy.long_term, scope_id, self.db_path
         )
         self.backend_reason = str(getattr(self.long_term, "reason", ""))
+        # 过期条目此前只在写入时被动覆盖，会话创建时主动清一次，避免库无限增长
+        if self.policy.enabled:
+            try:
+                with repo.connect(self.db_path) as conn:
+                    repo.init_db(conn)
+                    repo.delete_expired(conn)
+            except Exception:  # noqa: BLE001 - 清理失败不影响记忆读写
+                pass
 
     # --- 预算 ---------------------------------------------------------
     def budget(self, agent: Agent, prefix_tokens: int) -> Budget:
@@ -113,7 +135,7 @@ class MemoryRuntime:
             [hit.as_dict() for hit in hits],
             note_max_chars=self.policy.context.note_max_chars,
             episodic_ratio=self.policy.context.episodic_note_ratio,
-            summary_preview_chars=self.policy.trace.summary_preview_chars,
+            episodic_max_chars=self.policy.episodic.max_chars,
             top_k=self.policy.long_term.top_k,
         )
 
@@ -226,11 +248,17 @@ class MemoryRuntime:
 
     # --- 快照 ---------------------------------------------------------
     def cap_snapshot(self, agent: Agent) -> None:
-        """序列化前收缩历史，避免 state_json 无上限增长。"""
+        """序列化前收缩历史，并把快照版本写进 middle_context。
+
+        预算按「快照上限 − 已存在的摘要字符」给历史，避免摘要 + 历史合计超限；
+        版本号写回状态，/api/context 才能读到真实的快照格式版本而不是常量。
+        """
+        middle = dict(getattr(agent.state, "middle_context", {}) or {})
+        middle["snapshot_version"] = self.policy.context.snapshot_version
+        agent.state.middle_context = middle
         context = list(getattr(agent.state, "context", []) or [])
-        trimmed, report = trim_context_for_snapshot(
-            context, self.policy.short_term, self.policy.context.snapshot_max_chars
-        )
+        limit = max(0, self.policy.context.snapshot_max_chars - _summary_chars(agent.state.summary))
+        trimmed, report = trim_context_for_snapshot(context, self.policy.short_term, limit)
         if report.changed:
             agent.state.context = trimmed
 
@@ -268,7 +296,7 @@ def memory_status() -> dict[str, Any]:
 def session_counts(session_id: str) -> dict[str, int]:
     """某个会话的两层条数（管理接口用）；读不到时返回 0。"""
     policy = load_memory()
-    scope_id = policy.user_id or f"session:{session_id}"
+    scope_id = resolve_scope_id(policy, session_id)
     try:
         with repo.connect() as conn:
             repo.init_db(conn)

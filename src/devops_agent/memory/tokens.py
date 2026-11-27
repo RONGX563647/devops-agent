@@ -14,3 +14,23 @@ def estimate_tokens(text: str) -> int:
     """
     cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
     return int(cjk / 1.4 + (len(text) - cjk) / 3.6)
+
+
+def clip_to_tokens(text: str, max_tokens: int) -> str:
+    """按 token 预算截断文本；max_tokens<=0 时返回空串。
+
+    估算函数随截断长度单调不减，因此用二分找最长可行前缀，
+    不为了一个省略号再超预算。
+    """
+    if max_tokens <= 0:
+        return ""
+    if estimate_tokens(text) <= max_tokens:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if estimate_tokens(text[:mid]) <= max_tokens:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low]

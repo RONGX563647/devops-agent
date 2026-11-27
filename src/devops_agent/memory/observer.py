@@ -15,9 +15,13 @@ from agentscope.message import Msg, UserMsg
 from agentscope.middleware import MiddlewareBase
 
 from devops_agent.memory import events
+from devops_agent.memory.budget import Budget
 from devops_agent.memory.runtime import MemoryRuntime, estimate_prefix_tokens
 from devops_agent.memory.short_term import trim_messages
-from devops_agent.memory.tokens import estimate_tokens
+from devops_agent.memory.tokens import clip_to_tokens, estimate_tokens
+
+# reply_id 为空时也把同一轮内的多次模型调用归到同一个 note 缓存键
+_NO_REPLY = "__no_reply__"
 
 
 def _text_of(msg: Any) -> str:
@@ -62,7 +66,7 @@ class MemoryMiddleware(MiddlewareBase):
         self._policy = runtime.policy
         # 同一 reply 内多次模型调用复用同一份 note；回复结束即清空，不落快照
         self._note_cache: dict[str, str] = {}
-        self._assembled_reply = ""
+        self._assembled_key = ""
 
     # --- 模型调用 -----------------------------------------------------
     async def on_model_call(
@@ -71,9 +75,14 @@ class MemoryMiddleware(MiddlewareBase):
         input_kwargs: dict[str, Any],
         next_handler: Callable[..., Awaitable[Any]],
     ) -> Any:
-        """1) 确定性裁剪；2) 组装并追加记忆 note；3) 交给下一层。"""
+        """1) 算预算并确定性裁剪；2) 组装并追加记忆 note；3) 交给下一层。"""
         messages = list(input_kwargs.get("messages") or [])
-        trimmed, report = trim_messages(messages, self._policy.short_term)
+        tools = list(input_kwargs.get("tools") or [])
+        system_text = _text_of(messages[0]) if messages else ""
+        budget = self._runtime.budget(agent, estimate_prefix_tokens(system_text, tools))
+        trimmed, report = trim_messages(
+            messages, self._policy.short_term, max_tokens=budget.short_term
+        )
         if report.changed:
             self._runtime.sink.emit(
                 events.frame(
@@ -84,23 +93,26 @@ class MemoryMiddleware(MiddlewareBase):
                 )
             )
         reply = str(getattr(agent.state, "reply_id", "") or "")
-        if reply and reply in self._note_cache:
-            note = self._note_cache[reply]
+        cache_key = reply or _NO_REPLY
+        if cache_key in self._note_cache:
+            note = self._note_cache[cache_key]
         else:
-            note, _meta = await self._assemble(agent, trimmed, reply)
-            self._note_cache[reply] = note
+            note = await self._assemble(agent, trimmed, reply, budget)
+            self._note_cache[cache_key] = note
         if note:
             trimmed.append(UserMsg(name="system", content=note))
-        if reply and self._assembled_reply != reply:
-            self._assembled_reply = reply
-            tools = list(input_kwargs.get("tools") or [])
-            self._emit_assembled(agent, trimmed, tools, note, report.as_dict())
+        if cache_key != self._assembled_key:
+            self._assembled_key = cache_key
+            self._emit_assembled(trimmed, tools, note, report.as_dict(), budget)
         return await next_handler(messages=trimmed)
 
-    async def _assemble(
-        self, agent: Agent, messages: list[Msg], reply: str
-    ) -> tuple[str, dict[str, Any]]:
-        """召回三层内容并决定这一轮是否真的注入（版本未变则跳过）。"""
+    async def _assemble(self, agent: Agent, messages: list[Msg], reply: str, budget: Budget) -> str:
+        """召回三层内容并按预算装配 note。
+
+        注入内容不写回历史，所以「版本没变」不等于「模型还记得」：每轮都要重新注入，
+        跨轮去重会让记忆卡从后续请求里消失。去重只发生在同一 reply 的多次模型调用内
+        （由调用方的 `_note_cache` 负责）。
+        """
         query = _last_user_text(messages)
         self._runtime.sink.emit(
             events.frame(
@@ -112,40 +124,34 @@ class MemoryMiddleware(MiddlewareBase):
         )
         card, hits = await self._runtime.recall(query)
         marker = self._runtime.marker(card, hits, reply)
-        unchanged = self._unchanged(agent, marker, reply)
-        note = "" if unchanged else self._runtime.note(card, hits)
         self._remember(agent, marker)
-        state = "skipped" if unchanged else ("hit" if note else "miss")
-        reason = "unchanged" if unchanged else ("" if note else "no_memory")
-        meta = {
-            "episodic_version": marker["episodic_version"],
-            "hits": len(hits),
-            "ids": [hit.id for hit in hits],
-            "scores": [round(hit.score, 3) for hit in hits],
-            "injected_chars": len(note),
-            "query": query[: self._policy.trace.query_preview_chars],
-        }
+        note = ""
+        if budget.history_max <= 0:
+            state, reason = "skipped", "budget_exhausted"
+        else:
+            raw = self._runtime.note(card, hits)
+            note = clip_to_tokens(raw, budget.episodic + budget.long_term)
+            if note:
+                state, reason = "hit", ""
+            elif raw:
+                state, reason = "skipped", "budget_exhausted"
+            else:
+                state, reason = "miss", "no_memory"
         self._runtime.sink.emit(
             events.frame(
                 events.MEMORY_RETRIEVE_END,
                 layer="long",
                 state=state,
                 reason=reason,
-                **meta,
+                episodic_version=marker["episodic_version"],
+                hits=len(hits),
+                ids=[hit.id for hit in hits],
+                scores=[round(hit.score, 3) for hit in hits],
+                injected_chars=len(note),
+                query=query[: self._policy.trace.query_preview_chars],
             )
         )
-        return note, meta
-
-    @staticmethod
-    def _unchanged(agent: Agent, marker: dict[str, Any], reply: str) -> bool:
-        """同一版本、同一批命中且不是同一 reply：视为已经注入过，不再重复。"""
-        middle = getattr(agent.state, "middle_context", {}) or {}
-        previous = middle.get("memory") or {}
-        return (
-            previous.get("episodic_version") == marker["episodic_version"]
-            and previous.get("long_term_hash") == marker["long_term_hash"]
-            and previous.get("reply_id") != reply
-        )
+        return note
 
     @staticmethod
     def _remember(agent: Agent, marker: dict[str, Any]) -> None:
@@ -156,18 +162,17 @@ class MemoryMiddleware(MiddlewareBase):
 
     def _emit_assembled(
         self,
-        agent: Agent,
         messages: list[Msg],
         tools: list[dict[str, Any]],
         note: str,
         dropped: dict[str, int],
+        budget: Budget,
     ) -> None:
-        """第 0 步的分区视图；Echo/关闭时不发。"""
+        """第 0 步的分区视图；Echo/关闭时不发。预算复用 on_model_call 算好的那份。"""
         if not self._policy.context.enabled or not self._policy.context.assemble_event:
             return
         system_text = _text_of(messages[0]) if messages else ""
         tools_text = json.dumps(tools, ensure_ascii=False)
-        budget = self._runtime.budget(agent, estimate_prefix_tokens(system_text, tools))
         payload = {
             "zones": {
                 "prefix": {
@@ -203,7 +208,9 @@ class MemoryMiddleware(MiddlewareBase):
                 yield event
         finally:
             reply = str(getattr(agent.state, "reply_id", "") or "")
-            self._note_cache.pop(reply, None)
+            self._note_cache.pop(reply or _NO_REPLY, None)
+            self._note_cache.pop(_NO_REPLY, None)
+            self._assembled_key = ""
             try:
                 await self._runtime.write_turn(
                     _input_text(input_kwargs.get("inputs")), _last_assistant_text(agent)

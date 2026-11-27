@@ -265,6 +265,48 @@ async def _rubric(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _memory_run(args: argparse.Namespace) -> int:
+    """跑一次确定性记忆批次；退出码 0 通过 / 1 未通过 / 2 题库或计划错误。"""
+    from devops_agent.openjudge.memory import runner as memory_runner
+
+    try:
+        result = await memory_runner.run_plan(
+            Path(args.plan),
+            db_path=Path(args.db) if args.db else None,
+            suite_tier=args.suite,
+            variants=args.variant or None,
+        )
+    except memory_runner.BatchError as exc:
+        print(f"配置错误：{exc}", file=sys.stderr)
+        return 2
+    print(f"batch={result.batch_id} verdict={result.verdict}")
+    for track, row in sorted(result.summary.get("tracks", {}).items()):
+        print(
+            f"  {track}: {row['passed']}/{row['total']} "
+            f"tsr={_fmt(row['tsr'])} probe_acc={_fmt(row['probe_acc'])}"
+        )
+    return 0 if result.verdict == "pass" else 1
+
+
+def _fmt(value: float | None) -> str:
+    return "—" if value is None else f"{value:.2f}"
+
+
+def _memory_list(args: argparse.Namespace) -> int:
+    from devops_agent.openjudge.memory import store as memory_store
+
+    with store.connect(Path(args.db) if args.db else None) as conn:
+        store.init_db(conn)
+        memory_store.init_db(conn)
+        rows = memory_store.list_batches(conn, limit=args.limit)
+    payload = [
+        {"id": row["id"], "verdict": row["verdict"], "finished_at": row["finished_at"]}
+        for row in rows
+    ]
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="openjudge", description="DevOps-Agent OpenJudge 评测")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -344,6 +386,27 @@ def build_parser() -> argparse.ArgumentParser:
     rubric.add_argument("--scenario", default="仓库结构/函数/配置问答，回答直接用于排障。")
     rubric.add_argument("--samples")
     rubric.set_defaults(func=lambda args: asyncio.run(_rubric(args)))
+
+    memory = sub.add_parser("memory", help="记忆效果评测（SPEC-0014）")
+    memory_sub = memory.add_subparsers(dest="memory_command", required=True)
+    memory_run = memory_sub.add_parser("run", help="跑确定性记忆批次（无需模型 Key）")
+    memory_run.add_argument("--plan", default="eval/memory/plan.yaml")
+    memory_run.add_argument(
+        "--suite",
+        default="must_pass",
+        choices=["must_pass", "regression", "exploratory", ""],
+    )
+    memory_run.add_argument(
+        "--variant",
+        action="append",
+        help="只跑指定变体（可重复；baseline/primary 会自动补上）",
+    )
+    memory_run.add_argument("--db")
+    memory_run.set_defaults(func=lambda args: asyncio.run(_memory_run(args)))
+    memory_list = memory_sub.add_parser("list", help="列出记忆批次")
+    memory_list.add_argument("--limit", type=int, default=20)
+    memory_list.add_argument("--db")
+    memory_list.set_defaults(func=_memory_list)
     return parser
 
 

@@ -170,9 +170,15 @@ def _build_search_tool(parts: RuntimeParts) -> RuntimeParts:
     return replace(parts, search_tool=WebSearchTool(backend))
 
 
-def _build_middlewares(parts: RuntimeParts, session_id: str = "") -> RuntimeParts:
-    """建工具中间件、档位说明、压缩 sink 与记忆运行时（随会话快照重建）。"""
-    policy = load_memory()
+def _build_middlewares(
+    parts: RuntimeParts, session_id: str = "", memory_policy: Any | None = None
+) -> RuntimeParts:
+    """建工具中间件、档位说明、压缩 sink 与记忆运行时（随会话快照重建）。
+
+    `memory_policy` 是评测变体的入口：省略时读全局 `load_memory()`，
+    这样线上行为不变，只有评测传入 off/short/full 等变体。
+    """
+    policy = memory_policy if memory_policy is not None else load_memory()
     memory = MemoryRuntime(session_id, policy) if session_id and policy.enabled else None
     return replace(
         parts,
@@ -247,6 +253,7 @@ def build_agentscope_runtime(
     web_search: bool | None = None,
     params: ModelParams | None = None,
     session_id: str = "",
+    memory_policy: Any | None = None,
 ) -> AgentScopeRuntime:
     """装配真实运行时（env 提供模型凭据）。
 
@@ -265,7 +272,7 @@ def build_agentscope_runtime(
     # 2) 联网工具：只有 tool 模式且后端可用才建，预算实例要交给运行时持有
     parts = _build_search_tool(parts)
     # 3) 建中间件、压缩 sink 与记忆运行时（无 session_id 时不装配记忆）
-    parts = _build_middlewares(parts, session_id)
+    parts = _build_middlewares(parts, session_id, memory_policy)
     # 4) 建 Agent：工具按档位装配，模型参数与上下文窗口同源
     parts = _build_agent(parts)
     # 5) 包成运行时：中间件、sink 与当前参数交给运行时持有

@@ -1,0 +1,39 @@
+# 记忆评测计划（SPEC-0014 §12）
+# 本计划是 P1/P2 的确定性垂直切片：不依赖模型 Key，PR 门禁可直接跑。
+# P3 nightly 会补真实模型 E2E 与更大样本；届时把 min_n 提到 12 并开启 cost_enforced。
+plan: memory-v1
+suite: eval/memory/cases
+baseline: "off"
+primary: full
+variants:
+  "off": { short_term: false, episodic: false, long_term: false }
+  short: { episodic: false, long_term: false }
+  episodic_only: { long_term: false }
+  full: {}
+  full_no_compress: { episodic: false }
+trials: 1
+min_n: 4
+stats:
+  require_ci: true
+  alpha: 0.05
+thresholds:
+  memory_gain_pp: 15
+  probe_acc: 0.85
+  contradiction_rate: 0.02
+  recall_at_5: 0.85
+  precision_at_5: 0.80
+  mrr: 0.70
+  fact_retention: 0.90
+  artifact_retention: 0.80
+  junk_rate: 0.10
+  harm_rate: 0.01
+  token_overhead_p50: 0.20
+  token_overhead_p95: 0.35
+  latency_p95_ms: 800
+# 代价在确定性切片里只报告不否决：没有真实模型 prompt，token 开销不可比；
+# P3 接入真实模型后再开启。
+cost_enforced: false
+red_lines: [leak_count, redaction_violation, constraint_retention]
+budget:
+  max_tokens: 3000000
+  max_minutes: 60

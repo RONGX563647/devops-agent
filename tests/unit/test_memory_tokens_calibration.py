@@ -22,7 +22,7 @@ from devops_agent.memory.budget import compute_budget
 from devops_agent.memory.observer import MemoryMiddleware
 from devops_agent.memory.runtime import MemoryRuntime, estimate_prefix_tokens
 from devops_agent.memory.sink import MemorySink
-from devops_agent.memory.tokens import ASCII_CHARS_PER_TOKEN, CJK_CHARS_PER_TOKEN, estimate_tokens
+from devops_agent.memory.tokens import FAMILIES, PER_MESSAGE_OVERHEAD, build
 from devops_agent.runtime.prompt import build_system_prompt
 from devops_agent.tools.schema import tool_schemas
 
@@ -34,13 +34,17 @@ def _sample() -> dict[str, Any]:
     return data
 
 
-def test_unit_coefficients_are_pinned() -> None:
-    """两个系数是契约：改它们必须同时改 fixture，否则这里的比值立刻不对。"""
-    assert CJK_CHARS_PER_TOKEN == 1.4
-    assert ASCII_CHARS_PER_TOKEN == 3.6
-    assert estimate_tokens("汉" * 140) == 100
-    assert estimate_tokens("a" * 360) == 100
-    assert estimate_tokens("汉" * 7 + "a" * 18) == 10
+def test_family_coefficients_are_pinned() -> None:
+    """三族系数是契约：改它们必须同时改 fixture，否则精度用例立刻红。"""
+    assert FAMILIES["cl100k"] == (0.76, 5.90, 2.36)
+    assert FAMILIES["o200k"] == (1.22, 5.72, 2.38)
+    # qwen 以线上真值为锚整体收紧 6%，generic 取同一组（未知族宁可多算）
+    assert FAMILIES["qwen"] == FAMILIES["generic"] == (0.72, 5.57, 2.23)
+    assert PER_MESSAGE_OVERHEAD == 4
+    qwen = build(family="qwen")
+    assert qwen.count("汉" * 36) == 50
+    assert qwen.count("a" * 360) == 65
+    assert qwen.count("") == 0
 
 
 def test_current_prefix_stays_within_calibration_tolerance() -> None:

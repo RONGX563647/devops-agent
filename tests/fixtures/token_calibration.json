@@ -6,5 +6,767 @@
   "expected_tokens": 3060,
   "tolerance": 0.08,
   "drift_tolerance": 0.15,
-  "source": "线上单次调用 usage.prompt_tokens 与 452 字系统提示 + 10147 字符工具 schema 的反推（旧样本 409/10139 ≈ 3060）"
+  "source": "线上单次调用 usage.prompt_tokens 与系统提示 + 工具 schema 的反推；shapes[] 的 tokens 由 tiktoken cl100k_base / o200k_base 实测，qwen 族按该真值样本整体修正 6%",
+  "shapes": [
+    {
+      "name": "zh0x1",
+      "shape": "zh",
+      "chars": 39,
+      "cjk": 36,
+      "letters": 0,
+      "symbols": 3,
+      "tokens": {
+        "cl100k": 49,
+        "o200k": 29
+      }
+    },
+    {
+      "name": "zh0x2",
+      "shape": "zh",
+      "chars": 78,
+      "cjk": 72,
+      "letters": 0,
+      "symbols": 6,
+      "tokens": {
+        "cl100k": 98,
+        "o200k": 58
+      }
+    },
+    {
+      "name": "zh0x5",
+      "shape": "zh",
+      "chars": 195,
+      "cjk": 180,
+      "letters": 0,
+      "symbols": 15,
+      "tokens": {
+        "cl100k": 245,
+        "o200k": 145
+      }
+    },
+    {
+      "name": "zh1x1",
+      "shape": "zh",
+      "chars": 82,
+      "cjk": 68,
+      "letters": 6,
+      "symbols": 8,
+      "tokens": {
+        "cl100k": 76,
+        "o200k": 58
+      }
+    },
+    {
+      "name": "zh1x2",
+      "shape": "zh",
+      "chars": 164,
+      "cjk": 136,
+      "letters": 12,
+      "symbols": 16,
+      "tokens": {
+        "cl100k": 152,
+        "o200k": 116
+      }
+    },
+    {
+      "name": "zh1x5",
+      "shape": "zh",
+      "chars": 410,
+      "cjk": 340,
+      "letters": 30,
+      "symbols": 40,
+      "tokens": {
+        "cl100k": 380,
+        "o200k": 290
+      }
+    },
+    {
+      "name": "zh2x1",
+      "shape": "zh",
+      "chars": 44,
+      "cjk": 40,
+      "letters": 0,
+      "symbols": 4,
+      "tokens": {
+        "cl100k": 47,
+        "o200k": 33
+      }
+    },
+    {
+      "name": "zh2x2",
+      "shape": "zh",
+      "chars": 88,
+      "cjk": 80,
+      "letters": 0,
+      "symbols": 8,
+      "tokens": {
+        "cl100k": 94,
+        "o200k": 66
+      }
+    },
+    {
+      "name": "zh2x5",
+      "shape": "zh",
+      "chars": 220,
+      "cjk": 200,
+      "letters": 0,
+      "symbols": 20,
+      "tokens": {
+        "cl100k": 235,
+        "o200k": 165
+      }
+    },
+    {
+      "name": "en0x1",
+      "shape": "en",
+      "chars": 111,
+      "cjk": 0,
+      "letters": 93,
+      "symbols": 18,
+      "tokens": {
+        "cl100k": 20,
+        "o200k": 20
+      }
+    },
+    {
+      "name": "en0x2",
+      "shape": "en",
+      "chars": 222,
+      "cjk": 0,
+      "letters": 186,
+      "symbols": 36,
+      "tokens": {
+        "cl100k": 39,
+        "o200k": 39
+      }
+    },
+    {
+      "name": "en0x5",
+      "shape": "en",
+      "chars": 555,
+      "cjk": 0,
+      "letters": 465,
+      "symbols": 90,
+      "tokens": {
+        "cl100k": 96,
+        "o200k": 96
+      }
+    },
+    {
+      "name": "en1x1",
+      "shape": "en",
+      "chars": 180,
+      "cjk": 0,
+      "letters": 144,
+      "symbols": 36,
+      "tokens": {
+        "cl100k": 38,
+        "o200k": 38
+      }
+    },
+    {
+      "name": "en1x2",
+      "shape": "en",
+      "chars": 360,
+      "cjk": 0,
+      "letters": 288,
+      "symbols": 72,
+      "tokens": {
+        "cl100k": 75,
+        "o200k": 75
+      }
+    },
+    {
+      "name": "en1x5",
+      "shape": "en",
+      "chars": 900,
+      "cjk": 0,
+      "letters": 720,
+      "symbols": 180,
+      "tokens": {
+        "cl100k": 186,
+        "o200k": 186
+      }
+    },
+    {
+      "name": "en2x1",
+      "shape": "en",
+      "chars": 152,
+      "cjk": 0,
+      "letters": 123,
+      "symbols": 29,
+      "tokens": {
+        "cl100k": 31,
+        "o200k": 31
+      }
+    },
+    {
+      "name": "en2x2",
+      "shape": "en",
+      "chars": 304,
+      "cjk": 0,
+      "letters": 246,
+      "symbols": 58,
+      "tokens": {
+        "cl100k": 61,
+        "o200k": 61
+      }
+    },
+    {
+      "name": "en2x5",
+      "shape": "en",
+      "chars": 760,
+      "cjk": 0,
+      "letters": 615,
+      "symbols": 145,
+      "tokens": {
+        "cl100k": 151,
+        "o200k": 151
+      }
+    },
+    {
+      "name": "mix0x1",
+      "shape": "mix",
+      "chars": 62,
+      "cjk": 17,
+      "letters": 35,
+      "symbols": 10,
+      "tokens": {
+        "cl100k": 35,
+        "o200k": 23
+      }
+    },
+    {
+      "name": "mix0x2",
+      "shape": "mix",
+      "chars": 124,
+      "cjk": 34,
+      "letters": 70,
+      "symbols": 20,
+      "tokens": {
+        "cl100k": 70,
+        "o200k": 46
+      }
+    },
+    {
+      "name": "mix0x5",
+      "shape": "mix",
+      "chars": 310,
+      "cjk": 85,
+      "letters": 175,
+      "symbols": 50,
+      "tokens": {
+        "cl100k": 175,
+        "o200k": 115
+      }
+    },
+    {
+      "name": "mix1x1",
+      "shape": "mix",
+      "chars": 68,
+      "cjk": 30,
+      "letters": 20,
+      "symbols": 18,
+      "tokens": {
+        "cl100k": 52,
+        "o200k": 43
+      }
+    },
+    {
+      "name": "mix1x2",
+      "shape": "mix",
+      "chars": 136,
+      "cjk": 60,
+      "letters": 40,
+      "symbols": 36,
+      "tokens": {
+        "cl100k": 104,
+        "o200k": 86
+      }
+    },
+    {
+      "name": "mix1x5",
+      "shape": "mix",
+      "chars": 340,
+      "cjk": 150,
+      "letters": 100,
+      "symbols": 90,
+      "tokens": {
+        "cl100k": 260,
+        "o200k": 215
+      }
+    },
+    {
+      "name": "mix2x1",
+      "shape": "mix",
+      "chars": 130,
+      "cjk": 47,
+      "letters": 55,
+      "symbols": 28,
+      "tokens": {
+        "cl100k": 87,
+        "o200k": 66
+      }
+    },
+    {
+      "name": "mix2x2",
+      "shape": "mix",
+      "chars": 260,
+      "cjk": 94,
+      "letters": 110,
+      "symbols": 56,
+      "tokens": {
+        "cl100k": 174,
+        "o200k": 132
+      }
+    },
+    {
+      "name": "mix2x5",
+      "shape": "mix",
+      "chars": 650,
+      "cjk": 235,
+      "letters": 275,
+      "symbols": 140,
+      "tokens": {
+        "cl100k": 435,
+        "o200k": 330
+      }
+    },
+    {
+      "name": "code0x1",
+      "shape": "code",
+      "chars": 180,
+      "cjk": 0,
+      "letters": 112,
+      "symbols": 68,
+      "tokens": {
+        "cl100k": 47,
+        "o200k": 47
+      }
+    },
+    {
+      "name": "code0x2",
+      "shape": "code",
+      "chars": 360,
+      "cjk": 0,
+      "letters": 224,
+      "symbols": 136,
+      "tokens": {
+        "cl100k": 94,
+        "o200k": 94
+      }
+    },
+    {
+      "name": "code0x5",
+      "shape": "code",
+      "chars": 900,
+      "cjk": 0,
+      "letters": 560,
+      "symbols": 340,
+      "tokens": {
+        "cl100k": 235,
+        "o200k": 235
+      }
+    },
+    {
+      "name": "code1x1",
+      "shape": "code",
+      "chars": 202,
+      "cjk": 0,
+      "letters": 121,
+      "symbols": 81,
+      "tokens": {
+        "cl100k": 60,
+        "o200k": 59
+      }
+    },
+    {
+      "name": "code1x2",
+      "shape": "code",
+      "chars": 404,
+      "cjk": 0,
+      "letters": 242,
+      "symbols": 162,
+      "tokens": {
+        "cl100k": 120,
+        "o200k": 118
+      }
+    },
+    {
+      "name": "code1x5",
+      "shape": "code",
+      "chars": 1010,
+      "cjk": 0,
+      "letters": 605,
+      "symbols": 405,
+      "tokens": {
+        "cl100k": 300,
+        "o200k": 295
+      }
+    },
+    {
+      "name": "code2x1",
+      "shape": "code",
+      "chars": 382,
+      "cjk": 0,
+      "letters": 233,
+      "symbols": 149,
+      "tokens": {
+        "cl100k": 107,
+        "o200k": 106
+      }
+    },
+    {
+      "name": "code2x2",
+      "shape": "code",
+      "chars": 764,
+      "cjk": 0,
+      "letters": 466,
+      "symbols": 298,
+      "tokens": {
+        "cl100k": 214,
+        "o200k": 212
+      }
+    },
+    {
+      "name": "code2x5",
+      "shape": "code",
+      "chars": 1910,
+      "cjk": 0,
+      "letters": 1165,
+      "symbols": 745,
+      "tokens": {
+        "cl100k": 535,
+        "o200k": 530
+      }
+    },
+    {
+      "name": "json0x1",
+      "shape": "json",
+      "chars": 118,
+      "cjk": 0,
+      "letters": 46,
+      "symbols": 72,
+      "tokens": {
+        "cl100k": 44,
+        "o200k": 44
+      }
+    },
+    {
+      "name": "json0x2",
+      "shape": "json",
+      "chars": 236,
+      "cjk": 0,
+      "letters": 92,
+      "symbols": 144,
+      "tokens": {
+        "cl100k": 87,
+        "o200k": 87
+      }
+    },
+    {
+      "name": "json0x5",
+      "shape": "json",
+      "chars": 590,
+      "cjk": 0,
+      "letters": 230,
+      "symbols": 360,
+      "tokens": {
+        "cl100k": 216,
+        "o200k": 216
+      }
+    },
+    {
+      "name": "json1x1",
+      "shape": "json",
+      "chars": 294,
+      "cjk": 0,
+      "letters": 104,
+      "symbols": 190,
+      "tokens": {
+        "cl100k": 98,
+        "o200k": 98
+      }
+    },
+    {
+      "name": "json1x2",
+      "shape": "json",
+      "chars": 588,
+      "cjk": 0,
+      "letters": 208,
+      "symbols": 380,
+      "tokens": {
+        "cl100k": 195,
+        "o200k": 195
+      }
+    },
+    {
+      "name": "json1x5",
+      "shape": "json",
+      "chars": 1470,
+      "cjk": 0,
+      "letters": 520,
+      "symbols": 950,
+      "tokens": {
+        "cl100k": 486,
+        "o200k": 486
+      }
+    },
+    {
+      "name": "json2x1",
+      "shape": "json",
+      "chars": 412,
+      "cjk": 0,
+      "letters": 150,
+      "symbols": 262,
+      "tokens": {
+        "cl100k": 141,
+        "o200k": 141
+      }
+    },
+    {
+      "name": "json2x2",
+      "shape": "json",
+      "chars": 824,
+      "cjk": 0,
+      "letters": 300,
+      "symbols": 524,
+      "tokens": {
+        "cl100k": 281,
+        "o200k": 281
+      }
+    },
+    {
+      "name": "json2x5",
+      "shape": "json",
+      "chars": 2060,
+      "cjk": 0,
+      "letters": 750,
+      "symbols": 1310,
+      "tokens": {
+        "cl100k": 701,
+        "o200k": 701
+      }
+    },
+    {
+      "name": "path0x1",
+      "shape": "path",
+      "chars": 116,
+      "cjk": 0,
+      "letters": 88,
+      "symbols": 28,
+      "tokens": {
+        "cl100k": 32,
+        "o200k": 32
+      }
+    },
+    {
+      "name": "path0x2",
+      "shape": "path",
+      "chars": 232,
+      "cjk": 0,
+      "letters": 176,
+      "symbols": 56,
+      "tokens": {
+        "cl100k": 64,
+        "o200k": 64
+      }
+    },
+    {
+      "name": "path0x5",
+      "shape": "path",
+      "chars": 580,
+      "cjk": 0,
+      "letters": 440,
+      "symbols": 140,
+      "tokens": {
+        "cl100k": 160,
+        "o200k": 160
+      }
+    },
+    {
+      "name": "path1x1",
+      "shape": "path",
+      "chars": 125,
+      "cjk": 0,
+      "letters": 84,
+      "symbols": 41,
+      "tokens": {
+        "cl100k": 37,
+        "o200k": 38
+      }
+    },
+    {
+      "name": "path1x2",
+      "shape": "path",
+      "chars": 250,
+      "cjk": 0,
+      "letters": 168,
+      "symbols": 82,
+      "tokens": {
+        "cl100k": 74,
+        "o200k": 76
+      }
+    },
+    {
+      "name": "path1x5",
+      "shape": "path",
+      "chars": 625,
+      "cjk": 0,
+      "letters": 420,
+      "symbols": 205,
+      "tokens": {
+        "cl100k": 185,
+        "o200k": 190
+      }
+    },
+    {
+      "name": "path2x1",
+      "shape": "path",
+      "chars": 242,
+      "cjk": 0,
+      "letters": 172,
+      "symbols": 70,
+      "tokens": {
+        "cl100k": 69,
+        "o200k": 70
+      }
+    },
+    {
+      "name": "path2x2",
+      "shape": "path",
+      "chars": 484,
+      "cjk": 0,
+      "letters": 344,
+      "symbols": 140,
+      "tokens": {
+        "cl100k": 138,
+        "o200k": 140
+      }
+    },
+    {
+      "name": "path2x5",
+      "shape": "path",
+      "chars": 1210,
+      "cjk": 0,
+      "letters": 860,
+      "symbols": 350,
+      "tokens": {
+        "cl100k": 345,
+        "o200k": 350
+      }
+    },
+    {
+      "name": "log0x1",
+      "shape": "log",
+      "chars": 113,
+      "cjk": 0,
+      "letters": 73,
+      "symbols": 40,
+      "tokens": {
+        "cl100k": 35,
+        "o200k": 35
+      }
+    },
+    {
+      "name": "log0x2",
+      "shape": "log",
+      "chars": 226,
+      "cjk": 0,
+      "letters": 146,
+      "symbols": 80,
+      "tokens": {
+        "cl100k": 69,
+        "o200k": 69
+      }
+    },
+    {
+      "name": "log0x5",
+      "shape": "log",
+      "chars": 565,
+      "cjk": 0,
+      "letters": 365,
+      "symbols": 200,
+      "tokens": {
+        "cl100k": 171,
+        "o200k": 171
+      }
+    },
+    {
+      "name": "log1x1",
+      "shape": "log",
+      "chars": 94,
+      "cjk": 0,
+      "letters": 53,
+      "symbols": 41,
+      "tokens": {
+        "cl100k": 31,
+        "o200k": 31
+      }
+    },
+    {
+      "name": "log1x2",
+      "shape": "log",
+      "chars": 188,
+      "cjk": 0,
+      "letters": 106,
+      "symbols": 82,
+      "tokens": {
+        "cl100k": 62,
+        "o200k": 62
+      }
+    },
+    {
+      "name": "log1x5",
+      "shape": "log",
+      "chars": 470,
+      "cjk": 0,
+      "letters": 265,
+      "symbols": 205,
+      "tokens": {
+        "cl100k": 155,
+        "o200k": 155
+      }
+    },
+    {
+      "name": "log2x1",
+      "shape": "log",
+      "chars": 208,
+      "cjk": 0,
+      "letters": 126,
+      "symbols": 82,
+      "tokens": {
+        "cl100k": 67,
+        "o200k": 67
+      }
+    },
+    {
+      "name": "log2x2",
+      "shape": "log",
+      "chars": 416,
+      "cjk": 0,
+      "letters": 252,
+      "symbols": 164,
+      "tokens": {
+        "cl100k": 134,
+        "o200k": 134
+      }
+    },
+    {
+      "name": "log2x5",
+      "shape": "log",
+      "chars": 1040,
+      "cjk": 0,
+      "letters": 630,
+      "symbols": 410,
+      "tokens": {
+        "cl100k": 335,
+        "o200k": 335
+      }
+    }
+  ],
+  "shape_total_tolerance": 0.05,
+  "shape_segment_tolerance": 0.25,
+  "prefix_tolerance": 0.02,
+  "measured_note": "shapes[] 每条的 tokens 是 tiktoken cl100k_base / o200k_base 的实测值；qwen 与 generic 没有独立真值，只有 expected_tokens 这一个线上锚点。"
 }

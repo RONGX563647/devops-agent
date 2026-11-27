@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ShortTermPolicy(BaseModel):
@@ -17,7 +17,19 @@ class ShortTermPolicy(BaseModel):
     max_turns: int = Field(default=12, ge=1, le=200)
     tool_output_chars: int = Field(default=1600, ge=80, le=200_000)
     tool_output_head_ratio: float = Field(default=0.7, gt=0, lt=1)
-    dedup_reads: bool = True
+    #: 去重三态（SPEC-0016 §5.3）。`on_pressure` 只在超预算后才改写历史中段，
+    #: 因为旧默认（恒开）每轮都会动历史，把从改动点起的整段前缀缓存作废。
+    dedup_reads: Literal["never", "on_pressure", "always"] = "on_pressure"
+
+    @field_validator("dedup_reads", mode="before")
+    @classmethod
+    def _legacy_bool(cls, value: object) -> object:
+        """存量 `config.db` 里是布尔：True/False 映射为 always/never，不报错。"""
+        if value is True:
+            return "always"
+        if value is False:
+            return "never"
+        return value
 
 
 class EpisodicPolicy(BaseModel):
@@ -47,12 +59,19 @@ class LongTermPolicy(BaseModel):
     backend: Literal["auto", "mem0", "agentic", "local", "off"] = "auto"
     scope: Literal["session", "user"] = "session"
     top_k: int = Field(default=5, ge=1, le=50)
-    min_score: float = Field(default=0.35, ge=0, le=1)
+    #: 归一化后 0~1；0.30 是 fixture 上 precision ≥0.8 的最小阈值（SPEC-0016 §7.2）
+    min_score: float = Field(default=0.30, ge=0, le=1)
     max_entries: int = Field(default=200, ge=1, le=10_000)
     ttl_days: int = Field(default=90, ge=1, le=3650)
     # 只有「回合结束写入」一种实现；`session_end` 曾在枚举里但从未被实现，
     # 收窄后写错值会在加载配置时就报错，而不是静默不写（SPEC-0013 §18.2 M4）。
     write_on: Literal["turn"] = "turn"
+    #: 检索算法：bm25（默认）| overlap（旧实现，保留一个版本用于 A/B 与回滚）
+    retrieval: Literal["bm25", "overlap"] = "bm25"
+    #: 写入摘要：off = 原文截断；extractive = 规则抽句；model = 小模型（未接入时降级）
+    summarize: Literal["off", "extractive", "model"] = "extractive"
+    #: 抽取式摘要的字数上限（也是条目上限，比原文 1000 字更短）
+    summary_max_chars: int = Field(default=240, ge=40, le=2000)
 
 
 class MemoryBudgetPolicy(BaseModel):
@@ -79,7 +98,9 @@ class MemoryContextPolicy(BaseModel):
     """上下文装配旋钮：尾部注入与快照体积。"""
 
     enabled: bool = True
-    note_max_chars: int = Field(default=1200, ge=0, le=200_000)
+    #: 注入面的硬上限（字符）。实际额度由 token 预算派生：见 runtime.note_limit
+    #: （SPEC-0016 §4.5）—— 这里只防「窗口极大 → 注入极长」的失控。
+    note_max_chars_hard: int = Field(default=1200, ge=0, le=200_000)
     episodic_note_ratio: float = Field(default=0.6, ge=0, le=1)
     snapshot_max_chars: int = Field(default=1_500_000, ge=10_000, le=100_000_000)
     snapshot_version: int = Field(default=2, ge=1, le=100)

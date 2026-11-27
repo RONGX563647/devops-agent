@@ -29,6 +29,9 @@ parse = ["pypdf>=4.0"]
 # 外部内容的安全裁剪（SPEC-0012）：净化用 nh3、正文抽取用 trafilatura；
 # 没装时退化为标签剥离，并由 /health 与阶段详情如实上报
 sanitize = ["nh3>=0.2", "trafilatura>=1.8"]
+# token 估算升级到 L1 真编码器（SPEC-0016 §4.1）：不装时按分族系数估算，
+# 默认行为与是否安装无关（`precision: estimate`），所以只作为可选加速/校准手段
+tokenize = ["tiktoken>=0.7"]
 # OpenJudge 评测基准：第三方包只在 devops_agent/openjudge/ 内 import，保持可选依赖隔离
 openjudge = ["py-openjudge==0.2.5"]
 dev = [

@@ -153,6 +153,7 @@ def delete_session_memories(conn: sqlite3.Connection, session_id: str) -> int:
 
 
 def _long_row(row: sqlite3.Row) -> dict[str, Any]:
+    keys = row.keys()
     return {
         "id": int(row["id"]),
         "scope": str(row["scope"]),
@@ -160,6 +161,9 @@ def _long_row(row: sqlite3.Row) -> dict[str, Any]:
         "kind": str(row["kind"]),
         "text": str(row["text"]),
         "score": float(row["score"]),
+        "hits": int(row["hits"] or 0) if "hits" in keys else 0,
+        "last_hit_at": row["last_hit_at"] if "last_hit_at" in keys else None,
+        "norm_text": row["norm_text"] if "norm_text" in keys else None,
         "created_at": str(row["created_at"]),
         "expires_at": row["expires_at"],
     }
@@ -174,40 +178,119 @@ def save_long_term(
     text: str,
     ttl_days: int,
     max_entries: int,
+    norm_text: str = "",
 ) -> dict[str, Any]:
-    """按 (scope, scope_id, text) 去重写入；返回 stored / deduped / id。"""
+    """按 `norm_text` 去重写入；返回 stored / deduped / id / hits。
+
+    去重键从 `text` 换成归一化文本是 SPEC-0016 §8.4 的核心：旧实现比的是整段原文，
+    两次不同措辞说同一件事会各存一行，条目只增不减，检索被同义条目稀释。
+
+    `hits` 从 1 起算：它是「这条事实被强调过几次」而不是「被读过几次」——
+    首次写入就算一次，之后每次同义命中、每次检索命中各加一（SPEC-0016 A33）。
+    """
+    normalized = norm_text or text
     existing = conn.execute(
-        "SELECT id FROM long_term_memories WHERE scope=? AND scope_id=? AND text=?",
-        (scope, scope_id, text),
+        """SELECT id, hits, text FROM long_term_memories
+           WHERE scope=? AND scope_id=?
+             AND (norm_text=? OR (norm_text IS NULL AND text=?))""",
+        (scope, scope_id, normalized, text),
     ).fetchone()
     if existing is not None:
-        return {"stored": False, "deduped": True, "id": int(existing["id"])}
+        now = _now().isoformat()
+        # 保留更长的正文：归一化相同说明是同一件事，信息量大的那份不该被短的盖掉
+        keep = text if len(text) >= len(str(existing["text"])) else str(existing["text"])
+        conn.execute(
+            """UPDATE long_term_memories
+               SET hits=hits+1, last_hit_at=?, text=?, norm_text=? WHERE id=?""",
+            (now, keep, normalized, int(existing["id"])),
+        )
+        return {
+            "stored": False,
+            "deduped": True,
+            "id": int(existing["id"]),
+            "hits": int(existing["hits"] or 0) + 1,
+        }
     created_at = _now().isoformat()
     cur = conn.execute(
         """INSERT INTO long_term_memories
-           (scope, scope_id, kind, text, score, created_at, expires_at)
-           VALUES (?, ?, ?, ?, 0, ?, ?)""",
-        (scope, scope_id, kind, text, created_at, _expires_at(ttl_days)),
+           (scope, scope_id, kind, text, score, hits, last_hit_at, norm_text,
+            created_at, expires_at)
+           VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?, ?)""",
+        (scope, scope_id, kind, text, created_at, normalized, created_at, _expires_at(ttl_days)),
     )
     assert cur.lastrowid is not None
     new_id = int(cur.lastrowid)
+    _prune_long_term(conn, scope, scope_id, max_entries)
+    return {"stored": True, "deduped": False, "id": new_id, "hits": 1}
+
+
+def merge_long_term(
+    conn: sqlite3.Connection, memory_id: int, *, text: str, norm_text: str, kind: str
+) -> dict[str, Any]:
+    """同义条目合并：保留更长的正文、累加命中数并刷新最近使用时间。
+
+    不新增行的理由是「一条事实应该只有一个条目」：两条 3-gram 相似度 0.85 的记忆
+    同时在库里，注入时会被当成两条独立事实，权重翻倍且互相重复。
+    """
+    now = _now().isoformat()
+    conn.execute(
+        """UPDATE long_term_memories
+           SET text=?, norm_text=?, kind=?, hits=hits+1, last_hit_at=?
+           WHERE id=?""",
+        (text, norm_text, kind, now, memory_id),
+    )
+    row = conn.execute(
+        "SELECT id, hits FROM long_term_memories WHERE id=?", (memory_id,)
+    ).fetchone()
+    hits = int(row["hits"] or 0) if row is not None else 0
+    return {"stored": False, "deduped": True, "merged": True, "id": memory_id, "hits": hits}
+
+
+def touch_long_term(conn: sqlite3.Connection, memory_ids: list[int]) -> None:
+    """检索命中即强化：`hits` 与 `last_hit_at` 决定淘汰顺序（越久未用越先淘汰）。"""
+    if not memory_ids:
+        return
+    now = _now().isoformat()
+    conn.executemany(
+        "UPDATE long_term_memories SET hits=hits+1, last_hit_at=? WHERE id=?",
+        [(now, int(memory_id)) for memory_id in memory_ids],
+    )
+
+
+def _prune_long_term(
+    conn: sqlite3.Connection, scope: str, scope_id: str, max_entries: int
+) -> None:
+    """按最近使用淘汰，而不是按创建时间：常用的旧条目不该被新噪声挤掉。"""
     conn.execute(
         """DELETE FROM long_term_memories WHERE scope=? AND scope_id=? AND id NOT IN (
                SELECT id FROM long_term_memories WHERE scope=? AND scope_id=?
-               ORDER BY created_at DESC, id DESC LIMIT ?)""",
+               ORDER BY COALESCE(last_hit_at, created_at) DESC, id DESC LIMIT ?)""",
         (scope, scope_id, scope, scope_id, max(1, max_entries)),
     )
-    return {"stored": True, "deduped": False, "id": new_id}
 
 
 def list_long_term(
-    conn: sqlite3.Connection, *, scope: str, scope_id: str, limit: int = 50, offset: int = 0
+    conn: sqlite3.Connection,
+    *,
+    scope: str,
+    scope_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    all_entries: bool = False,
+    max_entries: int = 200,
 ) -> list[dict[str, Any]]:
+    """列长期条目；`all_entries=True` 时取满 `max_entries`（检索用）。
+
+    E-1 的根因就是这里：检索曾经传 `limit=max(top_k*20, 50)`，而 SQL 是
+    `ORDER BY id DESC LIMIT`，第 51 条以后永远召回不到 —— `max_entries=200`
+    里 75% 是死数据。检索必须全量取，分页接口才用 limit/offset。
+    """
+    cap = max(1, max_entries) if all_entries else max(1, limit)
     rows = conn.execute(
         """SELECT * FROM long_term_memories
            WHERE scope=? AND scope_id=? AND (expires_at IS NULL OR expires_at>?)
            ORDER BY id DESC LIMIT ? OFFSET ?""",
-        (scope, scope_id, _now().isoformat(), max(1, limit), max(0, offset)),
+        (scope, scope_id, _now().isoformat(), cap, 0 if all_entries else max(0, offset)),
     ).fetchall()
     return [_long_row(row) for row in rows]
 

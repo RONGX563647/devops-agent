@@ -10,7 +10,7 @@ import hashlib
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from agentscope.agent import Agent
 
@@ -21,16 +21,19 @@ from devops_agent.config import (
 from devops_agent.input.pipeline.redact import redact_preview
 from devops_agent.memory import events, health
 from devops_agent.memory.budget import Budget, compute_budget
+from devops_agent.memory.calibration import drift
 from devops_agent.memory.candidate import is_candidate
 from devops_agent.memory.context import build_note, clip
 from devops_agent.memory.episodic import EpisodicMemory
 from devops_agent.memory.long_term import Hit, build_long_term
 from devops_agent.memory.short_term import TrimReport, trim_context_for_snapshot
 from devops_agent.memory.sink import MemorySink
-from devops_agent.memory.tokens import estimate_tokens
+from devops_agent.memory.summarize import kind_of, summarize
+from devops_agent.memory.tokens import count_prefix
+from devops_agent.memory.tokens import default as tokenizer
 from devops_agent.observability import repository as repo
 
-# 长期写入只保留一段短文本：长期记忆是结论，不是原文仓库
+# 长期写入的兜底上限：`summarize: off` 时按原文截断，摘要模式有自己的上限
 _MAX_WRITE_CHARS = 1000
 
 
@@ -60,14 +63,25 @@ class RecallResult:
         return ",".join(self.reasons[layer] for layer in self.degraded if layer in self.reasons)
 
 
-def _model_budget(agent: Agent, prefix_tokens: int, policy: Any) -> Budget:
-    """从 agent 的真实窗口与 ContextConfig 推导预算；缺字段时回落 model.yaml。"""
+def resolve_window(agent: Agent | None) -> tuple[int, float, float]:
+    """(窗口, 触发比例, 输出预留比例) —— 框架配置优先，回落 model.yaml。
+
+    预算与压缩阈值共用这一处解析：`CompressionMiddleware` 曾经自己再算一遍
+    `trigger_ratio × context_size`，两个口径迟早会漂（SPEC-0016 §4.4）。
+    """
     settings = load_model()
     config = getattr(agent, "context_config", None)
     trigger = float(getattr(config, "trigger_ratio", settings.trigger_ratio))
     reserve = float(getattr(config, "reserve_ratio", settings.reserve_ratio))
     model = getattr(agent, "model", None)
     size = int(getattr(model, "context_size", settings.context_size) or settings.context_size)
+    return size, trigger, reserve
+
+
+def _model_budget(agent: Agent | None, prefix_tokens: int, policy: Any) -> Budget:
+    """从 agent 的真实窗口与 ContextConfig 推导预算；缺字段时回落 model.yaml。"""
+    settings = load_model()
+    size, trigger, reserve = resolve_window(agent)
     return compute_budget(
         context_size=size,
         trigger_ratio=trigger,
@@ -109,8 +123,18 @@ class MemoryRuntime:
         self.backend_reason = choice.reason or str(getattr(choice.backend, "reason", ""))
 
     # --- 预算 ---------------------------------------------------------
-    def budget(self, agent: Agent, prefix_tokens: int) -> Budget:
+    def budget(self, agent: Agent | None, prefix_tokens: int) -> Budget:
         return _model_budget(agent, prefix_tokens, self.policy)
+
+    def note_limit(self, budget: Budget) -> int:
+        """注入额度（字符）= min(硬上限, (中期 + 长期) token 额度 × 字/token)。
+
+        额度从预算派生而不是独立配置：独立配置时「窗口变小 → 注入不变」，
+        注入会吃掉历史的空间（SPEC-0016 §4.5）。
+        """
+        derived = int(budget.note_limit * tokenizer().cjk_per_token)
+        hard = int(self.policy.context.note_max_chars_hard)
+        return max(0, min(hard, derived))
 
     # --- 召回 ---------------------------------------------------------
     async def recall(self, query: str) -> RecallResult:
@@ -151,11 +175,17 @@ class MemoryRuntime:
         self,
         card: dict[str, Any] | None,
         hits: list[Hit],
+        *,
+        note_max_chars: int | None = None,
     ) -> str:
         return build_note(
             card,
             [hit.as_dict() for hit in hits],
-            note_max_chars=self.policy.context.note_max_chars,
+            note_max_chars=(
+                self.policy.context.note_max_chars_hard
+                if note_max_chars is None
+                else note_max_chars
+            ),
             episodic_ratio=self.policy.context.episodic_note_ratio,
             card_max_chars=self.policy.episodic.max_chars,
             top_k=self.policy.long_term.top_k,
@@ -260,12 +290,13 @@ class MemoryRuntime:
                 events.frame(events.MEMORY_WRITE_END, layer="long", state="skipped", reason=reason)
             )
             return {"stored": False, "deduped": False, "skipped": True, "reason": reason}
-        raw = f"{user_text.strip()}\n{assistant_text.strip()}".strip()
-        text = clip(redact_preview(raw), _MAX_WRITE_CHARS)
+        raw = redact_preview(f"{user_text.strip()}\n{assistant_text.strip()}".strip())
+        text, degraded = self._summarize(raw)
+        kind = kind_of(text)
         start = time.perf_counter()
-        self.sink.emit(events.frame(events.MEMORY_WRITE_START, layer="long"))
+        self.sink.emit(events.frame(events.MEMORY_WRITE_START, layer="long", memory_kind=kind))
         try:
-            result = await self.long_term.write(text)
+            result = await self.long_term.write(text, kind=kind)
         except Exception as exc:  # noqa: BLE001
             health.note_failure("long_term", events.REASON_WRITE_FAILED)
             self.sink.emit(
@@ -285,12 +316,31 @@ class MemoryRuntime:
             events.frame(
                 events.MEMORY_WRITE_END,
                 layer="long",
+                state="degraded" if degraded else "ok",
+                reason=degraded,
                 stored=bool(result.get("stored")),
                 deduped=bool(result.get("deduped")),
+                memory_kind=kind,
+                summary_chars=len(text),
+                hits=int(result.get("hits", 0) or 0),
                 latency_ms=int((time.perf_counter() - start) * 1000),
             )
         )
         return dict(result)
+
+    def _summarize(self, raw: str) -> tuple[str, str]:
+        """按 `summarize` 模式产出条目正文；返回 (正文, 降级原因)。
+
+        `off` 保留旧行为（原文截断）以便回滚；`model` 尚未接入模型通道，
+        先走抽取式并如实报 `degraded` —— 假装成模型摘要比降级更糟。
+        """
+        mode = self.policy.long_term.summarize
+        if mode == "off":
+            return clip(raw, _MAX_WRITE_CHARS), ""
+        text, degraded = summarize(raw, max_chars=self.policy.long_term.summary_max_chars)
+        if mode == "model":
+            return text, events.REASON_SUMMARIZE_MODEL_UNAVAILABLE
+        return text, ("" if not degraded else events.REASON_SUMMARY_DEGRADED)
 
     # --- 快照 ---------------------------------------------------------
     def cap_snapshot(self, agent: Agent) -> TrimReport:
@@ -312,13 +362,20 @@ class MemoryRuntime:
                     events.MEMORY_TRIM,
                     layer="short",
                     reason="snapshot_cap",
-                    **cast(dict[str, Any], report.as_dict()),
+                    **report.as_dict(),
                 )
             )
         return report
 
     def status(self) -> dict[str, Any]:
+        """开关 + 预算闭合 + 后端 + 健康。
+
+        `budget.ok/overshoot` 是启动期与 `/health` 共用的自检：四项分账之和对不上
+        阈值时，压缩会比预算晚触发，那 14k token 的灰区里没有任何人报错
+        （SPEC-0016 §5.4）。
+        """
         settings = load_model()
+        budget = self.budget(None, 0)
         return {
             "enabled": bool(self.policy.enabled),
             "short_term": bool(self.policy.short_term.max_turns > 0),
@@ -330,11 +387,23 @@ class MemoryRuntime:
             "requested": self.backend_requested,
             "effective": self.backend_name,
             "reason": self.backend_reason,
+            # 检索与写入算法：回滚时改的是这两项，状态页必须能看见当前值
+            "retrieval": self.policy.long_term.retrieval,
+            "summarize": self.policy.long_term.summarize,
             "context": {
                 "window": settings.context_size,
                 "threshold": int(settings.trigger_ratio * settings.context_size),
                 "snapshot_version": self.policy.context.snapshot_version,
             },
+            "budget": {
+                "ok": budget.ok,
+                "overshoot": budget.overshoot,
+                "history_limit": budget.history_limit,
+                "note_limit": budget.note_limit,
+                "note_max_chars": self.note_limit(budget),
+            },
+            # 估算漂移：`alpha` 是实际/估算的中位数比率，1.0 表示没有修正
+            "tokens": {"family": tokenizer().family, "drift": drift()},
             # 开关说明「打算做什么」，health 说明「当下是否在降级」——两者缺一不可
             "health": health.snapshot(),
         }
@@ -370,7 +439,5 @@ def session_counts(session_id: str) -> dict[str, int]:
 
 
 def estimate_prefix_tokens(system_text: str, tools: list[dict[str, Any]]) -> int:
-    """固定前缀 token 估算：系统提示 + 工具 schema。"""
-    import json
-
-    return estimate_tokens(system_text) + estimate_tokens(json.dumps(tools, ensure_ascii=False))
+    """固定前缀 token 估算：系统提示 + 工具 schema（含族系数与漂移修正）。"""
+    return count_prefix(system_text, tools)

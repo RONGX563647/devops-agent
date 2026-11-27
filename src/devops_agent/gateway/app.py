@@ -45,6 +45,7 @@ from devops_agent.gateway.routes import (
 from devops_agent.gateway.routes.memory import router as memory_router
 from devops_agent.input.api import router as attachments_router
 from devops_agent.model_api import router as model_config_router
+from devops_agent.model_catalog.api import router as providers_router
 from devops_agent.observability.api import router as observability_router
 from devops_agent.openjudge.api import router as openjudge_router
 from devops_agent.openjudge.api_edit import router as openjudge_edit_router
@@ -90,6 +91,8 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
         secrets_router,
         tools_router,
         context_router,
+        # 多网关模型目录（SPEC-0018）：网关清单 / 模型列表 / 能力卡
+        providers_router,
         # 模型参数三层可配（SPEC-0001）：部署默认 / 会话覆盖 / 只读凭据
         model_config_router,
         # 配置中心（ADR-0005）：health / input / memory / gateway 的部署旋钮

@@ -11,8 +11,12 @@
  * 2. 每行徽标可点开四层链路（会话 / 文件 / 数据库 / yaml+env+框架），
  *    回答的是「这个 128000 到底谁设的」。
  * 3. 用原生 <dialog>：焦点、Esc、背景 inert 由浏览器负责，不手写 focus trap。
+ * 4. 网关与模型是**联动的两级**：先选网关，它的 /models 才决定模型候选。但下拉
+ *    只是提示 —— 网关的 /models 常不全，手填模型名是合法用法（手填时窗口按
+ *    「未匹配」处理并给提示，不拦保存）。
  */
 import { useQueryClient } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import {
   clearSessionModelConfig,
@@ -22,8 +26,14 @@ import {
 } from '../../api/client';
 import type { ModelConfig, ModelLayer, ModelPatch, ModelSource } from '../../types';
 import { formatTokens } from '../ContextRing';
+import { matchLabel, sourceLabel, statusLabel } from './capability';
+import { DrawerFooter } from './DrawerFooter';
 import { FieldRow } from './FieldRow';
 import { GROUPS } from './groups';
+import { GroupsNav } from './GroupsNav';
+import { ModelCombobox } from './ModelCombobox';
+import { ProviderSelect } from './ProviderSelect';
+import { useCatalog } from './useCatalog';
 import { boundError, dangersOf, errorText } from './validation';
 
 interface Props {
@@ -59,6 +69,7 @@ export function ModelConfigDrawer({ session, config, contextTokens, onChanged }:
   const [ack, setAck] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirmGlobal, setConfirmGlobal] = useState(false);
+  const catalog = useCatalog();
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const queryClient = useQueryClient();
 
@@ -67,6 +78,15 @@ export function ModelConfigDrawer({ session, config, contextTokens, onChanged }:
   const sources = { ...(config?.sources ?? {}) } as Record<string, ModelSource>;
   const dirtyCount = Object.keys(draft).length;
   const overrideCount = Object.keys(config?.overrides ?? {}).length;
+  // 生效网关：草稿 > 已生效 > 注册表默认。空串在后端等于「用注册表默认」，
+  // 但界面需要一个具体值来查 /models，所以这里补齐。逐级可选：`config` 还没到时
+  // 整段是 undefined，不能直接点下去（面板会比配置先渲染一帧）。
+  const providerId =
+    (draft.provider as string | undefined) ||
+    config?.catalog?.provider ||
+    base?.provider ||
+    catalog.providers?.default ||
+    '';
 
   // 原生 dialog 的开关只走 showModal/close：`open` 属性不会进 top layer，也没有 backdrop。
   useEffect(() => {
@@ -116,6 +136,12 @@ export function ModelConfigDrawer({ session, config, contextTokens, onChanged }:
     if (!('model' in edit)) return edit;
     const text = (edit.model ?? '').trim();
     return { ...edit, model: text === '' ? null : text };
+  }
+
+  /** 换网关：模型候选与列表状态必须一起清掉，否则会拿着 A 的列表去查 B。 */
+  function pickProvider(next: string) {
+    patch({ provider: next });
+    catalog.resetModels();
   }
 
   async function refresh() {
@@ -199,7 +225,9 @@ export function ModelConfigDrawer({ session, config, contextTokens, onChanged }:
     setChainField(null);
     setActiveField(null);
     setActive('connection');
+    catalog.reset();
     setOpen(true);
+    void catalog.loadProviders();
   }
 
   function closePanel() {
@@ -211,9 +239,43 @@ export function ModelConfigDrawer({ session, config, contextTokens, onChanged }:
   }
 
   const dangers = base ? dangersOf(draft, base) : [];
-  const needsAck = dangers.length > 0 && !ack;
   const invalid = shown ? boundError(shown, config?.bounds ?? {}) : '';
   const group = GROUPS.find((item) => item.id === active) ?? GROUPS[0];
+
+  /** 网关 / 模型两行用组合控件，其余行走 FieldRow 内置输入框。 */
+  function controlFor(key: string): ReactNode {
+    if (key === 'provider') {
+      return (
+        <ProviderSelect
+          providers={catalog.providers}
+          value={providerId}
+          onChange={pickProvider}
+        />
+      );
+    }
+    if (key === 'model') {
+      return (
+        <ModelCombobox
+          value={typeof shown?.model === 'string' ? shown.model : ''}
+          providerId={providerId}
+          models={catalog.models}
+          loading={catalog.state.loading}
+          code={catalog.state.code}
+          total={catalog.state.total}
+          stale={catalog.state.stale}
+          onChange={(next) => patch({ model: next })}
+          // 只取一次：code 已经是 ok/unauthorized 等结论时不再打上游
+          onLoad={() => {
+            if (catalog.state.code === '' && !catalog.state.loading) {
+              void catalog.loadModels(providerId, false);
+            }
+          }}
+          onRefresh={() => void catalog.loadModels(providerId, true)}
+        />
+      );
+    }
+    return undefined;
+  }
 
   return (
     <div className="mc-wrap">
@@ -265,59 +327,20 @@ export function ModelConfigDrawer({ session, config, contextTokens, onChanged }:
           <div className="mcd-empty mono">正在读取配置…</div>
         ) : (
           <div className="mcd-body">
-            <nav className="mcd-tree" aria-label="参数分类">
-              <ul className="mcd-tree-list">
-                {GROUPS.map((entry) => {
-                  const pending = entry.items.filter(
-                    (item) => draft[item.key] !== undefined,
-                  ).length;
-                  return (
-                    <li key={entry.id}>
-                      <button
-                        type="button"
-                        className={`mcd-tree-group${active === entry.id ? ' is-active' : ''}`}
-                        aria-expanded={expanded[entry.id] ?? false}
-                        onClick={() => {
-                          setActive(entry.id);
-                          setExpanded((prev) => ({ ...prev, [entry.id]: !prev[entry.id] }));
-                        }}
-                      >
-                        <span className="mcd-tree-caret" aria-hidden="true">
-                          {expanded[entry.id] ? '▾' : '▸'}
-                        </span>
-                        <span>{entry.label}</span>
-                        {pending > 0 && (
-                          <span className="mcd-dot" aria-label={`${pending} 项未保存`}>
-                            {pending}
-                          </span>
-                        )}
-                      </button>
-                      {expanded[entry.id] && (
-                        <ul className="mcd-tree-children">
-                          {entry.items.map((item) => (
-                            <li key={item.key}>
-                              <button
-                                type="button"
-                                className={`mcd-tree-leaf${
-                                  activeField === item.key ? ' is-active' : ''
-                                }`}
-                                aria-current={activeField === item.key ? 'true' : undefined}
-                                onClick={() => {
-                                  setActive(entry.id);
-                                  setActiveField(item.key);
-                                }}
-                              >
-                                {item.label}
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            </nav>
+            <GroupsNav
+              active={active}
+              expanded={expanded}
+              activeField={activeField}
+              draft={draft}
+              onGroup={(id) => {
+                setActive(id);
+                setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
+              }}
+              onField={(groupId, key) => {
+                setActive(groupId);
+                setActiveField(key);
+              }}
+            />
 
             <div className="mcd-pane">
               <section aria-labelledby={`mcd-h-${group.id}`}>
@@ -337,11 +360,35 @@ export function ModelConfigDrawer({ session, config, contextTokens, onChanged }:
                     highlight={activeField === spec.key}
                     layers={chainField === spec.key ? layers : null}
                     chainOpen={chainField === spec.key}
+                    control={controlFor(spec.key)}
                     onToggleChain={() => void toggleChain(spec.key)}
                     onPatch={patch}
                     onReset={() => resetField(spec.key)}
                   />
                 ))}
+
+                {group.id === 'connection' && catalog.error && (
+                  <p className="mc-warn">{catalog.error}</p>
+                )}
+
+                {group.id === 'connection' && config?.catalog && (
+                  <p className="mc-derived">
+                    {`窗口 ${formatTokens(shown.context_size ?? base?.context_size ?? 0)} ← ${sourceLabel(
+                      config.catalog.current.context_source,
+                    )}`}
+                    {` · ${matchLabel(config.catalog.current.matched_by)}`}
+                    {` · ${statusLabel(config.catalog.current.status)}`}
+                    {` · ${config.catalog.providers_configured} 个网关`}
+                    <span className="mc-derived-src">后端查的</span>
+                  </p>
+                )}
+
+                {group.id === 'connection' && config?.catalog?.current.card_may_be_stale && (
+                  <p className="mc-warn">
+                    这个窗口来自内置模型卡，可能滞后于网关的新版本。若网关 /models
+                    给出了更大的数字，刷新模型列表后会改用网关声明值。
+                  </p>
+                )}
 
                 {group.id === 'connection' && config?.derived.context_uncalibrated && (
                   <p className="mc-warn">
@@ -396,67 +443,23 @@ export function ModelConfigDrawer({ session, config, contextTokens, onChanged }:
           </div>
         )}
 
-        <footer className="mcd-foot">
-          {notice && (
-            <p className="mcd-notice" role="status">
-              {notice}
-            </p>
-          )}
-          {dangers.map((text) => (
-            <p className="mc-warn" key={text}>
-              {text}
-            </p>
-          ))}
-          {dangers.length > 0 && (
-            <label className="mc-ack">
-              <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
-              我了解上面的影响
-            </label>
-          )}
-          {invalid && <p className="mc-warn">{invalid}</p>}
-          {(config?.warnings ?? []).map((text) => (
-            <p className="mc-warn" key={text}>
-              {text}
-            </p>
-          ))}
-
-          {confirmGlobal ? (
-            <div className="mcd-confirm">
-              <p>
-                将写入 <code>{shortPath(config?.file_path)}</code>，影响所有会话的下一次模型调用。
-                正在跑的会话等当前轮结束才生效，不会打断它们的流。
-              </p>
-              <div className="mcd-actions">
-                <button className="ghost-btn" onClick={() => setConfirmGlobal(false)}>
-                  取消
-                </button>
-                <button className="danger-btn" disabled={busy} onClick={() => void saveGlobal()}>
-                  确认写入
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="mcd-actions">
-              <button className="ghost-btn" disabled={busy} onClick={() => void resetSession()}>
-                恢复本会话
-              </button>
-              <button
-                className="ghost-btn"
-                disabled={busy || dirtyCount === 0 || needsAck || Boolean(invalid)}
-                onClick={() => void saveSession()}
-              >
-                仅本次会话
-              </button>
-              <button
-                className="primary-btn"
-                disabled={busy || dirtyCount === 0 || needsAck || Boolean(invalid)}
-                onClick={() => setConfirmGlobal(true)}
-              >
-                保存为全局默认
-              </button>
-            </div>
-          )}
-        </footer>
+        <DrawerFooter
+          notice={notice}
+          dangers={dangers}
+          warnings={config?.warnings ?? []}
+          invalid={invalid}
+          ack={ack}
+          busy={busy}
+          dirtyCount={dirtyCount}
+          confirming={confirmGlobal}
+          filePath={shortPath(config?.file_path)}
+          onAck={setAck}
+          onAskGlobal={() => setConfirmGlobal(true)}
+          onCancelConfirm={() => setConfirmGlobal(false)}
+          onSaveGlobal={() => void saveGlobal()}
+          onResetSession={() => void resetSession()}
+          onSaveSession={() => void saveSession()}
+        />
       </dialog>
     </div>
   );

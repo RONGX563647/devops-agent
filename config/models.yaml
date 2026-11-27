@@ -1,0 +1,20 @@
+# 模型能力校准表（SPEC-0018）。优先级高于网关声明与内置模型卡。
+#
+# 什么时候需要它：内置卡里还没有某个模型（`qwen-max-latest` 这类），
+# 而网关的 /models 又没声明窗口 —— 此时唯一可行的是人填一次然后团队共享。
+#
+# 本文件提交进仓库（团队共识）；`models.local.yaml`（gitignore）由面板写入，
+# 同名时 local 覆盖本文件。查找顺序固定四步：
+#   local+精确 > 本文件+精确 > local+通配(*) > 本文件+通配(*)
+#
+# name 按「精确 → 归一化（小写、去 -latest/-preview/日期后缀）」比较，
+# **不允许前缀匹配**：否则 qwen-max 的校准值会误套到 qwen-max-long 上。
+#
+# models:
+#   - provider: dashscope-prod      # 省略或 "*" = 对所有 provider 生效
+#     name: qwen3-max
+#     context_size: 262144
+#     output_size: 65536
+#     note: 官方文档 2026-11 口径；卡里还没有这个模型
+
+models: []

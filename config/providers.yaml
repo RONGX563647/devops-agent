@@ -1,0 +1,36 @@
+# 多网关注册表（SPEC-0018）。每一项 = 一个「用户命名的网关实例」。
+#
+# 本文件默认是空的：不配任何 provider 时合成一个匿名 default，
+# 地址与 key 仍取 DEVOPS_AGENT_BASE_URL / DEVOPS_AGENT_API_KEY，
+# 行为与升级前逐字段相同（验收 A35）。
+#
+# 取消下面示例的注释即进入「多网关模式」：context_auto 默认变 true，
+# 换模型时窗口/参数上限会跟随模型能力；capability 合并开始生效。
+#
+# providers:
+#   - id: dashscope-prod            # 唯一标识，出现在 resolve() 与事件里
+#     kind: openai_chat             # 协议，见 /api/providers 的 kinds
+#     label: 百炼（生产）
+#     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+#     api_key: env:DEVOPS_AGENT_API_KEY     # 只写变量名，不写值
+#     discover: models              # models | manual | off
+#   - id: vllm-local
+#     kind: openai_chat
+#     label: 内网 vLLM
+#     base_url: http://127.0.0.1:8000/v1   # 明文 http 只允许回环
+#     api_key: env:VLLM_API_KEY
+#     discover: models
+#   - id: ollama-local
+#     kind: ollama_chat
+#     label: 本机 Ollama
+#     base_url: http://127.0.0.1:11434
+#     api_key: none                 # 显式声明无凭据，不是「忘了填」
+#     discover: models
+#
+# default: dashscope-prod           # 省略时取 providers[0]
+#
+# catalog:
+#   enabled: true                   # false = 关闭能力合并，窗口回静态 yaml 值
+#   health_check: false             # true = /health 自检时拉一次 /models
+
+providers: []

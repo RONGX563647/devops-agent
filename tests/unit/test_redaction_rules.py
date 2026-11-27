@@ -115,3 +115,25 @@ def test_capture_output_reports_confidence() -> None:
     )
     assert "AKIA" not in out
     assert captured[0].confidence == rules.CONFIDENCE_KNOWN
+
+
+def test_identifier_with_digits_is_not_a_secret() -> None:
+    """含数字的小写标识符也是命名：`sha256_checksum_v2_helper_name` 曾被当凭据。"""
+    for text in (
+        "token: sha256_checksum_v2_helper_name",
+        "token = 128000 tiktoken_v2_encoder_helper",
+        "api_key: devops_agent_memory_short_term_v2",
+    ):
+        assert find_secrets(text, profile=rules.PROFILE_OUTPUT) == []
+
+
+def test_single_segment_random_string_is_still_a_secret() -> None:
+    """放宽标识符闸不能顺手放过 `abcdefghij1234567890` 这类单段 API key。"""
+    found = find_secrets("token: abcdefghij1234567890", profile=rules.PROFILE_OUTPUT)
+    assert [item.base for item in found] == ["token"]
+
+
+def test_underscore_key_is_covered_by_prefix_table() -> None:
+    """`sk_live_...` 每段都像词，会被标识符闸放过 —— 必须由前缀表兜住。"""
+    found = find_secrets("stripe = sk_live_" + "a1" * 10, profile=rules.PROFILE_OUTPUT)
+    assert [item.base for item in found] == ["stripe_key"]

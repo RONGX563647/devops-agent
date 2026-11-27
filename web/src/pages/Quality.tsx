@@ -13,15 +13,17 @@ import { useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { OpenJudge } from './quality/OpenJudge';
 import { Overview } from './quality/Overview';
+import { Memory } from './quality/Memory';
 import { Studio } from './quality/studio/Studio';
 
-export type QualityView = 'overview' | 'batches' | 'scoreflow' | 'studio';
+export type QualityView = 'overview' | 'batches' | 'scoreflow' | 'studio' | 'memory';
 
 const VIEWS: { key: QualityView; label: string; hint: string }[] = [
   { key: 'overview', label: '概览', hint: '这批能不能用' },
   { key: 'batches', label: '批次', hint: '逐批看明细' },
   { key: 'scoreflow', label: '评分流程', hint: '分数从哪来' },
   { key: 'studio', label: '用例与模型', hint: '改题、切模型' },
+  { key: 'memory', label: '记忆', hint: '记忆有没有用' },
 ];
 
 function parseView(raw: string | null, legacyFocus: string | null): QualityView {
@@ -63,6 +65,7 @@ export function Quality() {
       {view === 'batches' && <OpenJudge />}
       {view === 'scoreflow' && <OpenJudge focusScoreFlow />}
       {view === 'studio' && <Studio />}
+      {view === 'memory' && <Memory />}
     </div>
   );
 }

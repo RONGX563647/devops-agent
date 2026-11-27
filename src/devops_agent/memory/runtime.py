@@ -134,8 +134,15 @@ class MemoryRuntime:
         after: int,
         threshold: int,
         trigger: str = "context_threshold",
+        artifacts: list[str] | None = None,
+        pending: list[str] | None = None,
+        errors: list[str] | None = None,
     ) -> dict[str, Any] | None:
-        """压缩成功后写中期新版本，并把结果补成轨迹事件。"""
+        """压缩成功后写中期新版本，并把结果补成轨迹事件。
+
+        `artifacts/pending/errors` 由评测 harness 传入：压缩保真赛道要核对
+        产物与约束是否随摘要一起保留，生产调用方不传则保持原行为。
+        """
         start = time.perf_counter()
         card: dict[str, Any] | None = None
         try:
@@ -147,6 +154,9 @@ class MemoryRuntime:
                     tokens_before=before,
                     tokens_after=after,
                     budget=threshold,
+                    artifacts=artifacts,
+                    pending=pending,
+                    errors=errors,
                 )
         except Exception as exc:  # noqa: BLE001 - 压缩失败不阻断对话
             self.sink.emit(

@@ -36,6 +36,7 @@ from devops_agent.model_api import router as model_config_router
 from devops_agent.observability.api import router as observability_router
 from devops_agent.openjudge.api import router as openjudge_router
 from devops_agent.openjudge.api_edit import router as openjudge_edit_router
+from devops_agent.openjudge.memory.api import router as memory_eval_router
 from devops_agent.runtime.runtime import AgentRuntime
 from devops_agent.secrets.api import router as secrets_router
 from devops_agent.tools.api import router as tools_router
@@ -68,6 +69,7 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
         observability_router,
         openjudge_router,
         openjudge_edit_router,
+        memory_eval_router,
         attachments_router,
         secrets_router,
         tools_router,

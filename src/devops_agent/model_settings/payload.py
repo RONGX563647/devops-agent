@@ -11,6 +11,7 @@ from devops_agent.model_settings.bounds import (
     _warnings,
     bounds_payload,
 )
+from devops_agent.model_settings.file_store import local_path
 from devops_agent.model_settings.resolve import Resolved, Source, sources_of, values_of
 
 
@@ -40,4 +41,6 @@ def payload(resolved: dict[str, Resolved], version: int = 0) -> dict[str, Any]:
         "derived": derived(values, sources),
         "warnings": _warnings(values),
         "version": version,
+        # 「部署默认」不再只活在 DB 里：界面要说清写进了哪个文件
+        "file_path": str(local_path()),
     }

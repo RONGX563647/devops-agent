@@ -9,6 +9,7 @@ from enum import StrEnum
 from typing import Any
 
 from devops_agent.config import ModelSettings, load_model
+from devops_agent.model_settings import file_store
 from devops_agent.model_settings.bounds import EDITABLE
 from devops_agent.observability import repository as repo
 
@@ -118,21 +119,71 @@ def _read_stored() -> tuple[dict[str, Any], int]:
 
 
 def stored_defaults(*, force: bool = False) -> dict[str, Any]:
-    """部署默认参数（前端改的那一层），带 TTL 缓存。"""
+    """部署默认参数：DB 旧值叠加 `model.local.yaml`，文件优先。
+
+    文件是真相、DB 是账本：这样手改文件立即生效，而老部署里只存在于 DB
+    的值也不会凭空消失（下一次写入会把它一起落盘）。
+    """
+    db, _ = _read_stored_cached(force=force)
+    return {**db, **file_store.load()}
+
+
+def _read_stored_cached(*, force: bool = False) -> tuple[dict[str, Any], int]:
+    """DB 层带 TTL 缓存；文件层自己按 mtime 缓存，两者互不影响。"""
     global _stored_cache
     now = time.monotonic()
     if not force and _stored_cache is not None and now - _stored_cache[0] < STORED_TTL_S:
-        return _stored_cache[1]
+        return _stored_cache[1], _stored_cache[2]
     value, version = _read_stored()
     _stored_cache = (now, value, version)
-    return value
+    return value, version
 
 
 def stored_version() -> int:
     """部署默认的版本号，供 GET 与乐观并发使用。"""
-    stored_defaults()
-    assert _stored_cache is not None  # 上一行保证已填充
-    return _stored_cache[2]
+    _, version = _read_stored_cached()
+    return version
+
+
+def stored_db(*, force: bool = False) -> dict[str, Any]:
+    """只看 DB 层（layers 面板用来区分「文件」和「历史库值」）。"""
+    value, _ = _read_stored_cached(force=force)
+    return value
+
+
+def layers(
+    session: dict[str, Any] | None = None,
+    *,
+    domain: str = "devops",
+) -> list[dict[str, Any]]:
+    """四层原始值，供前端画「这个值到底从哪来」的链路。
+
+    顺序即优先级（高 → 低）；`writable=false` 的层只能改文件或环境变量，
+    前端据此把「在文件中修改」的提示指向具体路径。
+    """
+    base = _base(domain)
+    return [
+        {"id": "session", "label": "本次会话", "writable": True, "values": dict(session or {})},
+        {
+            "id": "file",
+            "label": "config/model.local.yaml",
+            "writable": True,
+            "path": str(file_store.local_path()),
+            "values": file_store.load(),
+        },
+        {
+            "id": "stored",
+            "label": "数据库旧值（迁移残留）",
+            "writable": True,
+            "values": stored_db(),
+        },
+        {
+            "id": "base",
+            "label": "config/model.yaml / 环境变量 / 框架默认",
+            "writable": False,
+            "values": values_of(base),
+        },
+    ]
 
 
 def sources_of(resolved: dict[str, Resolved]) -> dict[str, str]:

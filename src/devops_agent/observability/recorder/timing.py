@@ -73,3 +73,17 @@ def _work_ms(spans: list[SpanRecord], wall_ms: int) -> int:
         ),
         wall_ms,
     )
+
+
+def span_duration(pending: dict[str, object], start_at: str, end_at: str, end_ns: int) -> int:
+    """优先用事件时间戳（真实发生时刻），缺失时退回单调时钟差值。
+
+    created_at 缺失时旧实现把起止都填成 utc_now()，于是每条 span 都是 0ms；
+    单调时钟不依赖事件字段，才画得出真实宽度。
+    """
+    if pending.get("has_time") and end_at:
+        measured = _elapsed_ms(start_at, end_at)
+        if measured > 0:
+            return measured
+    t0 = _pending_t0(pending)
+    return max(0, (end_ns - t0) // 1_000_000)

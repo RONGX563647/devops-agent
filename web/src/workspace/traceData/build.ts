@@ -206,6 +206,7 @@ function appendAssistant(turn: TraceTurn, message: ChatMessage): void {
   const at = toMs(message.at);
   const endedAt = toMs(message.endedAt) || at;
   turn.endedAt = Math.max(turn.endedAt, endedAt, at);
+  if (message.webAccess) turn.webAccess = message.webAccess;
   turn.tokens.in += message.inputTokens ?? 0;
   turn.tokens.out += message.outputTokens ?? 0;
   turn.tokens.cache += message.cacheInputTokens ?? 0;

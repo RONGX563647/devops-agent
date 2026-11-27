@@ -2,6 +2,7 @@
 
 import type { TraceStep, TraceTurn } from '../../types';
 import { formatDuration } from '../time';
+import { webAccessLabel } from '../web-access';
 import { Highlight } from './Highlight';
 
 /** 折叠态也要能判断「值不值得展开」：步数、工具数、耗时、最慢一步、异常、缓存。 */
@@ -76,6 +77,7 @@ export function TurnHeader({
         {cachePct !== null && <span className="trace-turn-cache"> · 缓存 {cachePct}%</span>}
         {files ? <span> · {files} 附件</span> : null}
         {turn.parse?.refs ? <span> · {turn.parse.refs} 引用</span> : null}
+        {turn.webAccess ? <span> · 网络：{webAccessLabel(turn.webAccess)}</span> : null}
         {turn.repeatOf && <span className="trace-turn-repeat"> · 同第 {turn.repeatOf} 轮</span>}
       </button>
     </div>

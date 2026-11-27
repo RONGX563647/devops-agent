@@ -27,6 +27,8 @@ export interface Run {
   wall_ms?: number;
   /** 本轮实际下发的模型参数（JSON，只含非默认值）；空串 = 老记录未记录。 */
   model_params?: string;
+  /** 本轮网络获取决策（JSON：net / prefetch / fallback）；空串 = 老记录未记录。 */
+  web_access?: string;
 }
 
 export interface RunList {
@@ -233,6 +235,13 @@ export interface PendingAttachment extends Attachment {
   key: string;
 }
 
+/** 一轮的网络获取决策：`net` 是否授予检索，`fallback` 是缺口说明。 */
+export interface WebAccessInfo {
+  net: boolean | null;
+  fallback: string;
+  prefetch: string;
+}
+
 /** 一条会话消息：用户消息或一轮助手回答（助手消息携带该轮过程步骤）。 */
 export interface ChatMessage {
   id: string;
@@ -255,6 +264,8 @@ export interface ChatMessage {
   cacheInputTokens?: number;
   runId?: number | null;
   endedAt?: string | null;
+  /** 该轮的网络获取决策（历史回放时有；实时流没有 run 行，故缺省）。 */
+  webAccess?: WebAccessInfo;
 }
 
 /** 工具调用的 diff：Edit / Write 的旧串与新串按行拆开。 */
@@ -402,4 +413,6 @@ export interface TraceTurn {
   repeatOf?: number;
   /** 本轮第一次模型调用的输入与缓存命中：冷读是必然成本，单独记账。 */
   firstCall?: { in: number; cache?: number };
+  /** 本轮网络获取决策；未记录时缺省（不能当成「没联网」）。 */
+  webAccess?: WebAccessInfo;
 }

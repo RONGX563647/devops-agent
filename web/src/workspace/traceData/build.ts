@@ -59,7 +59,7 @@ function timingOf(at: number, ended: number, selfMs: number): TraceTiming {
  * 模型调用必须留在列表里：泳道里画着它占用的长条，列表里却没有对应行，
  * 「时长」页就永远答不了「这轮到底慢在哪」。
  */
-function stepToTrace(step: ProcessEntry, index: number): TraceStep | null {
+function stepToTrace(turn: TraceTurn, step: ProcessEntry, index: number): TraceStep | null {
   if (step.kind === 'lifecycle') return null;
   const toolName = step.toolName;
   const at = toMs(step.at);
@@ -68,7 +68,7 @@ function stepToTrace(step: ProcessEntry, index: number): TraceStep | null {
   const stagesMs = (step.parseStages ?? []).reduce((sum, stage) => sum + stage.ms, 0);
   const timing = timingOf(at, ended, stagesMs);
   return {
-    id: step.id,
+    id: traceId(turn, step.id),
     kind: kindOf(step),
     layer: layerOf(step),
     index,
@@ -116,44 +116,54 @@ function spanStatus(step: ProcessEntry): TraceSpan['status'] {
   return step.state === 'running' ? 'running' : 'ok';
 }
 
-/** 模型调用进入泳道：同一 reply 的 START/END 已在事件折叠时配对。 */
-function modelSpan(step: ProcessEntry, at: number): TraceSpan | null {
+/** 轨迹内唯一 id：步骤 id 只在单条消息内唯一（记忆步骤按帧序号编号），
+ * 而泳道与选中态都跨轮聚合 —— 不加消息命名空间就会撞 React key、点选落到错的轮。
+ */
+function traceId(turn: TraceTurn, stepId: string): string {
+  return `${turn.id}:${stepId}`;
+}
+
+/** 模型调用进入泳道：同一 reply 的 START/END 已在事件折叠时配对。
+ *
+ * `id` 是已带轮次前缀的轨迹 id，泳道 key 与步骤行共用同一份，选中才不会串轮。
+ */
+function modelSpan(step: ProcessEntry, at: number, id: string): TraceSpan | null {
   const end = toMs(step.endedAt);
   if (!at || !end || end < at) return null;
   return {
-    id: `span:${step.id}`,
+    id: `span:${id}`,
     lane: 'model',
     start: at,
     end,
     status: spanStatus(step),
     label: step.kind === 'thinking' ? '思考' : step.label,
-    stepId: step.id,
+    stepId: id,
   };
 }
 
 /** 工具调用进入泳道；缺结束事件时画成 1ms 的点，仍在跑的用 running 态。 */
-function toolSpan(step: ProcessEntry, at: number): TraceSpan {
+function toolSpan(step: ProcessEntry, at: number, id: string): TraceSpan {
   return {
-    id: `span:${step.id}`,
+    id: `span:${id}`,
     lane: 'tool',
     start: at,
     end: Math.max(toMs(step.endedAt), at + 1),
     status: spanStatus(step),
     label: step.toolName ?? step.label.replace(/^调用工具\s*·\s*/, ''),
-    stepId: step.id,
+    stepId: id,
   };
 }
 
 /** 记忆动作通常只有几毫秒：缺结束时间时画成 1ms 的点，仍能被选中。 */
-function memorySpan(step: ProcessEntry, at: number): TraceSpan {
+function memorySpan(step: ProcessEntry, at: number, id: string): TraceSpan {
   return {
-    id: `span:${step.id}`,
+    id: `span:${id}`,
     lane: 'memory',
     start: at,
     end: Math.max(toMs(step.endedAt), at + 1),
     status: spanStatus(step),
     label: step.label,
-    stepId: step.id,
+    stepId: id,
   };
 }
 
@@ -176,10 +186,11 @@ function pushFailure(turn: TraceTurn, message: ChatMessage, at: number): void {
 }
 
 /** 步骤 → 泳道区间：模型（含思考）走模型泳道，工具走工具泳道，其余不画。 */
-function spanFor(step: ProcessEntry, at: number): TraceSpan | null {
-  if (step.kind === 'model' || step.kind === 'thinking') return modelSpan(step, at);
-  if (step.kind === 'tool') return toolSpan(step, at);
-  if (step.kind === 'memory') return memorySpan(step, at);
+function spanFor(turn: TraceTurn, step: ProcessEntry, at: number): TraceSpan | null {
+  const id = traceId(turn, step.id);
+  if (step.kind === 'model' || step.kind === 'thinking') return modelSpan(step, at, id);
+  if (step.kind === 'tool') return toolSpan(step, at, id);
+  if (step.kind === 'memory') return memorySpan(step, at, id);
   return null;
 }
 
@@ -190,11 +201,11 @@ function noteFirstCall(turn: TraceTurn, step: ProcessEntry): void {
 }
 
 function absorbStep(turn: TraceTurn, step: ProcessEntry): void {
-  const span = spanFor(step, toMs(step.at));
+  const span = spanFor(turn, step, toMs(step.at));
   if (span) turn.spans.push(span);
   noteFirstCall(turn, step);
   if (step.kind === 'parse' && step.parseStages) accumulateParse(turn, step.parseStages);
-  const trace = stepToTrace(step, 0);
+  const trace = stepToTrace(turn, step, 0);
   if (!trace) return;
   // 解析阶段自己出错不把整轮判失败：材料取不到只降级，不中断对话
   if (trace.kind === 'error') turn.failed = true;
@@ -339,6 +350,20 @@ function mergeSpans(spans: TraceSpan[]): TraceSpan[] {
   return merged;
 }
 
+/** 泳道 id 必须互不相同：React key 与选中态都靠它，重复 key 的渲染行为是未定义的。
+ *
+ * 上游已按轮次加过命名空间，这里再兜一层 —— 历史缓存或将来新增的事件族若又造出
+ * 重复 id，加后缀至少不会让泳道静默丢块。
+ */
+function uniqueSpans(spans: TraceSpan[]): TraceSpan[] {
+  const seen = new Map<string, number>();
+  return spans.map((span) => {
+    const hit = seen.get(span.id) ?? 0;
+    seen.set(span.id, hit + 1);
+    return hit === 0 ? span : { ...span, id: `${span.id}#${hit}` };
+  });
+}
+
 /** 泳道只画真实占用：模型一支、工具一支，空隙就是空隙，不补「等待」块。
  *
  * 空闲多久改由泳道右端的占用率说明（占窗口百分之多少），
@@ -357,8 +382,8 @@ export function buildLanes(turns: TraceTurn[]): TraceLanes {
   }
   return {
     // 思考发生在模型调用内部，合并成一段；工具之间的重叠保留原样，免得把红色的失败块吞进前一段
-    model: mergeSpans(model.sort((a, b) => a.start - b.start)),
-    tool: tool.sort((a, b) => a.start - b.start),
-    memory: memory.sort((a, b) => a.start - b.start),
+    model: uniqueSpans(mergeSpans(model.sort((a, b) => a.start - b.start))),
+    tool: uniqueSpans(tool.sort((a, b) => a.start - b.start)),
+    memory: uniqueSpans(memory.sort((a, b) => a.start - b.start)),
   };
 }

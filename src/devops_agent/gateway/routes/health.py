@@ -11,7 +11,9 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
-from devops_agent.gateway.bootstrap import describe_runtime
+from devops_agent.config_store import health as config_health
+from devops_agent.config_store import mode as config_mode
+from devops_agent.gateway.bootstrap import describe_runtime, describe_sandbox, model_status
 from devops_agent.memory.runtime import memory_status
 from devops_agent.memory.snapshot import restore_stats
 from devops_agent.tools.preflight import health_payload
@@ -20,6 +22,24 @@ router = APIRouter()
 
 # 存活标记：只要有响应就是它（进程活着）；真正的问题在 runtime / tools 两段里
 HEALTH_STATUS_OK = "ok"
+
+
+def config_status() -> dict[str, Any]:
+    """配置库是否在降级：读不到覆盖时所有域都会静默回落代码默认值。
+
+    只放布尔和一条错误原文：探针关心「现在坏没坏」，逐域明细在 `/api/config`。
+    """
+    snapshot = config_health.snapshot()
+    try:
+        mode = config_mode()
+    except ValueError:
+        # 非法模式（拼错）在 create_app 就会抛；这里兜底只为不让 /health 500
+        mode = "invalid"
+    return {
+        "mode": mode,
+        "degraded": bool(snapshot["degraded"]),
+        "error": str(snapshot["error"]),
+    }
 
 
 @router.get("/health")
@@ -33,6 +53,12 @@ def health(request: Request) -> dict[str, Any]:
     return {
         "status": HEALTH_STATUS_OK,
         "runtime": describe_runtime(request.app.state.runtime),
+        # 模型面：用的是哪个网关的哪个模型、窗口从哪来、哪个网关缺 key。
+        # 与 runtime.kind 分开：后者说「真模型还是回显」，这里说「哪张能力卡」。
+        "model": model_status(),
+        # 执行面：模式 / 实际生效 / 降级原因；Docker 不可用或回落本机时这里可见
+        "sandbox": describe_sandbox(request.app.state),
+        "config": config_status(),
         "memory": {
             "short_term": status["short_term"],
             "episodic": status["episodic"],

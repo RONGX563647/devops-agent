@@ -378,3 +378,24 @@ memory:
 - 若 PR #132（SPEC-0015 审计整改）先行合入，`recall` 契约是 `RecallResult(card, hits, degraded, reasons)`，§7.3 的 `Hit` 增字段与之合并；若未合入，按当前三元组 `(card, hits, error)` 实现，本 spec 不依赖其中任何一方。
 - S1 会重写 `tokens.py` 并删掉 `compression.py` 里的重复阈值解析，两者都是 #132 的 D 组改动范围。**建议先把 #132 合入再开 S1**，否则同一文件的二次冲突会把「谁的口径为准」重新变成问题（本 spec §4 已声明以 #132 为基线扩展）。
 - 与本 spec 无关但会撞文件：#126（记忆不变量）、#124（权限档）。S2 与 S3 都改 `observer.py`，建议两步同分支顺序提交，避免二次冲突。
+
+## 16. 合并落地记录（与 main 对账）
+
+本分支与 main 上的 SPEC-0020（`#146` 短期裁剪保真性）各自重写了 `short_term.py`
+与 `observer.py`，合并时按「算法取谁、账面取谁」逐项对账，结果如下。
+
+| 争点 | 合并处置 | 理由 |
+|---|---|---|
+| 裁剪算法 | 取 main：读区间去重（`_ReadSpan` / `_superseded_reads`）+ 行边界截断 + 豁免位 | 同一目标下更完整，且已有 main 上的一组回归用例 |
+| 预算账面 | 取本分支：`TrimReport.tokens_before/tokens_after/limit/over_budget` | A34 要求 `MEMORY_TRIM` 自带「裁了多少、够不够」，main 版没有 |
+| 阶段词表 | 统一为小写 `s0`–`s5`，`STAGE_REASON` 按同一词表映射归因 | 两版各有一套大小写，双词表会让前端按 stage 过滤时漏事件 |
+| `dedup_reads` 三态 | 退化为布尔 | 预算早退（`s0`）已给出「未超预算不改历史」的等价语义；三态里的 `on_pressure` 不再有独立行为 |
+| `note_max_chars` | 保留原名，`runtime.note_limit()` 取 `min(配置硬上限, 预算派生值)` | 改名会破坏 `config.db` 存量键；派生额度是新增语义，不该靠改名表达 |
+| S1（`trim_tail`） | 不单列 | main 的 `s3`（砍旧结果）与 `s5`（收紧当前轮）覆盖同一场景，单列一个几乎不命中的阶段只增加归因噪声 |
+
+连带调整（属实现细节，不改口径）：
+
+- 预算类用例按 qwen 族系数重标定：`history_limit` 从 400 提到 600 才落在 `s3`，
+  因为阿拉伯数字归入「符号」类（约 2.23 字/token），比旧的 3.6 字符/token 保守。
+- 去重用例改用读区间（`ToolCallBlock.input` 里的 `file_path/offset/limit`），
+  旧的「整条消息哈希」判据在 main 的算法里已不存在。

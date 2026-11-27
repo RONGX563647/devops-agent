@@ -19,6 +19,7 @@ from agentscope.permission import PermissionBehavior, PermissionContext, Permiss
 from agentscope.tool import Toolkit, ToolMiddlewareBase
 
 from devops_agent.config import load_memory
+from devops_agent.executor.target import ExecutionTarget
 from devops_agent.governance.compile import compile_context
 from devops_agent.governance.model import PermissionProfile
 from devops_agent.governance.presets import default_profile
@@ -37,7 +38,7 @@ from devops_agent.runtime.events import event_to_dict
 from devops_agent.runtime.profile_note import ProfileNoteMiddleware
 from devops_agent.runtime.prompt import resolve_workdir
 from devops_agent.search_mode import search_mode
-from devops_agent.tools.catalog import build_toolkit_for
+from devops_agent.tools.catalog import BackendFactory, build_toolkit_for
 from devops_agent.tools.names import SEARCH_TOOL_NAME
 from devops_agent.tools.web_search import WebSearchTool, build_backend
 
@@ -78,10 +79,19 @@ class AgentScopeRuntime:
         web_search: bool = False,
         search_tool: WebSearchTool | None = None,
         params: ModelParams | None = None,
+        execution: ExecutionTarget | None = None,
     ) -> None:
         self._agent = agent
         self._profile = profile if profile is not None else default_profile()
+        self._execution = execution
         self._workdir = workdir if workdir is not None else resolve_workdir()
+        # 工具/权限使用工具路径（docker / opensandbox 为 /workspace），宿主路径只做审计。
+        self._tool_workdir = execution.tool_workdir if execution is not None else str(self._workdir)
+        self._backend_factory: BackendFactory | None = (
+            execution.backend_factory
+            if execution is not None and execution.uses_shared_backend
+            else None
+        )
         # 热替换要保住这两件装配期的依赖：换 toolkit 时密钥注入不能丢，
         # 换档位时末尾的档位说明必须同步改，否则「切了但模型还按旧档写」。
         self._note_middleware = note_middleware
@@ -102,6 +112,11 @@ class AgentScopeRuntime:
     @property
     def profile(self) -> PermissionProfile:
         return self._profile
+
+    @property
+    def execution(self) -> ExecutionTarget | None:
+        """启动期固定的执行面；会话工厂据此复用同一 backend 与工作区。"""
+        return self._execution
 
     @property
     def web_search(self) -> bool:
@@ -130,7 +145,7 @@ class AgentScopeRuntime:
         模型只在联网开关真的变化时重建，避免无谓丢掉前缀缓存。
         """
         # 1) 权限上下文逐字段写回：引擎持有的是旧对象的引用
-        fresh = compile_context(profile=profile, workdir=self._workdir)
+        fresh = compile_context(profile=profile, workdir=self._tool_workdir)
         _copy_permission_context(self._agent.state.permission_context, fresh)
         # 2) 工具按新档位重装，密钥注入中间件与档位说明同步更新
         target_search = self._web_search if web_search is None else web_search
@@ -174,6 +189,8 @@ class AgentScopeRuntime:
             middlewares=self._toolkit_middlewares or None,
             scope=profile.scope,
             extra=extra,
+            backend_factory=self._backend_factory,
+            tool_cwd=self._tool_workdir,
         )
 
     def _maybe_rebuild_model(self, web_search: bool | None) -> None:

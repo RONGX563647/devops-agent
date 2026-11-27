@@ -257,9 +257,7 @@ def touch_long_term(conn: sqlite3.Connection, memory_ids: list[int]) -> None:
     )
 
 
-def _prune_long_term(
-    conn: sqlite3.Connection, scope: str, scope_id: str, max_entries: int
-) -> None:
+def _prune_long_term(conn: sqlite3.Connection, scope: str, scope_id: str, max_entries: int) -> None:
     """按最近使用淘汰，而不是按创建时间：常用的旧条目不该被新噪声挤掉。"""
     conn.execute(
         """DELETE FROM long_term_memories WHERE scope=? AND scope_id=? AND id NOT IN (

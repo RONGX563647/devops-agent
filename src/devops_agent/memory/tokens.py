@@ -195,3 +195,34 @@ def count_prefix(system_text: str, tools: list[dict[str, Any]], *, apply_drift: 
 
     raw = default().count(system_text) + default().count(json.dumps(tools, ensure_ascii=False))
     return int(math.ceil(raw * alpha())) if apply_drift else raw
+
+
+# --- 兼容入口 -------------------------------------------------------------
+# `count_messages` 是带系数的正式口径；下面三个名字保留给只想要「一段文本 / 一条
+# 消息 / 整段历史」的调用方（裁剪与观测都在用）。同一份文本两次取数不能有两套
+# 实现：这里一律回落 `default()`，与预算、压缩读的是同一个计数器。
+
+
+def block_text(block: Any) -> str:
+    """任意内容块 → 文本：工具结果取 `output`（字段名不是 `text`），文本块取 `text`。"""
+    for attr in ("text", "output", "input"):
+        value = getattr(block, attr, None)
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False, default=str)
+    return ""
+
+
+def content_text(content: Any) -> str:
+    """消息内容 → 文本：字符串原样，块列表逐块取文本后拼接。"""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(part for part in (block_text(block) for block in content) if part)
+
+
+def estimate_messages(messages: list[Any]) -> int:
+    """整段历史的估算 token（含工具结果）：不做漂移修正，裁剪判据只看绝对值。"""
+    return default().count_messages(messages)

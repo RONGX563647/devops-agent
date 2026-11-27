@@ -5,8 +5,12 @@
  *    「哪份文件、我能不能改」，所以点开要给出每一层的原值和是否可写。
  * 2. 重置只在草稿里改过该字段时出现，避免 13 行都是灰按钮的噪声。
  * 3. 数字输入清空 = null（回落下层），与后端 `apply_patch` 的语义一致。
+ *
+ * `control` 是给「网关 / 模型」这两个组合控件的出口：它们要拉注册表与模型列表，
+ * 数据在 Drawer 手里；把整段控件传进来，这一行就只负责排版与来源徽标。
  */
 
+import type { ReactNode } from 'react';
 import type { ModelBound, ModelLayer, ModelPatch, ModelSource } from '../../types';
 import type { FieldSpec } from './groups';
 import { NumInput } from './NumInput';
@@ -25,6 +29,8 @@ interface FieldRowProps {
   chainOpen: boolean;
   /** 从左树点进来时高亮这一行，避免「点了没反应」。 */
   highlight?: boolean;
+  /** 组合控件：给了就不画内置输入框（网关 / 模型两行用它）。 */
+  control?: ReactNode;
   onToggleChain: () => void;
   onPatch: (patch: ModelPatch) => void;
   onReset: () => void;
@@ -39,7 +45,9 @@ function show(value: unknown): string {
 }
 
 function Control({ spec, value, bound, onPatch }: Pick<FieldRowProps, 'spec' | 'value' | 'bound' | 'onPatch'>) {
-  if (spec.kind === 'text') {
+  // `provider` / `model` 正常情况下由 Drawer 传入组合控件；走到这里说明没传，
+  // 兜底成文本框而不是数字框 —— 至少不会把模型名变成一个滑杆。
+  if (spec.kind === 'text' || spec.kind === 'provider' || spec.kind === 'model') {
     return (
       <input
         className="mc-input mono"
@@ -53,6 +61,20 @@ function Control({ spec, value, bound, onPatch }: Pick<FieldRowProps, 'spec' | '
           if (text !== (value ?? '')) onPatch({ [spec.key]: text === '' ? null : text } as ModelPatch);
         }}
       />
+    );
+  }
+  if (spec.kind === 'auto') {
+    // 两个状态各有后果，所以不用「开/关」而直接说结论
+    return (
+      <select
+        className="mc-input"
+        aria-label={spec.label}
+        value={value === false ? 'false' : 'true'}
+        onChange={(event) => onPatch({ [spec.key]: event.target.value === 'true' } as ModelPatch)}
+      >
+        <option value="true">跟随模型能力</option>
+        <option value="false">用手填值</option>
+      </select>
     );
   }
   if (spec.kind === 'effort' || spec.kind === 'tristate') {
@@ -117,6 +139,7 @@ export function FieldRow({
   layers,
   chainOpen,
   highlight,
+  control,
   onToggleChain,
   onPatch,
   onReset,
@@ -130,7 +153,7 @@ export function FieldRow({
           {spec.label}
         </span>
         <span className="mcd-row-control">
-          <Control spec={spec} value={value} bound={bound} onPatch={onPatch} />
+          {control ?? <Control spec={spec} value={value} bound={bound} onPatch={onPatch} />}
         </span>
         {source ? (
           <button

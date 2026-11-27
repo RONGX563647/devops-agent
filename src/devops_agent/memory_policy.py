@@ -8,28 +8,27 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class ShortTermPolicy(BaseModel):
-    """短期（工作记忆）的确定性裁剪旋钮。"""
+    """短期（工作记忆）的确定性裁剪旋钮。
+
+    `tool_output_chars` 只管**已消化**的旧轮次；尾部 `recent_exempt_results` 个
+    工具结果完整保留，它们正是下一步推理的依据（SPEC-0019 §3）。单轮本身超出
+    预算时才退到 `recent_output_chars` 兜底。
+    """
 
     max_turns: int = Field(default=12, ge=1, le=200)
     tool_output_chars: int = Field(default=1600, ge=80, le=200_000)
     tool_output_head_ratio: float = Field(default=0.7, gt=0, lt=1)
-    #: 去重三态（SPEC-0016 §5.3）。`on_pressure` 只在超预算后才改写历史中段，
-    #: 因为旧默认（恒开）每轮都会动历史，把从改动点起的整段前缀缓存作废。
-    dedup_reads: Literal["never", "on_pressure", "always"] = "on_pressure"
-
-    @field_validator("dedup_reads", mode="before")
-    @classmethod
-    def _legacy_bool(cls, value: object) -> object:
-        """存量 `config.db` 里是布尔：True/False 映射为 always/never，不报错。"""
-        if value is True:
-            return "always"
-        if value is False:
-            return "never"
-        return value
+    dedup_reads: bool = True
+    # 尾部 N 个工具结果不参与内容截断：按「块」计数（并行 5 个读就是 5 块）
+    recent_exempt_results: int = Field(default=4, ge=0, le=64)
+    # 单轮本身超预算时的兜底上限，比旧轮次的 1600 宽，仍保留可复原的行号标记
+    recent_output_chars: int = Field(default=6000, ge=200, le=200_000)
+    # 关掉即回到「每轮无条件裁剪」，留给评测对照；生产保持开启
+    trim_on_budget: bool = True
 
 
 class EpisodicPolicy(BaseModel):
@@ -98,9 +97,7 @@ class MemoryContextPolicy(BaseModel):
     """上下文装配旋钮：尾部注入与快照体积。"""
 
     enabled: bool = True
-    #: 注入面的硬上限（字符）。实际额度由 token 预算派生：见 runtime.note_limit
-    #: （SPEC-0016 §4.5）—— 这里只防「窗口极大 → 注入极长」的失控。
-    note_max_chars_hard: int = Field(default=1200, ge=0, le=200_000)
+    note_max_chars: int = Field(default=1200, ge=0, le=200_000)
     episodic_note_ratio: float = Field(default=0.6, ge=0, le=1)
     snapshot_max_chars: int = Field(default=1_500_000, ge=10_000, le=100_000_000)
     snapshot_version: int = Field(default=2, ge=1, le=100)

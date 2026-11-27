@@ -48,9 +48,7 @@ def test_greeting_is_not_stored(tmp_path: Path) -> None:
 
 def test_short_sentence_with_path_is_stored(tmp_path: Path) -> None:
     """A32 之二：短句但带路径/命令 —— 短不等于没信息，别按长度一刀切。"""
-    result = _write(
-        _runtime(tmp_path), "入口在哪 scripts/start_pay.sh", "app.py:120，先跑迁移。"
-    )
+    result = _write(_runtime(tmp_path), "入口在哪 scripts/start_pay.sh", "app.py:120，先跑迁移。")
     assert result["stored"] is True
     text = _rows(tmp_path)[0]["text"]
     assert "start_pay.sh" in text or "app.py" in text
@@ -93,11 +91,7 @@ def test_synonym_rewrite_merges_into_one_row(tmp_path: Path) -> None:
 
 def test_summarize_keeps_signal_sentence_and_drops_lead_pronoun(tmp_path: Path) -> None:
     """§8.2：路径/命令句优先，抽出来的句子去掉句首代词（离开上下文也能读）。"""
-    raw = (
-        "这个先这样吧。"
-        "那么该配置在 config/memory.yaml 里，改完重启。"
-        "另外那个事情后面再说。"
-    )
+    raw = "这个先这样吧。那么该配置在 config/memory.yaml 里，改完重启。另外那个事情后面再说。"
     body, degraded = summarize(raw, max_chars=MAX_CHARS)
     assert degraded is False
     assert "config/memory.yaml" in body

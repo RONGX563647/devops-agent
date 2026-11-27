@@ -36,9 +36,7 @@ class _Model:
 class _Agent:
     def __init__(self) -> None:
         self.model = _Model()
-        self.state = SimpleNamespace(
-            summary="", context=[], middle_context={}, reply_id="r1"
-        )
+        self.state = SimpleNamespace(summary="", context=[], middle_context={}, reply_id="r1")
         self.context_config = ContextConfig()
 
     async def _prepare_model_input(self) -> dict[str, Any]:
@@ -78,7 +76,7 @@ def test_memory_trim_reports_budget_fields(tmp_path: Any) -> None:  # type: igno
     trims = [frame for frame in frames if frame["type"] == events.MEMORY_TRIM]
     assert trims, "超预算却没有裁剪事件"
     payload = trims[-1]["memory"]
-    assert payload["stage"] in {"S1", "S2", "S3", "S4", "S5"}
+    assert payload["stage"] in {"s0", "s2", "s3", "s4", "s5"}
     assert payload["limit"] > 0
     assert payload["tokens_before"] > payload["limit"]
     assert isinstance(payload["over_budget"], bool)

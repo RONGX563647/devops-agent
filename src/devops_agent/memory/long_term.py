@@ -49,7 +49,13 @@ def _tokens(text: str) -> set[str]:
 
 
 def score(query: str, text: str) -> float:
-    """旧的重合度打分（`retrieval: overlap` 时使用）：交集 / 查询词数的平方根。"""
+    """旧的重合度打分（`retrieval: overlap` 时使用）：交集 / 查询词数的平方根。
+
+    这个口径**饱和得快**：短查询命中两个 2-gram 就封顶 1.00，`min_score` 的
+    区分度因此很低（SPEC-0019 §7.3）。改成线性归一看起来更合理，但评测阈值
+    `EVAL_MIN_SCORE=0.7` 是照这个口径标定的（等价于「≥2 个 2-gram 命中」），
+    换口径必须同轮重标定整条评测基线——留给独立一轮，不混进裁剪修复。
+    """
     query_tokens = _tokens(query)
     if not query_tokens:
         return 0.0
@@ -88,10 +94,7 @@ class LocalLongTerm:
             return self._index
         index = BM25Index()
         index.build(
-            [
-                Doc(id=int(row["id"]), text=str(row["text"]), kind=str(row["kind"]))
-                for row in rows
-            ]
+            [Doc(id=int(row["id"]), text=str(row["text"]), kind=str(row["kind"])) for row in rows]
         )
         self._index, self._index_key = index, key
         return index
@@ -138,9 +141,7 @@ class LocalLongTerm:
         normalized = normalize(text)
         with repo.connect(self._db_path) as conn:
             repo.init_db(conn)
-            match = next(
-                (row for row in self._rows(conn) if similar(text, str(row["text"]))), None
-            )
+            match = next((row for row in self._rows(conn) if similar(text, str(row["text"]))), None)
             if match is not None:
                 keep = text if len(text) >= len(str(match["text"])) else str(match["text"])
                 result = repo.merge_long_term(

@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from devops_agent.gateway.settings import Settings
+from devops_agent.model_catalog import DEFAULT_ID, get_catalog
 from devops_agent.runtime.assembly import build_agentscope_runtime
 from devops_agent.runtime.runtime import AgentRuntime, EchoRuntime
 from devops_agent.tools.preflight import missing_tools
@@ -22,11 +24,127 @@ CODE_NO_CREDENTIALS = "no_model_credentials"
 NOTICE_NO_CREDENTIALS = "未配置模型凭据（DEVOPS_AGENT_API_KEY），当前回复只是回显输入，不会调用模型"
 
 
-def select_runtime() -> AgentRuntime:
-    """按环境变量选择运行时：配齐凭据用真实模型，否则回退 Echo（便于自检/测试）。"""
+def _configure_catalog() -> None:
+    """装配期把模型目录注入参数解析层。
+
+    失败只警告不拦启动：没有能力合并时窗口回落到静态 yaml 值，那是可用状态。
+    但必须留痕 —— 「配了网关却仍按 128k 压缩」的唯一线索就是这条日志。
+    """
+    try:
+        from devops_agent.model_catalog import configure
+
+        configure()
+    except Exception:  # noqa: BLE001 - 模型目录坏了不该拦住进程
+        logger.exception("模型目录初始化失败，窗口回落到静态配置")
+
+
+def select_runtime(execution: Any | None = None) -> AgentRuntime:
+    """按环境变量选择运行时：配齐凭据用真实模型，否则回退 Echo（便于自检/测试）。
+
+    `execution` 是启动期固定的执行面（`ExecutionTarget`）；省略时走本机路径。
+    """
+    _configure_catalog()
     if Settings().has_credentials():
-        return build_agentscope_runtime()
+        return build_agentscope_runtime(execution=execution)
     return EchoRuntime()
+
+
+def pick_runtime(execution: Any | None = None) -> AgentRuntime:
+    """装配期的选择，带降级：装配失败退回 Echo 并喊出来。
+
+    为什么不在 `select_runtime` 里降级：测试要能拿到真实异常。生产入口需要的是
+    「配置库坏了也能起来服务，让人看到 /health 而不是 connection refused」——
+    这与 `warn_missing_tools` 的取舍一致：降级是可用状态，只报警不拒绝启动。
+    """
+    try:
+        return select_runtime(execution)
+    except Exception:  # noqa: BLE001 - 任何装配失败都不该拦住进程
+        logger.exception("运行时装配失败，降级为 Echo；对话不会调用模型")
+        return EchoRuntime()
+
+
+def load_settings() -> Settings:
+    """装配期读取网关策略；失败时用代码默认值，同样不拦住启动。
+
+    注意 `gateway` 域的 `hot=restart`：策略在装配期固定，所以坏库降级出来的
+    默认值会一直用到进程重启 —— 这也是必须让 `/health` 说出「配置降级」的原因。
+    """
+    try:
+        return Settings.load()
+    except Exception:  # noqa: BLE001 - 策略读不到不该拦住进程
+        logger.exception("网关策略加载失败，使用代码默认值")
+        return Settings()
+
+
+def _resolved_values() -> dict[str, object]:
+    """当前生效的模型参数值（不抛：自述失败不该让 /health 500）。"""
+    from devops_agent.model_settings import resolve, stored_defaults, values_of
+
+    values = values_of(resolve(stored=stored_defaults(), domain=Settings().domain()))
+    return dict(values)
+
+
+def _effective_model() -> str:
+    """模型标识以真正生效的解析结果为准，多网关时写成 `<provider>/<model>`。
+
+    旧实现读 `Settings().model()`（只读 `DEVOPS_AGENT_MODEL`），而实际跑的是
+    `model_settings.resolve()` 的结果 —— 界面在「模型抽屉里选了 A、环境变量写着 B」
+    时会显示 B。自述字段说错比不说更糟，所以走同一个解析器。
+
+    匿名 provider 仍只回裸模型名：`/health.runtime.model` 的形状不能因为
+    新增一个键而变（A35 的等价性包含自述字段）。
+    """
+    try:
+        values = _resolved_values()
+        name = str(values.get("model") or "")
+        provider = str(values.get("provider") or "")
+        if provider and provider != DEFAULT_ID:
+            return f"{provider}/{name}"
+        return name
+    except Exception:  # noqa: BLE001 - 自述失败不该让 /health 500
+        logger.warning("读取生效模型名失败，回落环境变量", exc_info=True)
+        return Settings().model()
+
+
+def _as_int(value: object) -> int:
+    """解析结果里的数字来自 yaml/env（int）或校验过的值，统一成 int 再自述。"""
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def model_status() -> dict[str, object]:
+    """`/health.model`：当前网关、协议、窗口，以及目录整体的健康。
+
+    为什么要单列一段而不是塞进 `runtime`：`runtime.kind` 说的是「真模型还是回显」，
+    这里说的是「用的是哪个网关的哪个模型、它的窗口从哪来」—— 两件事混在一起
+    会让「模型答非所问」和「窗口配错了」看起来是同一个症状。
+    """
+    try:
+        values = _resolved_values()
+        catalog = get_catalog()
+        registry = catalog.registry
+        # 未显式选网关时，生效值是注册表的默认项 —— 不能写成常量 "default"：
+        # 写了 providers.yaml 却没有 default 叫 default 时，这里会自述一个不存在的
+        # id，而 `registry.get()` 会抛，/health 的 model 段就整块空了。
+        provider = str(values.get("provider") or "") or registry.default_id
+        spec = registry.get(provider)
+        return {
+            "provider": spec.id,
+            "name": str(values.get("model") or ""),
+            "kind": spec.kind,
+            "context_size": _as_int(values.get("context_size")),
+            "context_auto": bool(values.get("context_auto")),
+            "catalog": catalog.status(),
+        }
+    except Exception:  # noqa: BLE001 - 目录读不到时仍要能说明「没读到」
+        logger.warning("模型目录自述失败", exc_info=True)
+        return {
+            "provider": "",
+            "name": "",
+            "kind": "",
+            "context_size": 0,
+            "context_auto": False,
+            "catalog": {},
+        }
 
 
 def describe_runtime(runtime: AgentRuntime) -> dict[str, str]:
@@ -43,7 +161,7 @@ def describe_runtime(runtime: AgentRuntime) -> dict[str, str]:
             "code": CODE_NO_CREDENTIALS,
             "notice": NOTICE_NO_CREDENTIALS,
         }
-    return {"kind": KIND_AGENTSCOPE, "model": Settings().model(), "code": "", "notice": ""}
+    return {"kind": KIND_AGENTSCOPE, "model": _effective_model(), "code": "", "notice": ""}
 
 
 def warn_missing_tools() -> None:
@@ -78,6 +196,45 @@ def warn_memory_backend() -> None:
             status.get("effective", ""),
             status["reason"],
         )
+
+
+def describe_sandbox(state: Any) -> dict[str, Any]:
+    """`/health.sandbox` 的自述：请求模式、实际生效、降级原因与沙箱标识。
+
+    降级不能静默：`required=true` 初始化失败时 `sandbox_error` 非空，这里如实
+    标 `degraded=true` 并给出原因码；`auto` 回落本机时 reason 同样可见。
+    `reused` / `bootstrap_skipped` 框架未直接暴露，管理器的 status 如实给 null
+    或经验判断值，这里只透传，不补造。
+    """
+    manager = getattr(state, "sandbox_manager", None)
+    execution = getattr(state, "execution", None)
+    error = getattr(state, "sandbox_error", None)
+    if manager is not None:
+        payload: dict[str, Any] = dict(manager.status())
+    else:
+        mode = execution.mode if execution is not None else "local"
+        payload = {
+            "mode": mode,
+            "effective": mode,
+            "provider": mode,
+            "degraded": False,
+            "reason": "",
+            "workspace_id": "",
+            "sandbox_id": execution.sandbox_id if execution is not None else "",
+            "image": "",
+            "host_workdir": str(execution.host_workdir) if execution is not None else "",
+            "tool_workdir": execution.tool_workdir if execution is not None else "",
+            "containers": 0,
+            "init_ms": execution.init_ms if execution is not None else 0,
+            "reused": None,
+            "bootstrap_skipped": None,
+        }
+    if error is not None:
+        message = getattr(error, "message", "") or ""
+        code = getattr(error, "code", "sandbox_unavailable")
+        payload["degraded"] = True
+        payload["reason"] = f"{code}: {message}".strip(": ")
+    return payload
 
 
 def warn_runtime(runtime: AgentRuntime) -> None:

@@ -1,10 +1,11 @@
-"""配置中心端点 —— 一个域一份快照，写入走增量 + 乐观锁。
+"""配置中心端点 —— 一个域一份快照，写入走事务 + 版本校验。
 
 约定与 `model_api` 保持一致，避免同一个项目里出现两套语义：
 
 1. 服务端是唯一裁判：越界 400，附 `{code, message}`，界面据此高亮。
 2. `null` 表示删掉覆盖、回落到下层，不是「值等于 null」。
 3. 不谎报生效范围：`hot` 直接来自注册表（immediate / next_turn / restart）。
+4. 不把「读不到」说成「没有」：配置库坏了返回 503 + `db_error`，不是空列表或默认值。
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from devops_agent.config_store import store
 from devops_agent.config_store.registry import BY_KEY, DomainSpec, env_overlay
 
 router = APIRouter()
+
+CODE_UNAVAILABLE = "config_unavailable"
 
 
 class PatchRequest(BaseModel):
@@ -49,6 +52,19 @@ def _bad(message: str) -> HTTPException:
     return HTTPException(status_code=400, detail={"code": "config_invalid", "message": message})
 
 
+def _unavailable(exc: Exception) -> HTTPException:
+    """配置库不可用：503 而不是 500 —— 这是环境问题，不是请求问题。"""
+    return HTTPException(
+        status_code=503,
+        detail={"code": CODE_UNAVAILABLE, "message": str(exc)},
+    )
+
+
+def _db_health() -> dict[str, Any]:
+    snapshot = config_store.health.snapshot()
+    return {"degraded": bool(snapshot["degraded"]), "db_error": str(snapshot["error"])}
+
+
 def _payload(snapshot: store.Snapshot, spec: DomainSpec) -> dict[str, Any]:
     locked = set(env_overlay(spec.key))
     return {
@@ -68,6 +84,7 @@ def _payload(snapshot: store.Snapshot, spec: DomainSpec) -> dict[str, Any]:
         "drifted": snapshot.drifted,
         "mode": config_store.mode(),
         "db_path": str(config_store.db_path()),
+        **_db_health(),
     }
 
 
@@ -82,6 +99,7 @@ def list_domains() -> dict[str, Any]:
         "mode": config_store.mode(),
         "db_path": str(config_store.db_path()),
         "domains": config_store.index(),
+        **_db_health(),
     }
 
 
@@ -106,9 +124,11 @@ def patch_domain(domain: str, body: PatchRequest) -> dict[str, Any]:
             status_code=409,
             detail={"code": "config_version_conflict", **exc.payload},
         ) from exc
+    except store.ConfigUnavailable as exc:
+        raise _unavailable(exc) from exc
     except store.InvalidConfig as exc:
         raise _bad(str(exc)) from exc
-    return {**_payload(snapshot, spec), "persisted": snapshot.version > 0}
+    return {**_payload(snapshot, spec), "persisted": snapshot.persisted}
 
 
 @router.post("/api/config/{domain}/reset")
@@ -119,20 +139,28 @@ def reset_domain(domain: str, body: ResetRequest) -> dict[str, Any]:
         raise _bad("reset 需要 keys 或 all=true：空请求会被误读成「什么都没做」")
     try:
         snapshot = config_store.reset(domain, body.keys, all_=body.all, by=body.by)
+    except store.ConfigUnavailable as exc:
+        raise _unavailable(exc) from exc
     except store.InvalidConfig as exc:
         raise _bad(str(exc)) from exc
-    return _payload(snapshot, spec)
+    return {**_payload(snapshot, spec), "persisted": snapshot.persisted}
 
 
 @router.get("/api/config/{domain}/export", response_class=PlainTextResponse)
 def export_domain(domain: str) -> str:
     """导出覆盖项 yaml：可进 PR 评审，也可当另一台机器的导入源。"""
     _spec_of(domain)
-    return config_store.export_yaml(domain)
+    try:
+        return config_store.export_yaml(domain)
+    except store.ConfigUnavailable as exc:
+        raise _unavailable(exc) from exc
 
 
 @router.get("/api/config/{domain}/audit")
 def audit_domain(domain: str, limit: int = Query(default=50, ge=1, le=500)) -> dict[str, Any]:
     """最近的改动：谁在什么时候把哪个键从什么改成了什么。"""
     _spec_of(domain)
-    return {"domain": domain, "entries": config_store.audit(domain, limit)}
+    try:
+        return {"domain": domain, "entries": config_store.audit(domain, limit)}
+    except store.ConfigUnavailable as exc:
+        raise _unavailable(exc) from exc

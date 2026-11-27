@@ -9,7 +9,17 @@ import type { ModelValues } from '../../types';
 
 export type FieldKey = keyof ModelValues;
 
-export type FieldKind = 'text' | 'number' | 'int' | 'effort' | 'tristate' | 'boolean';
+/** `provider` / `model` 是组合控件（下拉 + 可手填），`auto` 是「跟随/手填」二选一。 */
+export type FieldKind =
+  | 'text'
+  | 'number'
+  | 'int'
+  | 'effort'
+  | 'tristate'
+  | 'boolean'
+  | 'provider'
+  | 'model'
+  | 'auto';
 
 export interface FieldSpec {
   key: FieldKey;
@@ -30,10 +40,18 @@ export const GROUPS: GroupSpec[] = [
   {
     id: 'connection',
     label: '连接',
-    summary: '用哪个模型、能吃多长的上下文',
+    summary: '用哪个网关的哪个模型、能吃多长的上下文',
     items: [
-      { key: 'model', label: '模型名', kind: 'text' },
-      { key: 'context_size', label: '上下文窗口', kind: 'int', hint: '空 = 跟随下层' },
+      // 顺序即因果：先选网关，它的 /models 才决定模型候选；选了模型才有能力卡
+      { key: 'provider', label: '网关', kind: 'provider' },
+      { key: 'model', label: '模型名', kind: 'model' },
+      { key: 'context_auto', label: '窗口跟随', kind: 'auto' },
+      {
+        key: 'context_size',
+        label: '上下文窗口',
+        kind: 'int',
+        hint: '「跟随」开着时以模型能力为准，这里的值会被覆盖',
+      },
     ],
   },
   {

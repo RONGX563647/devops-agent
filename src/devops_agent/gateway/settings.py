@@ -51,5 +51,17 @@ class Settings:
         return os.environ.get(ENV_MODEL, "")
 
     def has_credentials(self) -> bool:
-        """是否配了模型凭据；决定装配真实运行时还是 Echo。"""
-        return bool(os.environ.get(ENV_API_KEY))
+        """是否配了模型凭据；决定装配真实运行时还是 Echo。
+
+        两层：匿名 provider 仍看 `DEVOPS_AGENT_API_KEY`（老部署），
+        写了 `providers.yaml` 时任一 provider 有 key 即可 —— 否则「配了三个网关
+        却全部回退 Echo」会变成一次没人能解释的升级事故。
+        """
+        if os.environ.get(ENV_API_KEY):
+            return True
+        try:
+            from devops_agent.model_catalog.registry import load_registry
+
+            return any(spec.has_key for spec in load_registry().providers)
+        except Exception:  # noqa: BLE001 - 注册表坏了不该让进程起不来
+            return False

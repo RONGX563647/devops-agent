@@ -37,9 +37,7 @@ def _fixture() -> dict[str, Any]:
 def _estimate(row: dict[str, Any], family: str) -> int:
     """按行内三族字符数复算估算值（fixture 不存原文，只存字符分类）。"""
     cjk_pt, letter_pt, symbol_pt = FAMILIES[family]
-    return math.ceil(
-        row["cjk"] / cjk_pt + row["letters"] / letter_pt + row["symbols"] / symbol_pt
-    )
+    return math.ceil(row["cjk"] / cjk_pt + row["letters"] / letter_pt + row["symbols"] / symbol_pt)
 
 
 def test_fixture_covers_every_shape() -> None:

@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from devops_agent.config import ModelSettings, load_model
+from devops_agent.config_store import health as config_health
 from devops_agent.model_settings import file_store
 from devops_agent.model_settings.bounds import EDITABLE
 from devops_agent.observability import repository as repo
+
+if TYPE_CHECKING:
+    from devops_agent.model_settings.ports import CapabilityLookup
+
+logger = logging.getLogger(__name__)
 
 MODEL_ENV = "DEVOPS_AGENT_MODEL"
 # settings 表里这份配置的键名：一张 KV 表装所有「前端可改的配置域」
@@ -23,13 +30,23 @@ STORED_TTL_S = 5.0
 
 
 class Source(StrEnum):
-    """一个参数值是从哪一层来的。前端按它画徽标。"""
+    """一个参数值是从哪一层来的。前端按它画徽标。
+
+    后四项来自能力合并（SPEC-0018 §6）：它们不是「哪个人填的」，而是
+    「这个数字是怎么查出来的」—— 混在一起会让「为什么是 262144」无从解释。
+    """
 
     SESSION = "session"
     STORED = "stored"
     YAML = "yaml"
     ENV = "env"
     FRAMEWORK = "framework-default"
+    #: 本地校准表 config/models[.local].yaml
+    CALIBRATED = "calibrated"
+    #: 网关 /models 的声明
+    DISCOVERED = "discovered"
+    #: AgentScope 内置模型卡
+    CARD = "card"
 
 
 @dataclass(frozen=True)
@@ -78,16 +95,64 @@ def _apply_layer(values: dict[str, Resolved], layer: dict[str, Any] | None, sour
             values[key] = Resolved(value, source)
 
 
+def _source_or_default(name: str) -> Source:
+    """能力来源字符串 → 枚举。未来新增来源不认识的，退回「框架默认」。
+
+    这里刻意不抛：一次能力合并的未知来源不该让整个参数解析失败，
+    界面上显示「未知来源」比 500 好（A44 的另一半）。
+    """
+    try:
+        return Source(name)
+    except ValueError:
+        return Source.FRAMEWORK
+
+
+def _apply_capability(values: dict[str, Resolved], capability: CapabilityLookup | None) -> None:
+    """把能力合并结果并进 `context_size`，并定下 `context_auto` 的默认值。
+
+    顺序很关键：先定 `context_auto`（它可能来自会话/部署默认，也可能谁都没写），
+    再决定要不要用合并值覆盖窗口。`context_auto=false` 时**完全不碰**
+    `context_size` —— 用户手填的值哪怕与模型不符也是他的选择，只给警告。
+    """
+    auto = values["context_auto"].value
+    if auto is None:
+        auto = capability.default_context_auto() if capability is not None else False
+        values["context_auto"] = Resolved(auto, Source.FRAMEWORK)
+    if not auto or capability is None:
+        return
+    provider = str(values["provider"].value or "")
+    model = str(values["model"].value or "")
+    if not model:
+        # 没模型名就没有可查的能力卡；Echo 自检就是这种状态
+        return
+    try:
+        view = capability.capability(provider, model)
+    except Exception:  # noqa: BLE001 - 查不到能力不该挡住一次参数解析
+        logger.warning("能力卡查询失败，窗口回落到静态值", exc_info=True)
+        return
+    if view is None:
+        return
+    values["context_size"] = Resolved(
+        view.context_size, _source_or_default(view.source_of("context_size"))
+    )
+
+
 def resolve(
     session: dict[str, Any] | None = None,
     stored: dict[str, Any] | None = None,
     *,
     domain: str = "devops",
+    capability: CapabilityLookup | None = None,
 ) -> dict[str, Resolved]:
-    """逐项解析「值 + 来源」。纯函数：三份 dict 进，一份 dict 出，不碰 DB。"""
+    """逐项解析「值 + 来源」。纯函数：三份 dict 进，一份 dict 出，不碰 DB。
+
+    `capability` 省略时行为与改动前完全相同（A35），且 `context_auto` 恒为 false ——
+    拿不到合并值就不能声称「跟随模型」，否则是「说了但做不到」。
+    """
     values = _base(domain)
     _apply_layer(values, stored, Source.STORED)
     _apply_layer(values, session, Source.SESSION)
+    _apply_capability(values, capability)
     return values
 
 
@@ -108,12 +173,20 @@ def invalidate() -> None:
 
 
 def _read_stored() -> tuple[dict[str, Any], int]:
-    """从 settings 表读部署默认；库不可用时返回空配置（回落 yaml/env）。"""
+    """从 settings 表读部署默认；库不可用时返回空配置（回落 yaml/env）。
+
+    `except Exception` 保留（存储故障不该挡住一次对话），但不再静默：与
+    `config_store` 共用一份降级计数，`/health` 的 `config.degraded` 会亮起来。
+    旧实现的三种失败语义各说各话（500 / 静默 / 报错），排障时根本分不清是
+    「没配」还是「读不到」。
+    """
     try:
         with repo.connect() as conn:
             repo.init_db(conn)
             saved = repo.load_setting(conn, SETTING_KEY)
-    except Exception:  # noqa: BLE001 - 存储故障不该挡住一次对话
+    except Exception as exc:  # noqa: BLE001 - 存储故障不该挡住一次对话
+        config_health.note_failure("model", f"{type(exc).__name__}: {exc}")
+        logger.warning("模型参数库不可读，回落 config/model*.yaml 与环境变量", exc_info=True)
         return {}, 0
     return saved if saved is not None else ({}, 0)
 

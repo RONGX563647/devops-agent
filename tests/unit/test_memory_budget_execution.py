@@ -58,40 +58,44 @@ def test_budget_closes_within_rounding() -> None:
     assert budget.ok is True
 
 
-def test_untouched_history_is_returned_as_the_same_object() -> None:
-    """A26 / V3：未超预算必须返回同一个 list 对象，否则等于每轮重建历史。"""
+def test_untouched_history_keeps_every_element() -> None:
+    """A26 / V3：未超预算（s0 早退）不得重建任何消息，只换外壳列表。
+
+    外壳必须是新列表：调用方随后会往尾部 append 记忆注脚，共享历史会被污染。
+    """
     messages = _history(2, size=400)
-    trimmed, report = trim_messages(messages, POLICY, max_tokens=100_000)
-    assert trimmed is messages
+    trimmed, report = trim_messages(messages, POLICY, history_limit=100_000)
+    assert trimmed is not messages
+    assert all(a is b for a, b in zip(trimmed, messages, strict=True))
     assert report.changed is False
-    assert report.stage == ""
+    assert report.stage == "s0"
     assert report.tokens_before == report.tokens_after
 
 
 def test_over_budget_history_is_trimmed_under_the_limit() -> None:
     """A25：20 轮 × 3k 字工具结果 → 裁剪后必须装进 history_limit。"""
     messages = _history(20)
-    limit = 4000
-    trimmed, report = trim_messages(messages, POLICY, max_tokens=limit)
+    limit = 8000
+    trimmed, report = trim_messages(messages, POLICY, history_limit=limit)
     assert count_messages(trimmed) <= limit
     assert report.over_budget is False
-    assert report.stage in {"S1", "S3", "S4", "S5"}
+    assert report.stage in {"s3", "s4", "s5"}
     # 当前用户输入永不截断
     assert trimmed[-2].content[0].text.startswith("第 19 轮")  # type: ignore[union-attr]
 
 
-def test_tail_overflow_lands_in_s1() -> None:
-    """只超在尾巴上时实测点应当最靠后：S1 只动最后一条 user 之后。"""
+def test_single_oversized_result_lands_in_s5() -> None:
+    """只有一条超大结果可砍时最深只到 s5（收紧当前轮），且用户输入不受影响。"""
     messages = [SystemMsg(name="system", content="sys"), UserMsg(name="u", content="问题")]
     messages.append(_tool("big", "x" * 60_000))
-    trimmed, report = trim_messages(messages, POLICY, max_tokens=5000)
-    assert report.stage == "S1"
+    trimmed, report = trim_messages(messages, POLICY, history_limit=5000)
+    assert report.stage == "s5"
     assert report.changed_by == "trim_tail"
     assert trimmed[1].content[0].text == "问题"  # type: ignore[union-attr]
 
 
 def test_dedup_only_under_pressure() -> None:
-    """A28：默认 on_pressure —— 未超预算时历史中段不得被改写。"""
+    """A28：未超预算时历史中段不得被改写（预算早退先于去重）。"""
     body = "y" * 500
     messages = [
         SystemMsg(name="system", content="sys"),
@@ -100,17 +104,18 @@ def test_dedup_only_under_pressure() -> None:
         UserMsg(name="u2", content="q2"),
         _tool("Read", body),
     ]
-    kept, report = trim_messages(messages, POLICY, max_tokens=100_000)
-    assert kept is messages
+    kept, report = trim_messages(messages, POLICY, history_limit=100_000)
+    assert all(a is b for a, b in zip(kept, messages, strict=True))
     assert report.deduped_reads == 0
 
-    squeezed, squeezed_report = trim_messages(messages, POLICY, max_tokens=10)
-    # 极限预算下会一路走到 S5，但「去重发生了」这一点必须成立
-    assert squeezed_report.deduped_reads == 1
-    assert squeezed_report.stage in {"S2", "S3", "S4", "S5"}
+    squeezed, squeezed_report = trim_messages(messages, POLICY, history_limit=10)
+    # 预算极小时必然报超预算；同一条内容没有读区间信息，去重不会误伤它
+    assert squeezed_report.over_budget is True
+    assert squeezed_report.deduped_reads == 0
 
 
-def test_never_mode_skips_dedup_even_under_pressure() -> None:
+def test_dedup_disabled_keeps_repeated_reads() -> None:
+    """`dedup_reads=False` 时同一份内容重复出现也不改写。"""
     body = "y" * 500
     messages = [
         SystemMsg(name="system", content="sys"),
@@ -119,26 +124,24 @@ def test_never_mode_skips_dedup_even_under_pressure() -> None:
         UserMsg(name="u2", content="q2"),
         _tool("Read", body),
     ]
-    _, report = trim_messages(
-        messages, ShortTermPolicy(dedup_reads="never"), max_tokens=10
-    )
+    _, report = trim_messages(messages, ShortTermPolicy(dedup_reads=False), history_limit=10)
     assert report.deduped_reads == 0
 
 
 def test_single_huge_turn_reports_over_budget() -> None:
-    """一轮本身就装不下：S5 收紧当前轮，仍超则如实报 over_budget。"""
+    """一轮本身就装不下：s5 收紧当前轮，仍超则如实报 over_budget。"""
     messages = [SystemMsg(name="system", content="sys"), UserMsg(name="u", content="问题")]
     messages.append(_tool("huge", "z" * 200_000))
-    # 预算小到「收紧当前轮也不够」：S5 之后仍超，才算 over_budget
-    trimmed, report = trim_messages(messages, POLICY, max_tokens=10)
-    assert report.stage == "S5"
+    # 预算小到「收紧当前轮也不够」：s5 之后仍超，才算 over_budget
+    trimmed, report = trim_messages(messages, POLICY, history_limit=10)
+    assert report.stage == "s5"
     assert report.over_budget is True
     assert trimmed[1].content[0].text == "问题"  # type: ignore[union-attr]
 
 
 def test_report_carries_budget_fields_for_events() -> None:
     """A34 前置：MEMORY_TRIM 需要 stage/limit/over_budget，字段必须进 as_dict。"""
-    _, report = trim_messages(_history(20), POLICY, max_tokens=4000)
+    _, report = trim_messages(_history(20), POLICY, history_limit=4000)
     payload: dict[str, Any] = report.as_dict()
     assert {"stage", "limit", "over_budget", "tokens_before", "tokens_after"} <= set(payload)
     assert payload["limit"] == 4000

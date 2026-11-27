@@ -109,9 +109,7 @@ def prefix_fingerprint(system_text: str, tools: list[dict[str, Any]]) -> str:
 
 
 def _message_key(msg: Msg) -> str:
-    return json.dumps(
-        msg.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, default=str
-    )
+    return json.dumps(msg.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _first_diff(previous: list[str] | None, current: list[str]) -> int:

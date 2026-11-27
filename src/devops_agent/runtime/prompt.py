@@ -75,15 +75,22 @@ def _render_system_prompt(workdir_label: str, shell_label: str) -> str:
     return "\n\n".join([DEFAULT_SYSTEM_PROMPT, tool_prompt])
 
 
-def build_system_prompt(workdir: str | os.PathLike[str] | None = None) -> str:
+def build_system_prompt(
+    workdir: str | os.PathLike[str] | None = None,
+    *,
+    shell: str | None = None,
+) -> str:
     """拼装系统提示：角色描述 + 可用工具契约。
 
     **整段与会话无关、逐字节稳定**——这是前缀缓存真正能复用的部分。
     随档位变化的内容（能不能写、越界怎么办）不放在这里：系统提示在请求最前面，
     那里改一个字，后面的工具 schema 与整段历史全部作废（实测跨档命中 21%）。
     档位约束改由 `runtime/profile_note.py` 追加在消息末尾（实测 96%）。
+
+    `workdir` 传**工具路径**（docker 模式为 `/workspace`），`shell` 覆盖平台
+    默认值（docker 恒为 `/bin/sh`）：模型只能看见容器内路径与容器内 shell。
     """
-    return _render_system_prompt(str(resolve_workdir(workdir)), _shell_name())
+    return _render_system_prompt(str(resolve_workdir(workdir)), shell or _shell_name())
 
 
 def prompt_fingerprint() -> str:

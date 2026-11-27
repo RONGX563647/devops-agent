@@ -7,16 +7,22 @@
 `model` 域刻意不由本模块写入：它自己有一套「文件 + 乐观锁」的落盘实现
 （`model_settings/`），再塞一条写路径只会制造第二个真相。注册表把它标成
 `managed_by`，面板据此显示「去模型抽屉改」。
+
+模型类型直接从 `config_schema` 取（旧实现用 `importlib.import_module` 绕开与
+`config.py` 的循环依赖）。现在依赖是单向的：config_schema 是叶子，本模块与
+`config.py` 都只依赖它，拼错模型名在 import 期就会 KeyError，而不是等请求期。
 """
 
 from __future__ import annotations
 
-import importlib
 from dataclasses import dataclass
 from typing import Any, Literal, cast, get_args
 
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
+
+from devops_agent import config_schema
+from devops_agent.config_store.errors import UnknownDomain
 
 # 生效时机：改完之后界面据此显示「立即 / 下一轮 / 重启」。不谎报是硬约定。
 Hot = Literal["immediate", "next_turn", "restart"]
@@ -27,7 +33,13 @@ ENV_BACKENDS = ("auto", "mem0", "agentic", "local", "off")
 
 @dataclass(frozen=True, slots=True)
 class DomainSpec:
-    """一个配置域的元信息。"""
+    """一个配置域的元信息。
+
+    `section` 是 yaml 文件名（不含扩展名），默认也是该域在文件里的段名。
+    `root=True` 表示**整份文件就是该域的值**（policy.yaml：顶层直接写 `confirm:`，
+    没有再包一层 `policy:`）。旧实现靠 `raw.get(section, raw)` 的兜底恰好对上，
+    文件顶层多一个键就整段失效 —— 显式声明比巧合可靠。
+    """
 
     key: str
     title: str
@@ -38,6 +50,8 @@ class DomainSpec:
     note: str = ""
     # 非空表示写入口在别处（如模型抽屉），本接口只读
     managed_by: str = ""
+    # True：文件顶层即该域负载；False：取文件里与 section 同名的段
+    root: bool = False
 
 
 DOMAINS: tuple[DomainSpec, ...] = (
@@ -75,6 +89,7 @@ DOMAINS: tuple[DomainSpec, ...] = (
         key="policy",
         title="确认协议（只读）",
         section="policy",
+        root=True,
         model="RuntimePolicy",
         writable=False,
         hot="restart",
@@ -107,14 +122,34 @@ ENV_OVERLAY: dict[str, tuple[tuple[str, str, str, tuple[str, ...]], ...]] = {
 }
 
 
-def model_for(spec: DomainSpec) -> type[BaseModel]:
-    """取域的 pydantic 模型。
+# 域模型：静态映射而不是运行时 importlib。少一处「运行时才连」的隐形依赖，
+# 拼错名字在 import 期就炸。
+MODELS: dict[str, type[BaseModel]] = {
+    "HealthPolicy": config_schema.HealthPolicy,
+    "InputPolicy": config_schema.InputPolicy,
+    "MemoryPolicy": config_schema.MemoryPolicy,
+    "GatewayPolicy": config_schema.GatewayPolicy,
+    "RuntimePolicy": config_schema.RuntimePolicy,
+    "ModelSettings": config_schema.ModelSettings,
+}
 
-    延迟 import：`config.py` 会 import 本包的存取层，若这里在模块级 import
-    `devops_agent.config` 就会成环。调用发生在请求 / 加载期，届时 config 已装载。
-    """
-    module = importlib.import_module("devops_agent.config")
-    return cast(type[BaseModel], getattr(module, spec.model))
+
+def model_for(spec: DomainSpec) -> type[BaseModel]:
+    """取域的 pydantic 模型（名字来自注册表）。"""
+    return MODELS[spec.model]
+
+
+def yaml_segment(spec: DomainSpec) -> str | None:
+    """该域在 yaml 文件里的段名；`None` 表示整份文件就是该域的值。"""
+    return None if spec.root else spec.section
+
+
+def spec_of(domain: str) -> DomainSpec:
+    """按 key 取域；拼错就抛 `UnknownDomain`，不静默当空配置。"""
+    spec = BY_KEY.get(domain)
+    if spec is None:
+        raise UnknownDomain(domain)
+    return spec
 
 
 def defaults_of(spec: DomainSpec) -> dict[str, Any]:
@@ -193,10 +228,13 @@ __all__ = [
     "BY_KEY",
     "DOMAINS",
     "ENV_OVERLAY",
+    "MODELS",
     "DomainSpec",
     "Hot",
     "bounds_of",
     "defaults_of",
     "env_overlay",
     "model_for",
+    "spec_of",
+    "yaml_segment",
 ]

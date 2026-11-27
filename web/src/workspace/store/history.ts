@@ -2,6 +2,7 @@
 
 import { fetchRuns } from '../../api/client';
 import type { ChatMessage, Run } from '../../types';
+import { parseWebAccess } from '../web-access';
 import { listStoredSessions, type StoredSession } from '../history';
 import { toSessionTitle } from '../sidebar-utils';
 import { emit, ensureEntry, entries, type Entry } from './state';
@@ -26,6 +27,7 @@ function runToMessages(run: Run): ChatMessage[] {
       inputTokens: run.input_tokens,
       outputTokens: run.output_tokens,
       runId: run.id,
+      webAccess: parseWebAccess(run.web_access),
     },
   ];
 }

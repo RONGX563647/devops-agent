@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
 from agentscope.agent import Agent
@@ -32,6 +33,16 @@ def _text_of(msg: Any) -> str:
         if isinstance(text, str):
             parts.append(text)
     return "\n".join(parts)
+
+
+def _prompt_tokens(usage: Any) -> int:
+    """从框架的 ChatUsage 取「这次 prompt 实际用了多少 token」，缺字段按 0。"""
+    if usage is None:
+        return 0
+    total = 0
+    for name in ("input_tokens", "cache_input_tokens", "cache_creation_input_tokens"):
+        total += int(getattr(usage, name, 0) or 0)
+    return total
 
 
 def _last_user_text(messages: list[Msg]) -> str:
@@ -80,6 +91,8 @@ class MemoryMiddleware(MiddlewareBase):
         # 同一轮内多次模型调用复用同一份 note；回复结束即清空，不落快照
         self._note_cache: dict[str, str] = {}
         self._assembled_turn = ""
+        # 估算对账每轮只做一次：多轮累计会掩盖单次口径错误
+        self._audited_turn = ""
 
     # --- 模型调用 -----------------------------------------------------
     async def on_model_call(
@@ -91,28 +104,109 @@ class MemoryMiddleware(MiddlewareBase):
         """1) 确定性裁剪；2) 组装并追加记忆 note；3) 交给下一层。"""
         messages = list(input_kwargs.get("messages") or [])
         trimmed, report = trim_messages(messages, self._policy.short_term)
-        if report.changed:
-            self._runtime.sink.emit(
-                events.frame(
-                    events.MEMORY_TRIM,
-                    layer="short",
-                    reason="request_trim",
-                    **cast(dict[str, Any], report.as_dict()),
-                )
-            )
+        self._emit_trim(report)
         turn = _turn_key(str(getattr(agent.state, "reply_id", "") or ""), trimmed)
-        if turn in self._note_cache:
-            note = self._note_cache[turn]
-        else:
-            note, _meta = await self._assemble(agent, trimmed, turn)
-            self._note_cache[turn] = note
+        note = await self._note_for(agent, trimmed, turn)
         if note:
             trimmed.append(injected_note(note, kind="memory"))
-        if self._assembled_turn != turn:
-            self._assembled_turn = turn
-            tools = list(input_kwargs.get("tools") or [])
-            self._emit_assembled(agent, trimmed, tools, note, report.as_dict())
-        return await next_handler(messages=trimmed)
+        tools = list(input_kwargs.get("tools") or [])
+        self._emit_assembled_once(agent, trimmed, tools, note, report, turn)
+        result = await next_handler(messages=trimmed)
+        return self._audit_once(result, trimmed, tools, turn)
+
+    def _emit_trim(self, report: Any) -> None:
+        """只在真的裁剪了才发帧，避免每轮刷一条空事件。"""
+        if not report.changed:
+            return
+        self._runtime.sink.emit(
+            events.frame(
+                events.MEMORY_TRIM,
+                layer="short",
+                reason=events.REASON_REQUEST_TRIM,
+                **cast(dict[str, Any], report.as_dict()),
+            )
+        )
+
+    async def _note_for(self, agent: Agent, messages: list[Msg], turn: str) -> str:
+        """同一轮内复用同一份 note；命中缓存就不再算一次召回。"""
+        if turn in self._note_cache:
+            return self._note_cache[turn]
+        note, _meta = await self._assemble(agent, messages, turn)
+        self._note_cache[turn] = note
+        return note
+
+    def _emit_assembled_once(
+        self,
+        agent: Agent,
+        messages: list[Msg],
+        tools: list[dict[str, Any]],
+        note: str,
+        report: Any,
+        turn: str,
+    ) -> None:
+        """装配视图每轮只发一次：同一轮的后续模型调用不再重复。"""
+        if self._assembled_turn == turn:
+            return
+        self._assembled_turn = turn
+        self._emit_assembled(agent, messages, tools, note, report.as_dict())
+
+    def _audit_once(
+        self,
+        result: Any,
+        messages: list[Msg],
+        tools: list[dict[str, Any]],
+        turn: str,
+    ) -> Any:
+        """估算对账：流式时用量只在最后一帧，包一层才能读到；只报数不改行为。"""
+        if not self._policy.context.estimate_audit:
+            return result
+        if inspect.isasyncgen(result):
+            return self._audited_stream(result, messages, tools, turn)
+        self._emit_estimate_delta(result, messages, tools, turn)
+        return result
+
+    async def _audited_stream(
+        self,
+        stream: AsyncIterator[Any],
+        messages: list[Msg],
+        tools: list[dict[str, Any]],
+        turn: str,
+    ) -> AsyncIterator[Any]:
+        """透传模型流，在最后一帧之后对账一次估算与实测。"""
+        last: Any = None
+        async for chunk in stream:
+            last = chunk
+            yield chunk
+        self._emit_estimate_delta(last, messages, tools, turn)
+
+    def _emit_estimate_delta(
+        self,
+        response: Any,
+        messages: list[Msg],
+        tools: list[dict[str, Any]],
+        turn: str,
+    ) -> None:
+        """把「估算 token vs 实测 prompt token」发成一帧；没有用量就跳过。"""
+        if self._audited_turn == turn:
+            return
+        actual = _prompt_tokens(getattr(response, "usage", None))
+        if actual <= 0:
+            return
+        system_text = _text_of(messages[0]) if messages else ""
+        estimated = estimate_prefix_tokens(system_text, tools) + sum(
+            estimate_tokens(_text_of(msg)) for msg in messages
+        )
+        if estimated <= 0:
+            return
+        self._audited_turn = turn
+        self._runtime.sink.emit(
+            events.frame(
+                events.CONTEXT_ESTIMATE_DELTA,
+                estimated=estimated,
+                actual=actual,
+                ratio=round(actual / estimated, 3),
+            )
+        )
 
     async def _assemble(
         self, agent: Agent, messages: list[Msg], turn: str
@@ -232,6 +326,7 @@ class MemoryMiddleware(MiddlewareBase):
             # 整轮清空而不是按 reply 删：`reply_id` 可能为空，按它删会留下脏缓存
             self._note_cache.clear()
             self._assembled_turn = ""
+            self._audited_turn = ""
             try:
                 await self._runtime.write_turn(
                     _input_text(input_kwargs.get("inputs")), _last_assistant_text(agent)

@@ -16,9 +16,10 @@ MEMORY_COMPRESS_END = "MEMORY_COMPRESS_END"
 MEMORY_WRITE_START = "MEMORY_WRITE_START"
 MEMORY_WRITE_END = "MEMORY_WRITE_END"
 CONTEXT_ASSEMBLED = "CONTEXT_ASSEMBLED"
-
 # 没有 CONTEXT_RESTORE：恢复发生在装配期，那时还没有 SSE 流可以承载事件；
 # 恢复失败改为结构化日志 + `/health` 计数（SPEC-0013 §18.2 M5）。
+# 估算与实测的对账帧：每个 run 最多一次，只报数不改行为
+CONTEXT_ESTIMATE_DELTA = "CONTEXT_ESTIMATE_DELTA"
 
 # `reason` 是枚举而不是自由文本：前端按它做过滤与提示，异常细节另有字段。
 # 降级（error）与「确实没有」（miss）必须可区分，否则故障永远看起来像正常空结果。
@@ -45,6 +46,7 @@ MEMORY_EVENT_TYPES = frozenset(
         MEMORY_WRITE_START,
         MEMORY_WRITE_END,
         CONTEXT_ASSEMBLED,
+        CONTEXT_ESTIMATE_DELTA,
     }
 )
 

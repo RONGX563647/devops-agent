@@ -80,6 +80,7 @@ def _model_budget(agent: Agent, prefix_tokens: int, policy: Any) -> Budget:
         headroom_ratio=policy.budget.headroom_ratio,
         episodic_enabled=policy.episodic.enabled,
         long_term_enabled=policy.long_term.enabled,
+        estimate_margin_ratio=policy.budget.estimate_margin_ratio,
     )
 
 

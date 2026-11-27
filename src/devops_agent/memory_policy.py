@@ -62,6 +62,8 @@ class MemoryBudgetPolicy(BaseModel):
     episodic_ratio: float = Field(default=0.30, ge=0, le=1)
     long_term_ratio: float = Field(default=0.10, ge=0, le=1)
     headroom_ratio: float = Field(default=0.10, ge=0, le=1)
+    # 固定前缀的安全垫：估算器系统性低估时，先多留这么多比例，不要顶到窗口边界
+    estimate_margin_ratio: float = Field(default=0.1, ge=0, le=1)
 
     @model_validator(mode="after")
     def _check_sum(self) -> MemoryBudgetPolicy:
@@ -82,6 +84,8 @@ class MemoryContextPolicy(BaseModel):
     snapshot_max_chars: int = Field(default=1_500_000, ge=10_000, le=100_000_000)
     snapshot_version: int = Field(default=2, ge=1, le=100)
     assemble_event: bool = True
+    # 每轮首次模型调用后对账「估算 vs 实测」；只发事件，不自动调参
+    estimate_audit: bool = True
 
 
 class MemoryTracePolicy(BaseModel):

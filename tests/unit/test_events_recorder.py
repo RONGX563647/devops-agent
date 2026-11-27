@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from devops_agent.observability import repository as repo
-from devops_agent.observability.recorder import RunRecorder, _elapsed_ms, _union_ms
+from devops_agent.observability.recorder import RunRecorder
+from devops_agent.observability.recorder.timing import _elapsed_ms, _union_ms, span_duration
 from devops_agent.runtime.events import event_to_dict
 
 
@@ -403,12 +404,12 @@ def test_recorder_pairs_every_model_call_in_one_reply(tmp_path: Path) -> None:
 def test_span_duration_falls_back_to_monotonic_clock() -> None:
     """created_at 缺失时用单调时钟兜底，不能因为「起点终点都取 utc_now」算出 0ms。"""
     pending = {"has_time": False, "t0": time.perf_counter_ns() - 5_000_000}
-    duration = RunRecorder._span_duration(pending, "", "", time.perf_counter_ns())
+    duration = span_duration(pending, "", "", time.perf_counter_ns())
     assert 4 <= duration < 1_000
     # 有真实时间戳时仍然以事件时间为准（同一事件由框架补时戳的情况）
     timed = {"has_time": True, "t0": time.perf_counter_ns()}
     assert (
-        RunRecorder._span_duration(
+        span_duration(
             timed, "2026-11-23T14:00:00+00:00", "2026-11-23T14:00:02+00:00", time.perf_counter_ns()
         )
         == 2000

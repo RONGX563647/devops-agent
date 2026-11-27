@@ -126,10 +126,14 @@ def _build_recorder(
     request_id: str = "",
 ) -> RunRecorder:
     """建本轮记录器，带上实际下发的参数快照（参数可配后，不进记录就不可归因）。"""
-    return RunRecorder(
+    port = RuntimePort(entry.runtime)
+    recorder = RunRecorder(
         domain=settings.domain(),
         model=settings.model(),
         request_id=request_id,
         permission=profile_key,
-        model_params=RuntimePort(entry.runtime).params_record(),
+        model_params=port.params_record(),
     )
+    # 先记「本轮有没有检索能力」；预抓取结果由 prepare_payload 再补（SPEC-0012 §7）
+    recorder.note_web_access(net=port.web_search())
+    return recorder

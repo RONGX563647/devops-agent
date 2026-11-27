@@ -202,6 +202,8 @@ _RUN_COLUMNS: tuple[tuple[str, str], ...] = (
     # 本轮实际下发的模型参数快照（只含非默认值）。参数可以随时改，
     # 没有快照的话「参数变化点前后」的健康分与评测批次会混在一起算。
     ("model_params", "TEXT NOT NULL DEFAULT ''"),
+    # 网络获取决策（JSON）：谁开了检索、预抓取缺口、走的哪条通路
+    ("web_access", "TEXT NOT NULL DEFAULT ''"),
 )
 
 # session_states 上后加的列：会话级模型参数覆盖（JSON；空串 = 无覆盖）。

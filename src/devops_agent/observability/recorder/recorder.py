@@ -10,6 +10,7 @@ from pathlib import Path
 
 from devops_agent.observability import repository as repo
 from devops_agent.observability.models import InputStageRecord, RunRecord, SpanRecord
+from devops_agent.observability.recorder.audit import WebAccessLog
 from devops_agent.observability.recorder.input_stage import input_stage_record
 from devops_agent.observability.recorder.memory import MEMORY_SPAN_NAMES, memory_span
 from devops_agent.observability.recorder.timing import (
@@ -17,6 +18,7 @@ from devops_agent.observability.recorder.timing import (
     _iso_to_epoch_ms,
     _pending_t0,
     _work_ms,
+    span_duration,
     utc_now,
 )
 from devops_agent.observability.recorder.usage import _token_delta
@@ -74,6 +76,8 @@ class RunRecorder:
         self._last_tool_key = ""
         # 输入解析阶段在过程中先缓存，finish 时随 run 一起落库（run_id 此时才齐备）
         self._input_stages: list[InputStageRecord] = []
+        # 本轮网络获取的决策（net / 缺口 / 通路）：同样在 finish 时一次写库
+        self._web_access = WebAccessLog()
 
     def start(self, session_id: str, user_input: str) -> int:
         """建立 run 记录，返回 run_id。可重复调用（幂等）。"""
@@ -370,7 +374,7 @@ class RunRecorder:
             type=str(pending.get("type", "model")),
             name=name or str(pending.get("name", "step")),
             start_offset_ms=self._span_offset(pending),
-            duration_ms=self._span_duration(pending, start_at, end_at, end_ns),
+            duration_ms=span_duration(pending, start_at, end_at, end_ns),
             input=str(pending.get("input", "")),
             output=str(pending.get("output", "")),
             tokens=tokens,
@@ -388,20 +392,6 @@ class RunRecorder:
         # 4. 只有模型 span 更新「最近模型」，工具 span 已按它挂好 parent_id
         if not is_tool:
             self._last_model_span_id = span_id
-
-    @staticmethod
-    def _span_duration(pending: dict[str, object], start_at: str, end_at: str, end_ns: int) -> int:
-        """优先用事件时间戳（真实发生时刻），缺失时退回单调时钟差值。
-
-        created_at 缺失时旧实现把起止都填成 utc_now()，于是每条 span 都是 0ms；
-        单调时钟不依赖事件字段，才画得出真实宽度。
-        """
-        if pending.get("has_time") and end_at:
-            measured = _elapsed_ms(start_at, end_at)
-            if measured > 0:
-                return measured
-        t0 = _pending_t0(pending)
-        return max(0, (end_ns - t0) // 1_000_000)
 
     def _finish_terminal_fields(self, status: str | None, error: str | None) -> tuple[str, str]:
         """终态与失败原因：显式 status 优先，否则按结束原因推断；原因缺失时兜底一句。"""
@@ -463,10 +453,16 @@ class RunRecorder:
                 wall_ms=wall_ms,
                 error=reason,
             )
-        # 5. 清空过程缓存并标记收尾，避免重复落库
+        # 5. 网络获取决策单独一条 UPDATE（不改 finish_run 的 SQL，减少回归面）
+        self._web_access.flush(self._db_path, self._run_id)
+        # 6. 清空过程缓存并标记收尾，避免重复落库
         self._input_stages = []
         self._finished = True
         return self._run_id
+
+    def note_web_access(self, **fields: object) -> None:
+        """记录一项网络获取决策（可多次调用，后者覆盖同名键；finish 时一次落库）。"""
+        self._web_access.note(**fields)
 
     @property
     def run_id(self) -> int | None:

@@ -2,6 +2,10 @@
 
 LocalWorkspace / DockerWorkspace 已内置沙箱隔离（工作区含 data/skills/sessions）。
 五道边界由 workspace 后端 + PermissionContext 共同承担。
+
+本模块只负责「把配置翻译成一个已构造的 workspace」；初始化、生命周期与模式
+解析在 `executor/manager.py`。容器创建、镜像构建、MCP gateway 全部交给
+`DockerWorkspace`，这里不复制任何 Docker 逻辑。
 """
 
 from __future__ import annotations
@@ -23,6 +27,19 @@ def build_docker_workspace(
     base_image: str = "python:3.11-slim",
     host_workdir: str | None = None,
     env: dict[str, str] | None = None,
+    *,
+    extra_pip: Sequence[str] | None = None,
+    gateway_port: int = 5600,
 ) -> DockerWorkspace:
-    """服务器执行面：Docker 沙箱隔离。"""
-    return DockerWorkspace(base_image=base_image, host_workdir=host_workdir, env=env)
+    """服务器执行面：Docker 沙箱隔离。
+
+    `host_workdir` 是 bind mount 的宿主来源；容器内路径固定为 `/workspace`。
+    构造不会启动容器（需 `await initialize()`）。
+    """
+    return DockerWorkspace(
+        base_image=base_image,
+        host_workdir=host_workdir,
+        env=env,
+        extra_pip=list(extra_pip) if extra_pip else None,
+        gateway_port=gateway_port,
+    )

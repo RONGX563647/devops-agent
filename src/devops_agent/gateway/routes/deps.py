@@ -10,9 +10,9 @@ FastAPI 的依赖注入就是这一层的全部机制，不额外包一层容器
 
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
-from devops_agent.gateway.errors import ErrorCode, http_error
+from devops_agent.gateway.errors import STATUS_OF, ErrorCode, http_error
 from devops_agent.gateway.settings import Settings
 from devops_agent.governance.model import PermissionProfile
 from devops_agent.governance.presets import UnknownProfile, resolve
@@ -40,3 +40,18 @@ def settings_of(request: Request) -> Settings:
     """取本进程的网关设置；未装配时回落到配置默认（测试替身友好）。"""
     found = getattr(request.app.state, "settings", None)
     return found if isinstance(found, Settings) else Settings.load()
+
+
+def sandbox_ready(request: Request) -> None:
+    """`required=true` 且执行面初始化失败时拒绝对话（503），不回落宿主。
+
+    原因码沿用 `SandboxUnavailable.code`（如 `sandbox_image_build_failed`），
+    前端据此区分「daemon 没起」与「镜像构建失败」；没有错误时是空操作。
+    """
+    error = getattr(request.app.state, "sandbox_error", None)
+    if error is None:
+        return
+    raise HTTPException(
+        status_code=STATUS_OF[ErrorCode.SANDBOX_UNAVAILABLE],
+        detail=getattr(error, "code", ErrorCode.SANDBOX_UNAVAILABLE.value),
+    )

@@ -104,6 +104,14 @@ DOMAINS: tuple[DomainSpec, ...] = (
         managed_by="model_settings",
         note="写入口在输入栏齿轮抽屉（会话覆盖 / 全局默认两层）。",
     ),
+    DomainSpec(
+        key="sandbox",
+        title="沙箱执行面",
+        section="sandbox",
+        model="SandboxPolicy",
+        hot="restart",
+        note="执行模式、是否允许回落、空闲回收与 Docker 参数；启动期固定，改完需重启进程。",
+    ),
 )
 
 BY_KEY: dict[str, DomainSpec] = {spec.key: spec for spec in DOMAINS}
@@ -119,6 +127,10 @@ ENV_OVERLAY: dict[str, tuple[tuple[str, str, str, tuple[str, ...]], ...]] = {
         ("long_term.backend", "DEVOPS_AGENT_MEMORY_BACKEND", "str", ENV_BACKENDS),
         ("long_term.scope", "DEVOPS_AGENT_MEMORY_SCOPE", "str", ("session", "user")),
     ),
+    "sandbox": (
+        ("mode", "DEVOPS_AGENT_SANDBOX_MODE", "str", ("local", "docker", "auto")),
+        ("required", "DEVOPS_AGENT_SANDBOX_REQUIRED", "bool", ()),
+    ),
 }
 
 
@@ -131,6 +143,7 @@ MODELS: dict[str, type[BaseModel]] = {
     "GatewayPolicy": config_schema.GatewayPolicy,
     "RuntimePolicy": config_schema.RuntimePolicy,
     "ModelSettings": config_schema.ModelSettings,
+    "SandboxPolicy": config_schema.SandboxPolicy,
 }
 
 

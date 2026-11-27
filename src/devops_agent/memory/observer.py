@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any, cast
@@ -54,15 +55,30 @@ def _input_text(inputs: Any) -> str:
     return _text_of(inputs)
 
 
+def _turn_key(reply: str, messages: list[Msg]) -> str:
+    """本轮的稳定标识：`reply_id` 优先，为空时回落到首条消息的摘要。
+
+    不能直接用 `reply_id` 当缓存键：框架在某些路径下不填它，空串会让
+    「同一轮内的多次模型调用」与「不同轮」共用同一个键 —— 前者重复召回，
+    后者被误判成同一轮而漏注入（SPEC-0013 §18.2 M10）。
+    首条消息（系统提示）在同一轮里不变，跨轮也不变，所以只作为
+    「这一轮是谁」的弱标识：同轮去重靠它，跨轮是否重注入仍由版本/命中集合判断。
+    """
+    if reply:
+        return reply
+    head = _text_of(messages[0]) if messages else ""
+    return "h:" + hashlib.sha256(head.encode("utf-8")).hexdigest()[:12]
+
+
 class MemoryMiddleware(MiddlewareBase):
     """短期裁剪 + 中期/长期注入 + 回合末长期写入。"""
 
     def __init__(self, runtime: MemoryRuntime) -> None:
         self._runtime = runtime
         self._policy = runtime.policy
-        # 同一 reply 内多次模型调用复用同一份 note；回复结束即清空，不落快照
+        # 同一轮内多次模型调用复用同一份 note；回复结束即清空，不落快照
         self._note_cache: dict[str, str] = {}
-        self._assembled_reply = ""
+        self._assembled_turn = ""
 
     # --- 模型调用 -----------------------------------------------------
     async def on_model_call(
@@ -83,22 +99,22 @@ class MemoryMiddleware(MiddlewareBase):
                     **cast(dict[str, Any], report.as_dict()),
                 )
             )
-        reply = str(getattr(agent.state, "reply_id", "") or "")
-        if reply and reply in self._note_cache:
-            note = self._note_cache[reply]
+        turn = _turn_key(str(getattr(agent.state, "reply_id", "") or ""), trimmed)
+        if turn in self._note_cache:
+            note = self._note_cache[turn]
         else:
-            note, _meta = await self._assemble(agent, trimmed, reply)
-            self._note_cache[reply] = note
+            note, _meta = await self._assemble(agent, trimmed, turn)
+            self._note_cache[turn] = note
         if note:
             trimmed.append(UserMsg(name="system", content=note))
-        if reply and self._assembled_reply != reply:
-            self._assembled_reply = reply
+        if self._assembled_turn != turn:
+            self._assembled_turn = turn
             tools = list(input_kwargs.get("tools") or [])
             self._emit_assembled(agent, trimmed, tools, note, report.as_dict())
         return await next_handler(messages=trimmed)
 
     async def _assemble(
-        self, agent: Agent, messages: list[Msg], reply: str
+        self, agent: Agent, messages: list[Msg], turn: str
     ) -> tuple[str, dict[str, Any]]:
         """召回三层内容并决定这一轮是否真的注入（版本未变则跳过）。"""
         query = _last_user_text(messages)
@@ -110,13 +126,16 @@ class MemoryMiddleware(MiddlewareBase):
                 backend=self._runtime.backend_name,
             )
         )
-        card, hits = await self._runtime.recall(query)
-        marker = self._runtime.marker(card, hits, reply)
-        unchanged = self._unchanged(agent, marker, reply)
+        card, hits, error = await self._runtime.recall(query)
+        marker = self._runtime.marker(card, hits, turn)
+        unchanged = self._unchanged(agent, marker, turn)
         note = "" if unchanged else self._runtime.note(card, hits)
         self._remember(agent, marker)
         state = "skipped" if unchanged else ("hit" if note else "miss")
         reason = "unchanged" if unchanged else ("" if note else "no_memory")
+        if error:
+            # 故障优先于「有没有注入」：注入成功也可能是某一层坏了，必须说出来
+            state, reason = "error", error
         meta = {
             "episodic_version": marker["episodic_version"],
             "hits": len(hits),
@@ -137,14 +156,16 @@ class MemoryMiddleware(MiddlewareBase):
         return note, meta
 
     @staticmethod
-    def _unchanged(agent: Agent, marker: dict[str, Any], reply: str) -> bool:
-        """同一版本、同一批命中且不是同一 reply：视为已经注入过，不再重复。"""
+    def _unchanged(agent: Agent, marker: dict[str, Any], turn: str) -> bool:
+        """同一版本、同一批命中且不是同一轮：视为已经注入过，不再重复。"""
         middle = getattr(agent.state, "middle_context", {}) or {}
         previous = middle.get("memory") or {}
+        # 老快照只有 reply_id：读不到 turn_key 时回落到它，避免升级后重复注入一轮
+        previous_turn = str(previous.get("turn_key", previous.get("reply_id", "")) or "")
         return (
             previous.get("episodic_version") == marker["episodic_version"]
             and previous.get("long_term_hash") == marker["long_term_hash"]
-            and previous.get("reply_id") != reply
+            and previous_turn != turn
         )
 
     @staticmethod
@@ -202,8 +223,9 @@ class MemoryMiddleware(MiddlewareBase):
             async for event in next_handler():
                 yield event
         finally:
-            reply = str(getattr(agent.state, "reply_id", "") or "")
-            self._note_cache.pop(reply, None)
+            # 整轮清空而不是按 reply 删：`reply_id` 可能为空，按它删会留下脏缓存
+            self._note_cache.clear()
+            self._assembled_turn = ""
             try:
                 await self._runtime.write_turn(
                     _input_text(input_kwargs.get("inputs")), _last_assistant_text(agent)

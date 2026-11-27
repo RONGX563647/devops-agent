@@ -14,22 +14,23 @@ memory:
 
   episodic:
     enabled: true
-    trigger_turns: 6
+    # 卡片正文上限：写库前截断，注入时与 note 预算取小（不再被轨迹预览长度截断）
     max_chars: 3000
     max_versions: 20
     ttl_days: 30
 
   long_term:
     enabled: true
-    # local：会话级 SQLite 兜底（无外部依赖）；mem0 / agentic 需要外部后端，
-    # 不可用时由 auto 降级为 local，并在 /api/memory/status 说明原因。
+    # local：会话级 SQLite 兜底（无外部依赖）。mem0 / agentic 尚未接入：
+    # 请求它们会降级为 local，并在 /api/memory/status 的 requested/effective/reason
+    # 里如实说明，而不是给出「有记忆」的假象。
     backend: auto          # auto | mem0 | agentic | local | off
     scope: session         # session | user
     top_k: 5
     min_score: 0.35
     max_entries: 200
     ttl_days: 90
-    write_on: turn         # turn | session_end（本期只有 turn 实现）
+    write_on: turn         # 只有 turn；session_end 未实现，写它会在加载时报错
 
   budget:
     short_term_ratio: 0.50
@@ -44,9 +45,6 @@ memory:
     snapshot_max_chars: 1500000
     snapshot_version: 2
     assemble_event: true
-
-  compress:
-    fail_open: true
 
   trace:
     query_preview_chars: 120

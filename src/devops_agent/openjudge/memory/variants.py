@@ -30,7 +30,7 @@ def base_policy(scope_id: str = "") -> MemoryPolicy:
         enabled=True,
         user_id=scope_id,
         short_term=ShortTermPolicy(max_turns=12),
-        episodic=EpisodicPolicy(enabled=True, trigger_turns=6),
+        episodic=EpisodicPolicy(enabled=True),
         long_term=LongTermPolicy(
             enabled=True,
             backend="local",

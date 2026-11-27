@@ -90,9 +90,9 @@ def test_unknown_key_is_rejected(conf: Path) -> None:
 
 
 def test_dynamic_dict_child_is_allowed(conf: Path) -> None:
-    """dict 型字段允许自定义子键（如 memory.compress 的扩展开关），不能被当成拼错。"""
-    snapshot = cs.patch("memory", {"compress.retry_on_error": True})
-    assert snapshot.values["compress"]["retry_on_error"] is True
+    """dict 型字段允许自定义子键（如 health.grades 的分档），不能被当成拼错。"""
+    snapshot = cs.patch("health", {"grades.S": 95})
+    assert snapshot.values["grades"]["S"] == 95
 
 
 def test_readonly_domain_cannot_be_written(conf: Path) -> None:

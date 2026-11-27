@@ -116,17 +116,37 @@ class OffLongTerm:
 
 LongTermBackend = LocalLongTerm | OffLongTerm
 
+#: 真正实现了的后端。枚举里可以请求别的，但 effective 只会落在这里。
+_IMPLEMENTED = ("local",)
 
-def build_long_term(
-    policy: LongTermPolicy, scope_id: str, db_path: Path | None
-) -> tuple[LongTermBackend, str]:
-    """按配置选后端；外部后端未配置时降级为 off 并返回原因。
 
-    当前只有 local 可在无额外依赖时工作。mem0 / agentic 需要外部客户端或
-    工作目录约定，未接入前显式降级，而不是给出「有记忆」的假象。
+@dataclass(frozen=True, slots=True)
+class BackendChoice:
+    """一次后端解析的结果：请求了什么、实际用了什么、为什么不是请求的那个。
+
+    三者必须同时存在 —— 只报 effective 会让「配了 mem0」看起来像生效了，
+    只报 requested 又会让状态页把降级说成没配置（SPEC-0013 §18.2 M1）。
     """
-    if not policy.enabled or policy.backend == "off":
-        return OffLongTerm("长期记忆未启用"), "off"
-    if policy.backend in ("mem0", "agentic"):
-        return OffLongTerm(f"后端 {policy.backend} 未配置，已降级为关闭"), "off"
-    return LocalLongTerm(policy, scope_id, db_path), "local"
+
+    backend: LongTermBackend
+    requested: str
+    effective: str
+    reason: str = ""
+
+
+def build_long_term(policy: LongTermPolicy, scope_id: str, db_path: Path | None) -> BackendChoice:
+    """按配置选后端；请求未接入的后端时降级为 local 并给出原因。
+
+    当前只有 local 可在无额外依赖时工作。`auto` 解析到 local；
+    `mem0` / `agentic` 未接入，降级为 local 而不是 off —— 降级到 off 等于
+    「因为配置了一个更强的后端，反而失去了兜底记忆」。
+    """
+    requested = str(policy.backend)
+    if not policy.enabled:
+        return BackendChoice(OffLongTerm("长期记忆未启用"), requested, "off", "长期记忆未启用")
+    if requested == "off":
+        return BackendChoice(OffLongTerm("长期记忆已关闭"), requested, "off", "长期记忆已关闭")
+    local = LocalLongTerm(policy, scope_id, db_path)
+    if requested in _IMPLEMENTED or requested == "auto":
+        return BackendChoice(local, requested, "local")
+    return BackendChoice(local, requested, "local", f"{requested} 未接入，已降级为 local")

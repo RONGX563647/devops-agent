@@ -10,7 +10,7 @@ import hashlib
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agentscope.agent import Agent
 
@@ -21,10 +21,11 @@ from devops_agent.config import (
 from devops_agent.input.pipeline.redact import redact_preview
 from devops_agent.memory import events
 from devops_agent.memory.budget import Budget, compute_budget
+from devops_agent.memory.candidate import is_candidate
 from devops_agent.memory.context import build_note, clip
 from devops_agent.memory.episodic import EpisodicMemory
 from devops_agent.memory.long_term import Hit, build_long_term
-from devops_agent.memory.short_term import trim_context_for_snapshot
+from devops_agent.memory.short_term import TrimReport, trim_context_for_snapshot
 from devops_agent.memory.sink import MemorySink
 from devops_agent.memory.tokens import estimate_tokens
 from devops_agent.observability import repository as repo
@@ -72,36 +73,48 @@ class MemoryRuntime:
     episodic: EpisodicMemory = field(init=False)
     long_term: Any = field(init=False)
     backend_name: str = field(init=False, default="off")
+    backend_requested: str = field(init=False, default="")
     backend_reason: str = field(init=False, default="")
 
     def __post_init__(self) -> None:
         self.episodic = EpisodicMemory(self.policy.episodic, self.db_path)
         scope_id = self.policy.user_id or f"session:{self.session_id}"
-        self.long_term, self.backend_name = build_long_term(
-            self.policy.long_term, scope_id, self.db_path
-        )
-        self.backend_reason = str(getattr(self.long_term, "reason", ""))
+        choice = build_long_term(self.policy.long_term, scope_id, self.db_path)
+        self.long_term = choice.backend
+        # backend_name 是「实际生效」的那个：事件与 /health 都拿它，避免把请求值当结果
+        self.backend_name = choice.effective
+        self.backend_requested = choice.requested
+        self.backend_reason = choice.reason or str(getattr(choice.backend, "reason", ""))
 
     # --- 预算 ---------------------------------------------------------
     def budget(self, agent: Agent, prefix_tokens: int) -> Budget:
         return _model_budget(agent, prefix_tokens, self.policy)
 
     # --- 召回 ---------------------------------------------------------
-    async def recall(self, query: str) -> tuple[dict[str, Any] | None, list[Hit]]:
-        """取 active 中期卡与长期命中；任一失败降级为空，不抛给主流程。"""
+    async def recall(self, query: str) -> tuple[dict[str, Any] | None, list[Hit], str]:
+        """取 active 中期卡与长期命中，并报告失败。
+
+        第三个返回值是错误描述：空串表示「查过了，确实没有」，非空表示
+        「查的时候出错了」。这两者在事件里必须是不同状态 —— 把故障显示成
+        `miss`，用户看到的是「没有相关记忆」，实际是记忆根本没查成
+        （SPEC-0013 §18.2 M8）。
+        """
         card: dict[str, Any] | None = None
         hits: list[Hit] = []
+        error = ""
         try:
             card = self.episodic.active(self.session_id)
-        except Exception:  # noqa: BLE001 - 存储故障只影响记忆
+        except Exception as exc:  # noqa: BLE001 - 存储故障只影响记忆
             card = None
+            error = f"episodic {type(exc).__name__}: {exc}"
         try:
             hits = await self.long_term.search(
                 query, self.policy.long_term.top_k, self.policy.long_term.min_score
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             hits = []
-        return card, hits
+            error = error or f"long_term {type(exc).__name__}: {exc}"
+        return card, hits, error
 
     def note(
         self,
@@ -113,16 +126,17 @@ class MemoryRuntime:
             [hit.as_dict() for hit in hits],
             note_max_chars=self.policy.context.note_max_chars,
             episodic_ratio=self.policy.context.episodic_note_ratio,
-            summary_preview_chars=self.policy.trace.summary_preview_chars,
+            card_max_chars=self.policy.episodic.max_chars,
             top_k=self.policy.long_term.top_k,
         )
 
     @staticmethod
-    def marker(card: dict[str, Any] | None, hits: list[Hit], reply_id: str) -> dict[str, Any]:
+    def marker(card: dict[str, Any] | None, hits: list[Hit], turn_key: str) -> dict[str, Any]:
+        """本轮的注入标记：只在「同一个 turn」内复用，跨 turn 用来判断要不要重注入。"""
         return {
             "episodic_version": int(card.get("version", 0)) if card else 0,
             "long_term_hash": _hit_hash(hits),
-            "reply_id": reply_id,
+            "turn_key": turn_key,
         }
 
     # --- 压缩落库 -----------------------------------------------------
@@ -201,13 +215,22 @@ class MemoryRuntime:
 
     # --- 写入长期 -----------------------------------------------------
     async def write_turn(self, user_text: str, assistant_text: str) -> dict[str, Any]:
-        """回合结束写长期候选：只写脱敏后的短结论，去重交给后端。"""
+        """回合结束写长期候选：先过滤，再脱敏截断，去重交给后端。
+
+        过滤放在写入前而不是写入后：一条寒暄一旦进了长期层，就会在后面的
+        每一轮里被召回，删起来还得人工找（SPEC-0013 §18.2 M9）。
+        """
         if not self.policy.long_term.enabled or self.policy.long_term.write_on != "turn":
-            return {"stored": False, "deduped": False, "skipped": True}
+            return {"stored": False, "deduped": False, "skipped": True, "reason": "disabled"}
+        ok, reason = is_candidate(user_text, assistant_text)
+        if not ok:
+            # 发事件而不是静默跳过：否则「为什么这句没记住」只能靠猜
+            self.sink.emit(
+                events.frame(events.MEMORY_WRITE_END, layer="long", state="skipped", reason=reason)
+            )
+            return {"stored": False, "deduped": False, "skipped": True, "reason": reason}
         raw = f"{user_text.strip()}\n{assistant_text.strip()}".strip()
         text = clip(redact_preview(raw), _MAX_WRITE_CHARS)
-        if len(text) < 8:
-            return {"stored": False, "deduped": False, "skipped": True}
         start = time.perf_counter()
         self.sink.emit(events.frame(events.MEMORY_WRITE_START, layer="long"))
         try:
@@ -235,14 +258,29 @@ class MemoryRuntime:
         return dict(result)
 
     # --- 快照 ---------------------------------------------------------
-    def cap_snapshot(self, agent: Agent) -> None:
-        """序列化前收缩历史，避免 state_json 无上限增长。"""
+    def cap_snapshot(self, agent: Agent) -> TrimReport:
+        """序列化前收缩历史，避免 state_json 无上限增长。
+
+        裁剪必须发事件：`MEMORY_TRIM(reason=snapshot_cap)` 是「这一轮不是请求裁剪
+        丢的历史，而是快照时丢的」的唯一证据，丢了它就只能看到上下文莫名变短
+        （SPEC-0013 §18.2 M6）。
+        """
         context = list(getattr(agent.state, "context", []) or [])
         trimmed, report = trim_context_for_snapshot(
             context, self.policy.short_term, self.policy.context.snapshot_max_chars
         )
         if report.changed:
             agent.state.context = trimmed
+        if report.changed and report.dropped_turns > 0:
+            self.sink.emit(
+                events.frame(
+                    events.MEMORY_TRIM,
+                    layer="short",
+                    reason="snapshot_cap",
+                    **cast(dict[str, Any], report.as_dict()),
+                )
+            )
+        return report
 
     def status(self) -> dict[str, Any]:
         settings = load_model()
@@ -251,7 +289,11 @@ class MemoryRuntime:
             "short_term": bool(self.policy.short_term.max_turns > 0),
             "episodic": bool(self.policy.episodic.enabled),
             "long_term": bool(self.policy.long_term.enabled),
+            # backend 保留为 effective 的别名（/health 与前端都在用它）；
+            # requested/effective 分开报，才看得出「配了 mem0、跑的是 local」。
             "backend": self.backend_name,
+            "requested": self.backend_requested,
+            "effective": self.backend_name,
             "reason": self.backend_reason,
             "context": {
                 "window": settings.context_size,

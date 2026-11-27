@@ -18,10 +18,12 @@ from agentscope.message import Msg, TextBlock, ToolCallBlock
 from agentscope.permission import PermissionBehavior, PermissionContext, PermissionRule
 from agentscope.tool import Toolkit, ToolMiddlewareBase
 
+from devops_agent.config import load_memory
 from devops_agent.governance.compile import compile_context
 from devops_agent.governance.model import PermissionProfile
 from devops_agent.governance.presets import default_profile
 from devops_agent.memory.runtime import MemoryRuntime
+from devops_agent.memory.snapshot import stamp_snapshot
 from devops_agent.model_settings import ModelParams
 from devops_agent.runtime.chat_model import MODEL_WIRE_KEYS, build_chat_model
 from devops_agent.runtime.compression import CompressionSink, context_budget
@@ -271,9 +273,12 @@ class AgentScopeRuntime:
 
         序列化前先做一次体积保护：历史无上限增长会让 state_json 无限膨胀，
         且注入内容从不写回 state，快照里只有运行时状态。
+        版本号必须写进 state：`/api/context` 读的就是 `middle_context["snapshot_version"]`，
+        不写它，接口永远报 1，版本迁移逻辑等于空转（SPEC-0013 §18.2 M5）。
         """
         if self._memory is not None:
             self._memory.cap_snapshot(self._agent)
+        stamp_snapshot(self._agent.state, load_memory().context.snapshot_version)
         return json.dumps(
             self._agent.state.model_dump(mode="json"), ensure_ascii=False, default=str
         )

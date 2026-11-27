@@ -220,6 +220,8 @@ def test_snapshot_caps_history_and_stream_drains_memory_frames(tmp_path) -> None
     agent.state.context = [UserMsg(name="s1", content="x" * 500) for _ in range(4)]
     runtime.cap_snapshot(agent)
     assert len(agent.state.context) < 4
+    # 快照裁剪现在会发事件（M6）：它属于「保存时」而不是本轮请求，先取走再测流式转发
+    assert [f["reason"] for f in runtime.sink.drain()] == ["snapshot_cap"]
 
     class Streaming:
         def __init__(self) -> None:
@@ -249,3 +251,67 @@ def test_build_runtime_wires_memory_only_with_session_id(tmp_path, monkeypatch) 
     )
     plain = build_agentscope_runtime(workdir=tmp_path)
     assert plain._memory is None  # type: ignore[attr-defined]
+
+
+def test_note_body_not_truncated_by_trace_preview(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A18：注入正文按「卡片上限 ∩ 中期预算」，不再被 160 字的轨迹预览截断。"""
+    runtime = _runtime(tmp_path)
+    body = "目标：修好登录。" + "细节" * 300
+    runtime.episodic.save("s1", text=body, trigger="t", tokens_before=10, tokens_after=5, budget=8)
+    note = runtime.note(runtime.episodic.active("s1"), [])
+    preview = runtime.policy.trace.summary_preview_chars
+    assert len(note) > preview * 2
+    assert body[:300] in note
+
+
+def test_retrieval_failure_reports_error_not_miss(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A22：后端抛异常时 state=error，reason 带异常类名；miss 只表示真的没有。"""
+
+    class Boom:
+        name = "local"
+
+        async def search(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+            raise RuntimeError("db locked")
+
+        async def write(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {"stored": False, "deduped": False}
+
+    runtime = _runtime(tmp_path)
+    runtime.long_term = Boom()
+    middleware = MemoryMiddleware(runtime)
+    agent = FakeAgent()
+
+    async def next_handler(**_kwargs: Any) -> str:
+        return "ok"
+
+    messages = [SystemMsg(name="system", content="sys"), UserMsg(name="s1", content="继续")]
+    asyncio.run(middleware.on_model_call(agent, {"messages": messages, "tools": []}, next_handler))
+    end = [f for f in runtime.sink.drain() if f["type"] == events.MEMORY_RETRIEVE_END]
+    assert end and end[0]["state"] == "error"
+    assert "RuntimeError" in end[0]["reason"]
+
+
+def test_empty_reply_id_assembles_once_per_turn(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A21：reply_id 为空时，同一轮内两次模型调用只装配一次、只注入一次。"""
+    runtime = _runtime(tmp_path)
+    runtime.episodic.save(
+        "s1", text="目标：修好登录", trigger="t", tokens_before=10, tokens_after=5, budget=8
+    )
+    middleware = MemoryMiddleware(runtime)
+    agent = FakeAgent()
+    agent.state.reply_id = ""
+    messages = [SystemMsg(name="system", content="sys"), UserMsg(name="s1", content="继续")]
+    seen: list[Any] = []
+
+    async def next_handler(**kwargs: Any) -> str:
+        seen.append(kwargs["messages"][-1])
+        return "ok"
+
+    asyncio.run(middleware.on_model_call(agent, {"messages": messages, "tools": []}, next_handler))
+    frames = runtime.sink.drain()
+    assert [f["type"] for f in frames].count(events.MEMORY_RETRIEVE_END) == 1
+    assert [f["type"] for f in frames].count(events.CONTEXT_ASSEMBLED) == 1
+
+    asyncio.run(middleware.on_model_call(agent, {"messages": messages, "tools": []}, next_handler))
+    assert runtime.sink.drain() == []
+    assert _text(seen[0]) == _text(seen[1])

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from devops_agent.memory.context import clip
 from devops_agent.memory_policy import EpisodicPolicy
 from devops_agent.observability import repository as repo
 
@@ -37,9 +38,14 @@ class EpisodicMemory:
         errors: list[str] | None = None,
         source_run_ids: list[int] | None = None,
     ) -> dict[str, Any]:
-        """写一版新卡片；version 由库里已有的最大值 +1 决定。"""
+        """写一版新卡片；version 由库里已有的最大值 +1 决定。
+
+        `max_chars` 在这里生效：卡片的正文上限属于「写库前」的约束，
+        不截断的话每次注入都要为一个超长摘要重新分配预算（SPEC-0013 §18.2 M3）。
+        """
         if not text.strip():
             raise ValueError("中期卡片 text 不能为空")
+        text = clip(text, self._policy.max_chars)
         with repo.connect(self._db_path) as conn:
             repo.init_db(conn)
             version = repo.latest_version(conn, session_id) + 1

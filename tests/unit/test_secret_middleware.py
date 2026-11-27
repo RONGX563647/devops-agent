@@ -203,3 +203,39 @@ def test_capture_does_not_rebuild_chunk_when_clean() -> None:
         ]
 
     assert asyncio.run(collect())[0] is chunk
+
+
+def test_read_tool_source_code_is_byte_identical() -> None:
+    """读源码走代码档案：`def estimate_prefix_tokens` 不许被打成占位符。
+
+    旧实现把它当高熵凭据，模型拿到的 `runtime.py` 不可编译——这不是可读性问题，
+    而是「改代码的模型拿到了坏输入」（SPEC-0015 §3）。
+    """
+    from devops_agent.secrets.capture import Captured
+
+    source = (
+        "def estimate_prefix_tokens(system_text: str) -> int:\n"
+        "    from devops_agent.memory.tokens import estimate_tokens\n"
+        "    return estimate_tokens(system_text)\n"
+    )
+
+    def capture(item: Captured) -> str:
+        return item.name
+
+    middleware = build_secret_middleware(_resolver({}), capture=capture)
+
+    class ReadTool:
+        name = "Read"
+
+    async def handler(**_: Any) -> Any:
+        yield _chunk(source)
+
+    async def collect() -> list[ToolChunk]:
+        return [
+            chunk
+            async for chunk in middleware.on_tool_call(
+                tool=ReadTool(), input_kwargs={"file_path": "runtime.py"}, next_handler=handler
+            )
+        ]
+
+    assert asyncio.run(collect())[0].content[0].text == source

@@ -52,10 +52,35 @@ def local_path() -> Path:
 
 
 def _coerce(field: str, value: Any) -> Any:
-    """只接受面板能写的标量；`max_iters` 手写成按域映射时取 default。"""
+    """把特别写法的值收敛成面板语义：`max_iters` 写成映射时取 default。"""
     if field == "max_iters" and isinstance(value, dict):
         return value.get("default")
     return value
+
+
+def _read_section(path: Path) -> dict[str, Any]:
+    """读 yaml 并取出 `model` 段；损坏、非映射、段缺失都退化成空 dict。"""
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        logger.warning("%s 读取失败，按无覆盖处理", path, exc_info=True)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    section = raw.get("model", raw)
+    return section if isinstance(section, dict) else {}
+
+
+def _clean(section: dict[str, Any]) -> dict[str, Any]:
+    """只留面板能写的标量；`max_iters` 写成按域映射时取 default。"""
+    values: dict[str, Any] = {}
+    for key, value in section.items():
+        if key not in EDITABLE or value is None:
+            continue
+        coerced = _coerce(key, value)
+        if coerced is not None:
+            values[key] = coerced
+    return values
 
 
 def load() -> dict[str, Any]:
@@ -70,19 +95,7 @@ def load() -> dict[str, Any]:
     signature = (str(path), stat.st_mtime_ns, stat.st_size)
     if _cache is not None and _cache[:3] == signature:
         return dict(_cache[3])
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        logger.warning("%s 读取失败，按无覆盖处理", path, exc_info=True)
-        return {}
-    section = raw.get("model", raw) if isinstance(raw, dict) else {}
-    if not isinstance(section, dict):
-        return {}
-    values = {
-        key: _coerce(key, value)
-        for key, value in section.items()
-        if key in EDITABLE and value is not None and _coerce(key, value) is not None
-    }
+    values = _clean(_read_section(path))
     _cache = (*signature, values)
     return dict(values)
 

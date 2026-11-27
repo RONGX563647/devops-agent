@@ -66,6 +66,8 @@ export interface ConfigDomain extends ConfigHealth {
   /** 本次写入是否真的落库（写成与基线相同的值时为 false） */
   persisted?: boolean;
 }
+
+export interface ConfigAuditEntry {
   key: string;
   old: unknown;
   new: unknown;

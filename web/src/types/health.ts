@@ -121,11 +121,22 @@ export interface RuntimeStatus {
   notice: string;
 }
 
+/** 配置库状态：`degraded` 为真时所有域都在用代码默认值（覆盖读不到）。 */
+export interface ConfigHealth {
+  /** db / file / invalid（拼错时 /health 兜底，不 500） */
+  mode: string;
+  degraded: boolean;
+  /** `类型: 消息`，直接展示给排障的人；正常时为空串 */
+  error: string;
+}
+
 /** 存活探针的响应：runtime 与 tools 都是「能跑但不能干活」的降级信号。 */
 export interface Health {
   status: string;
   runtime?: RuntimeStatus;
   tools?: Record<string, { available: boolean; binary: string }>;
+  /** 配置库读写状态（读降级、写拒绝）。 */
+  config?: ConfigHealth;
 }
 
 /**

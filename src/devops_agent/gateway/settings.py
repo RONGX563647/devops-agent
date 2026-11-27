@@ -1,8 +1,8 @@
 """网关部署设置：环境变量名与策略对象的唯一入口。
 
 两类值刻意分开处置 ——
-- **策略**（限额 / TTL / 心跳）来自 `config/gateway.yaml`，装配期读成不可变的
-  `GatewayPolicy`：可整体注入，单测不必 monkeypatch 模块常量；
+- **策略**（限额 / TTL / 心跳）来自部署配置（代码默认 + config.db 覆盖），装配期读成
+  不可变的 `GatewayPolicy`：可整体注入，单测不必 monkeypatch 模块常量；
 - **环境变量**（domain / model / 凭据）按请求读取：`/health` 要反映当前进程环境，
   测试也逐个用例 patch 它，import 期冻结会同时破坏这两点。
 
@@ -34,7 +34,7 @@ class Settings:
 
     @classmethod
     def load(cls) -> Settings:
-        """从 config/gateway.yaml 读策略；缺文件时全回落内置默认。"""
+        """读部署配置里的网关策略；没有覆盖时全回落代码默认。"""
         return cls(policy=load_gateway())
 
     @property

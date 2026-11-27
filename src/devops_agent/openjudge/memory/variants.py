@@ -1,7 +1,7 @@
 """变体派生：把 plan 里的配置差量变成可复现的 MemoryPolicy（SPEC §8.1）。
 
 评测基线必须与仓库配置解耦：这里用代码内的确定性默认值构造 policy，
-而不是读 `config/memory.yaml`——否则同一条用例在别人的机器上会换一套阈值。
+而不是读运行期配置（config.db 覆盖）——否则同一条用例在别人的机器上会换一套阈值。
 """
 
 from __future__ import annotations

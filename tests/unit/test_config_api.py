@@ -49,7 +49,8 @@ def test_index_lists_domains_and_storage() -> None:
 def test_snapshot_has_values_sources_bounds() -> None:
     body = client.get("/api/config/input").json()
     assert body["values"]["max_references"] == 5
-    assert body["sources"]["max_references"] == "yaml"
+    # 部署 yaml 已删：没有覆盖时来源如实报 default，不再谎报 yaml 基线
+    assert body["sources"]["max_references"] == "default"
     assert body["bounds"]["max_references"]["min"] == 1
     assert body["hot"] == "immediate"
     assert "fetch_timeout_seconds" in body["editable"]

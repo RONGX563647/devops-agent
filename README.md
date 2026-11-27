@@ -47,7 +47,7 @@ devops-agent/
 │   ├── policy.yaml           # 确认协议（高危正则 / 沉淀规则）；只读，不进配置库
 │   ├── model.yaml            # 模型参数部署默认（窗口 / 两级重试 / 采样 / 压缩比例）
 │   ├── gates.yaml            # 质量门禁阈值（check_gates.py 读取，唯一来源）
-│   └── health.yaml           # 健康分权重、延迟/token 基准、评分来源权重
+│   └── size-baseline.json    # 单文件行数棘轮基线
 ├── eval/
 │   ├── fixtures/             # 5 个本地仓库样本（bare-repo / dirty-repo / docs-only / node-service / python-basic）
 │   ├── openjudge/            # 5 赛道 90 例题库、plan 权重、覆盖率基线、fixtures、rubric 工件
@@ -447,7 +447,7 @@ shell 一律用内置 `Bash` 而不是按平台切 `PowerShell`：`Bash` 会按�
 
 SQLite 8 张表：`runs`、`spans`、`input_stages`、`eval_scores`、`session_states`、`settings`（`observability/repository/`）与 `secrets`（`secrets/vault.py`，同库不同模块）。评测批次不进这张库：`oj_batches` / `oj_cases` / `oj_rubrics` / `oj_runs` 在独立的 `workspace/evals/openjudge.db`，因为「删旧批次」在生产库里是高风险操作。
 
-**健康分（0–100）**四维加权，权重在 `config/health.yaml`：
+**健康分（0–100）**四维加权，权重在 `HealthPolicy` 的字段默认（配置面板「健康分口径」可覆盖）：
 
 | 维度 | 权重 | 口径 |
 |---|---|---|

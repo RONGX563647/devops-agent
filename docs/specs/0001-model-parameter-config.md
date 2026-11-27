@@ -2,6 +2,8 @@
 
 - 状态：Accepted（已按本 spec 一次性实现，实施记录见 §13）
 - 日期：2026-11-24
+- 修订：2026-11-27 —— 部署默认改为落盘 `config/model.local.yaml`（见 §4.1 注与 ADR-0003 修订记录）；
+  面板从 Popover 改为抽屉 + 两级分类树（原形态已到 13 行容量上限）
 - 相关：`config/model.yaml`（新增）、`config/policy.yaml`、`src/devops_agent/config.py`、
   `src/devops_agent/model_settings.py`（新增）、`src/devops_agent/model_api.py`（新增）、
   `src/devops_agent/runtime/assembly.py`、`src/devops_agent/runtime/sessions.py`、
@@ -109,11 +111,17 @@
 
 ```
 会话覆盖（session_states.model_config）
-  > 部署默认（settings['model_config']，前端改、持久化）
+  > 部署默认（config/model.local.yaml，前端改、持久化、手改也生效）
+  > 数据库旧值（settings['model_config']，仅迁移残留 + 版本账本）
   > config/model.yaml
   > 环境变量（仅 model / judge_model / enable_search）
   > 框架默认（context_size / retries / ContextConfig）
 ```
+
+注（2026-11-27）：原方案只把部署默认写 `settings` 表。实测 30 个会话里 0 条全局默认、
+2 条会话覆盖——主按钮是「保存到本会话」，用户路径走不到全局层，换会话即失效。
+现在文件是真相、DB 退为版本账本；`GET /api/model-config/layers` 返回四层原始值，
+界面据此画完整来源链路。
 
 ### 4.2 解析器
 

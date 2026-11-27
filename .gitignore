@@ -23,6 +23,10 @@ venv/
 # 「以后都这样」的沉淀规则与信任目录：写的是本机绝对路径，只在部署机生成
 config/permissions.local.yaml
 
+# 界面「保存为全局默认」落盘的位置：运行期产物，手改也生效，但不入库
+config/model.local.yaml
+config/.model.local.lock
+
 # tooling caches
 .pytest_cache/
 .mypy_cache/

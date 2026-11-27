@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -25,6 +26,8 @@ from devops_agent.model_settings import InvalidConfig
 from devops_agent.observability import repository as repo
 from devops_agent.observability.recorder import utc_now
 from devops_agent.runtime.sessions import registry_for
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -56,12 +59,38 @@ class SessionModelRequest(BaseModel):
 # --- 内部：读写与校验 ---------------------------------------------------
 
 
-def _stored_now() -> tuple[dict[str, Any], int]:
-    """直接从库里读一份新的部署默认（不吃 TTL 缓存）：写入前必须看到别人改过的值。"""
+def _db_now() -> tuple[dict[str, Any], int]:
+    """直接从库里读一份新的 DB 值（不吃 TTL 缓存）：写入前必须看到别人改过的值。"""
     with repo.connect() as conn:
         repo.init_db(conn)
         saved = repo.load_setting(conn, model_settings.SETTING_KEY)
     return saved if saved is not None else ({}, 0)
+
+
+def _migrate_to_file(db: dict[str, Any]) -> None:
+    """老部署只有 DB 值：第一次读配置时把它落盘，界面上的「已保存」才成立。
+
+    失败只记日志：迁移是尽力而为，读路径仍能从 DB 拿到值。
+    """
+    if not db or model_settings.local_path().exists():
+        return
+    try:
+        with model_settings.file_guard():
+            if not model_settings.local_path().exists():
+                model_settings.save_local(db)
+    except OSError:
+        logger.warning("历史部署默认无法写入配置文件，继续以 DB 值为准", exc_info=True)
+
+
+def _stored_now() -> tuple[dict[str, Any], int]:
+    """全局默认的合并视图（文件优先于 DB）+ 版本号。
+
+    版本号仍记在 DB：文件提供不了「读过之后没人改过」的原子凭证，而
+    `settings.version` 已经是现成的乐观锁。
+    """
+    db, version = _db_now()
+    _migrate_to_file(db)
+    return {**db, **model_settings.load_local()}, version
 
 
 def _invalid(exc: InvalidConfig, *, remedy: str | None = None) -> HTTPException:
@@ -115,17 +144,45 @@ def _body_payload(
     return model_settings.payload(resolved, version)
 
 
-def _save_stored(merged: dict[str, Any], *, expected: int) -> int:
-    """写回部署默认；版本不匹配时抛 409。"""
+def _db_save(values: dict[str, Any], *, expected: int) -> int | None:
+    """写 DB 账本；版本不匹配返回 None（由调用方回滚文件并报 409）。"""
     with repo.connect() as conn:
         repo.init_db(conn)
-        saved = repo.save_setting(
+        return repo.save_setting(
             conn,
             model_settings.SETTING_KEY,
-            merged,
+            values,
             expected_version=expected,
             updated_at=utc_now(),
         )
+
+
+def _not_persisted(exc: OSError) -> HTTPException:
+    """落盘失败要显式报错：静默降级正是「以为保存了其实没有」的来源。"""
+    return HTTPException(
+        status_code=500,
+        detail={
+            "code": "model_config_not_persisted",
+            "reason": f"无法写入 {model_settings.local_path()}：{exc}",
+        },
+    )
+
+
+def _save_stored(merged: dict[str, Any], *, expected: int, previous: dict[str, Any]) -> int:
+    """写文件 + 写 DB 账本，返回新版本号。
+
+    顺序是「先文件后 DB」：文件优先于 DB，所以 DB 冲突时必须把文件回滚，
+    否则一次 409 会伴随一份已经生效的新配置。整个读改写持有文件锁，
+    两个并发的 PATCH 不会互相覆盖。
+    """
+    try:
+        with model_settings.file_guard():
+            model_settings.save_local(merged)
+            saved = _db_save(merged, expected=expected)
+            if saved is None:
+                model_settings.save_local(previous)
+    except OSError as exc:
+        raise _not_persisted(exc) from exc
     if saved is None:
         current, version = _stored_now()
         # 冲突说明本进程缓存里的版本已过时（别的进程写过）。必须先失效再返回 409，
@@ -167,9 +224,28 @@ def patch_model_config(req: PatchRequest, request: Request) -> dict[str, Any]:
     except InvalidConfig as exc:
         raise _invalid(exc) from None
     _checked_values(merged)
-    new_version = _save_stored(merged, expected=version)
+    new_version = _save_stored(merged, expected=version, previous=stored)
     affected = registry_for(request).broadcast_model_defaults()
     return {**_body_payload(merged, new_version), "affected": affected}
+
+
+@router.get("/api/model-config/layers")
+def read_model_layers(session: str | None = None, domain: str = DEFAULT_DOMAIN) -> dict[str, Any]:
+    """四层原始值：前端用它画「这个值到底从哪来」，并给出文件路径。
+
+    与 GET /api/model-config 的区别：那个给「生效值 + 单一来源」，这个给
+    「每一层各自写了什么」，界面才能显示完整链路而不是一个孤零零的徽标。
+    """
+    stored, version = _stored_now()
+    overrides = _session_overrides(session) if session else {}
+    resolved = model_settings.resolve(overrides, stored, domain=domain)
+    return {
+        "version": version,
+        "file_path": str(model_settings.local_path()),
+        "layers": model_settings.layers(overrides, domain=domain),
+        "effective": model_settings.values_of(resolved),
+        "sources": model_settings.sources_of(resolved),
+    }
 
 
 @router.post("/api/model-config/reset")
@@ -180,7 +256,7 @@ def reset_model_config(req: ResetRequest, request: Request) -> dict[str, Any]:
     # reset 也是写路径：库里若被手工写入非法值（运维改库 / 旧版本遗留），
     # 删掉别的键后原样返回给前端就等于绕过校验。服务端是唯一裁判，非法照样 400。
     _checked_values(merged, remedy='可用 {"all": true} 清空全部覆盖项以恢复默认')
-    new_version = _save_stored(merged, expected=version)
+    new_version = _save_stored(merged, expected=version, previous=stored)
     affected = registry_for(request).broadcast_model_defaults()
     return {**_body_payload(merged, new_version), "affected": affected}
 

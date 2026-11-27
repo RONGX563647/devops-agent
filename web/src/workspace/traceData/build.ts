@@ -19,6 +19,7 @@ function layerOf(step: ProcessEntry): TraceStep['layer'] {
   if (step.kind === 'tool') return 'tool';
   if (step.kind === 'parse') return 'input';
   if (step.kind === 'error' || step.kind === 'control') return 'control';
+  if (step.kind === 'memory') return 'memory';
   return 'model';
 }
 
@@ -28,6 +29,7 @@ function kindOf(step: ProcessEntry): TraceStep['kind'] {
   if (step.kind === 'error') return 'error';
   if (step.kind === 'control') return step.state === 'error' ? 'error' : 'text';
   if (step.kind === 'model') return 'model';
+  if (step.kind === 'memory') return 'memory';
   return 'text';
 }
 
@@ -142,6 +144,19 @@ function toolSpan(step: ProcessEntry, at: number): TraceSpan {
   };
 }
 
+/** 记忆动作通常只有几毫秒：缺结束时间时画成 1ms 的点，仍能被选中。 */
+function memorySpan(step: ProcessEntry, at: number): TraceSpan {
+  return {
+    id: `span:${step.id}`,
+    lane: 'memory',
+    start: at,
+    end: Math.max(toMs(step.endedAt), at + 1),
+    status: spanStatus(step),
+    label: step.label,
+    stepId: step.id,
+  };
+}
+
 function pushFailure(turn: TraceTurn, message: ChatMessage, at: number): void {
   turn.failed = true;
   turn.items.push({
@@ -164,6 +179,7 @@ function pushFailure(turn: TraceTurn, message: ChatMessage, at: number): void {
 function spanFor(step: ProcessEntry, at: number): TraceSpan | null {
   if (step.kind === 'model' || step.kind === 'thinking') return modelSpan(step, at);
   if (step.kind === 'tool') return toolSpan(step, at);
+  if (step.kind === 'memory') return memorySpan(step, at);
   return null;
 }
 
@@ -330,9 +346,11 @@ function mergeSpans(spans: TraceSpan[]): TraceSpan[] {
 export function buildLanes(turns: TraceTurn[]): TraceLanes {
   const model: TraceSpan[] = [];
   const tool: TraceSpan[] = [];
+  const memory: TraceSpan[] = [];
   for (const turn of turns) {
     for (const span of turn.spans) {
       if (span.lane === 'model') model.push(span);
+      else if (span.lane === 'memory') memory.push(span);
       else tool.push(span);
     }
   }
@@ -340,5 +358,6 @@ export function buildLanes(turns: TraceTurn[]): TraceLanes {
     // 思考发生在模型调用内部，合并成一段；工具之间的重叠保留原样，免得把红色的失败块吞进前一段
     model: mergeSpans(model.sort((a, b) => a.start - b.start)),
     tool: tool.sort((a, b) => a.start - b.start),
+    memory: memory.sort((a, b) => a.start - b.start),
   };
 }

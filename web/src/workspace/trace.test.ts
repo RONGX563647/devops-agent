@@ -202,6 +202,38 @@ describe('turnsFromMessages', () => {
   });
 });
 
+describe('记忆泳道', () => {
+  it('记忆步骤进入步骤列表与第三条泳道', () => {
+    const turns = turnsFromMessages([
+      user('u1', '继续修', '2026-11-23T10:00:00.000Z'),
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '',
+        at: '2026-11-23T10:00:01.000Z',
+        endedAt: '2026-11-23T10:00:03.000Z',
+        steps: [
+          {
+            id: 'memory:compress',
+            kind: 'memory',
+            label: '记忆压缩 · 短期→中期',
+            detail: '103k → 41k',
+            state: 'success',
+            at: '2026-11-23T10:00:01.000Z',
+            endedAt: '2026-11-23T10:00:01.008Z',
+          },
+        ],
+      },
+    ]);
+    expect(turns[0].items[0]).toMatchObject({ kind: 'memory', layer: 'memory' });
+    const lanes = buildLanes(turns);
+    expect(lanes.memory).toHaveLength(1);
+    expect(lanes.memory[0].lane).toBe('memory');
+    expect(lanes.model).toHaveLength(0);
+    expect(lanes.tool).toHaveLength(0);
+  });
+});
+
 describe('traceStats 缓存口径', () => {
   /** cache 省略 = 模型没回传这个字段，与「回传了 0」必须区分开。 */
   const modelStep = (id: string, at: string, tokensIn: number, cache?: number) => ({

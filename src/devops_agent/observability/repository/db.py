@@ -27,6 +27,51 @@ _DIMENSIONS_SQL = ", ".join(f"'{dim.value}'" for dim in EvalDimension)
 # 注意已存在的库不会自动放宽 CHECK —— 加状态要走 `_RUN_COLUMNS` 的加列路线。
 _STATUS_SQL = ", ".join(f"'{status.value}'" for status in RunStatus)
 
+# spans 的建表语句单独抽出来：老库的 CHECK 里没有 'memory'，SQLite 改不了 CHECK，
+# 只能重建表，重建时必须与这里逐字一致，否则新老库结构会漂移。
+_SPANS_DDL = """
+CREATE TABLE IF NOT EXISTS spans (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    type            TEXT NOT NULL CHECK (type IN ('model', 'tool', 'permission', 'memory')),
+    name            TEXT NOT NULL,
+    start_offset_ms INTEGER NOT NULL DEFAULT 0,
+    duration_ms     INTEGER,
+    input           TEXT NOT NULL DEFAULT '',
+    output          TEXT NOT NULL DEFAULT '',
+    tokens          INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok', 'error')),
+    error           TEXT,
+    input_tokens    INTEGER NOT NULL DEFAULT 0,
+    output_tokens   INTEGER NOT NULL DEFAULT 0,
+    cache_input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+    seq             INTEGER NOT NULL DEFAULT 0,
+    parent_id       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_spans_run ON spans(run_id);
+"""
+
+_SPAN_COPY_COLUMNS = (
+    "id",
+    "run_id",
+    "type",
+    "name",
+    "start_offset_ms",
+    "duration_ms",
+    "input",
+    "output",
+    "tokens",
+    "status",
+    "error",
+    "input_tokens",
+    "output_tokens",
+    "cache_input_tokens",
+    "cache_creation_input_tokens",
+    "seq",
+    "parent_id",
+)
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,26 +97,6 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_request ON runs(request_id)
     WHERE request_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_runs_query ON runs(domain, status, started_at);
-CREATE TABLE IF NOT EXISTS spans (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id          INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    type            TEXT NOT NULL CHECK (type IN ('model', 'tool', 'permission')),
-    name            TEXT NOT NULL,
-    start_offset_ms INTEGER NOT NULL DEFAULT 0,
-    duration_ms     INTEGER,
-    input           TEXT NOT NULL DEFAULT '',
-    output          TEXT NOT NULL DEFAULT '',
-    tokens          INTEGER NOT NULL DEFAULT 0,
-    status          TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok', 'error')),
-    error           TEXT,
-    input_tokens    INTEGER NOT NULL DEFAULT 0,
-    output_tokens   INTEGER NOT NULL DEFAULT 0,
-    cache_input_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
-    seq             INTEGER NOT NULL DEFAULT 0,
-    parent_id       INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_spans_run ON spans(run_id);
 CREATE TABLE IF NOT EXISTS input_stages (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -115,7 +140,44 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TEXT NOT NULL,
     updated_by TEXT NOT NULL DEFAULT ''
 );
+-- 中期记忆版本（SPEC-0013）：每次压缩成功写一版，is_active 只保留一条。
+CREATE TABLE IF NOT EXISTS session_memories (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    is_active       INTEGER NOT NULL DEFAULT 0,
+    trigger         TEXT NOT NULL DEFAULT '',
+    text            TEXT NOT NULL DEFAULT '',
+    artifacts       TEXT NOT NULL DEFAULT '[]',
+    pending         TEXT NOT NULL DEFAULT '[]',
+    errors          TEXT NOT NULL DEFAULT '[]',
+    tokens_before   INTEGER NOT NULL DEFAULT 0,
+    tokens_after    INTEGER NOT NULL DEFAULT 0,
+    budget          INTEGER NOT NULL DEFAULT 0,
+    source_run_ids  TEXT NOT NULL DEFAULT '[]',
+    created_at      TEXT NOT NULL,
+    expires_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_memories_session ON session_memories(session_id, is_active);
+-- 长期记忆（local 兜底后端）：按 (scope, scope_id, text) 去重，TTL 由 expires_at 控制。
+CREATE TABLE IF NOT EXISTS long_term_memories (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope      TEXT NOT NULL,
+    scope_id   TEXT NOT NULL,
+    kind       TEXT NOT NULL DEFAULT 'fact',
+    text       TEXT NOT NULL,
+    score      REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    expires_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_long_term_unique
+    ON long_term_memories(scope, scope_id, text);
+CREATE INDEX IF NOT EXISTS idx_long_term_scope
+    ON long_term_memories(scope, scope_id, created_at);
 """
+
+# spans 表必须显式包含在 _SCHEMA 里；建表语句是上面单独抽出的 _SPANS_DDL
+_SCHEMA = _SCHEMA + _SPANS_DDL
 
 # 后加的列（CREATE TABLE IF NOT EXISTS 不会给老库补列，必须 ALTER）。
 # parked：该 run 正在等用户确认；用独立列而不是塞进 status，
@@ -189,7 +251,7 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """建表（幂等），并给老库补齐后加的列。"""
+    """建表（幂等），给老库补列，并把 spans 的 type CHECK 升级到含 memory。"""
     conn.executescript(_SCHEMA)
     _migrate(conn)
 
@@ -197,8 +259,33 @@ def init_db(conn: sqlite3.Connection) -> None:
 def _migrate(conn: sqlite3.Connection) -> None:
     """按 PRAGMA 结果补列。已存在的列跳过，重复执行安全。"""
     _ensure_columns(conn, "runs", _RUN_COLUMNS)
+    # 先补列再重建：重建时 INSERT ... SELECT 需要两端列集一致
     _ensure_columns(conn, "spans", _SPAN_COLUMNS)
+    _ensure_span_types(conn)
     _ensure_columns(conn, "session_states", _SESSION_COLUMNS)
+
+
+def _ensure_span_types(conn: sqlite3.Connection) -> None:
+    """老库的 spans.type CHECK 不含 memory：重建表并原样复制旧行。
+
+    SQLite 不支持修改 CHECK，只能新建、复制、改名。整个动作在调用方的
+    事务里执行；失败会回滚，不会留下半张表。
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='spans'"
+    ).fetchone()
+    if row is None or "'memory'" in str(row["sql"] or ""):
+        return
+    conn.execute("ALTER TABLE spans RENAME TO spans_legacy")
+    # 索引跟随旧表改名，名字会冲突，先删掉再建
+    conn.execute("DROP INDEX IF EXISTS idx_spans_run")
+    # 逐条执行（不用 executescript：它会先隐式提交，破坏事务原子性）
+    for statement in _SPANS_DDL.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+    columns = ", ".join(_SPAN_COPY_COLUMNS)
+    conn.execute(f"INSERT INTO spans ({columns}) SELECT {columns} FROM spans_legacy")
+    conn.execute("DROP TABLE spans_legacy")
 
 
 def _ensure_columns(

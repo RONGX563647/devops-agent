@@ -10,6 +10,8 @@ from pathlib import Path
 
 from devops_agent.observability import repository as repo
 from devops_agent.observability.models import InputStageRecord, RunRecord, SpanRecord
+from devops_agent.observability.recorder.input_stage import input_stage_record
+from devops_agent.observability.recorder.memory import MEMORY_SPAN_NAMES, memory_span
 from devops_agent.observability.recorder.timing import (
     _elapsed_ms,
     _iso_to_epoch_ms,
@@ -17,7 +19,7 @@ from devops_agent.observability.recorder.timing import (
     _work_ms,
     utc_now,
 )
-from devops_agent.observability.recorder.usage import _as_int, _token_delta
+from devops_agent.observability.recorder.usage import _token_delta
 
 # 单个 span 的入参/返回最长保留字符数。工具返回可能是整份日志，
 # 全量落库会让 sqlite 文件无上限膨胀；8k 足够定位问题，超长部分靠 run 的输出兜底。
@@ -149,6 +151,7 @@ class RunRecorder:
         "EXCEED_MAX_ITERS": "_on_exceed_iters",
         "REPLY_END": "_on_reply_end",
         "INPUT_PARSE_STAGE": "_on_input_stage",
+        **{name: "_on_memory" for name in MEMORY_SPAN_NAMES},
     }
 
     def consume(self, event: dict[str, object]) -> None:
@@ -288,23 +291,24 @@ class RunRecorder:
     def _on_input_stage(self, event: dict[str, object]) -> None:
         """缓存一条输入解析阶段；全量保留（含 skip），供事后审计与复现。"""
         self._input_stages.append(
-            InputStageRecord(
-                id=None,
-                run_id=self._run_id or 0,
-                seq=len(self._input_stages),
-                stage=str(event.get("stage", "")),
-                label=str(event.get("stage_label", "")),
-                status=str(event.get("state", "ok")),
-                changed=bool(event.get("changed", False)),
-                summary=str(event.get("summary", "")),
-                before=_as_int(event.get("before", 0)),
-                after=_as_int(event.get("after", 0)),
-                items=_as_int(event.get("items", 0)),
-                duration_ms=_as_int(event.get("ms", 0)),
-                detail=str(event.get("detail", "")),
-                failed=_as_int(event.get("failed", 0)),
-            )
+            input_stage_record(event, run_id=self._run_id or 0, seq=len(self._input_stages))
         )
+
+    def _on_memory(self, event: dict[str, object]) -> None:
+        """记忆动作落一条 span；跳过态也留痕，回答「为什么没记忆」。"""
+        if self._run_id is None:
+            return
+        span = memory_span(
+            event,
+            run_id=self._run_id,
+            seq=self._seq + 1,
+            start_offset_ms=self._rel_ms(time.perf_counter_ns()),
+        )
+        if span is None:
+            return
+        self._seq += 1
+        with repo.connect(self._db_path) as conn:
+            repo.add_span(conn, span)
 
     def _close_span(
         self,

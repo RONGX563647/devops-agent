@@ -18,10 +18,12 @@ from agentscope.model import ChatModelBase
 from agentscope.state import AgentState
 from agentscope.tool import Toolkit, ToolMiddlewareBase
 
-from devops_agent.config import load_model
+from devops_agent.config import load_memory, load_model
 from devops_agent.governance.compile import compile_context
 from devops_agent.governance.model import PermissionProfile
 from devops_agent.governance.presets import default_profile
+from devops_agent.memory.observer import MemoryMiddleware
+from devops_agent.memory.runtime import MemoryRuntime
 from devops_agent.model_settings import ModelParams, effective_params
 from devops_agent.runtime.chat_model import build_chat_model, build_context_config
 from devops_agent.runtime.compression import CompressionMiddleware, CompressionSink
@@ -116,6 +118,8 @@ class RuntimeParts:
     search_tool: WebSearchTool | None = None
     toolkit_mws: list[ToolMiddlewareBase] = field(default_factory=list)
     compression_sink: CompressionSink | None = None
+    # 三层记忆：只给真实运行时装配；Echo / 测试替身保持无记忆
+    memory: MemoryRuntime | None = None
     agent: Agent | None = None
 
 
@@ -166,13 +170,16 @@ def _build_search_tool(parts: RuntimeParts) -> RuntimeParts:
     return replace(parts, search_tool=WebSearchTool(backend))
 
 
-def _build_middlewares(parts: RuntimeParts) -> RuntimeParts:
-    """建工具中间件、档位说明与压缩 sink（一次装配一份，随会话快照重建）。"""
+def _build_middlewares(parts: RuntimeParts, session_id: str = "") -> RuntimeParts:
+    """建工具中间件、档位说明、压缩 sink 与记忆运行时（随会话快照重建）。"""
+    policy = load_memory()
+    memory = MemoryRuntime(session_id, policy) if session_id and policy.enabled else None
     return replace(
         parts,
         note_mw=ProfileNoteMiddleware(parts.profile, web_search=parts.web_search),
         toolkit_mws=[build_secret_middleware()],
         compression_sink=CompressionSink(),
+        memory=memory,
     )
 
 
@@ -181,6 +188,8 @@ def _build_agent(parts: RuntimeParts) -> RuntimeParts:
     note_mw = parts.note_mw
     sink = parts.compression_sink
     assert note_mw is not None and sink is not None
+    # 记忆中间件放在档位说明之后：请求尾部顺序才是「档位 → 中期 → 长期」
+    memory_mws = [MemoryMiddleware(parts.memory)] if parts.memory is not None else []
     # 联网工具不在 profile.tools 里：它由独立的 net 维度授予，只有这一刻才拼进来。
     names = parts.profile.tools + ((SEARCH_TOOL_NAME,) if parts.search_tool is not None else ())
     extra = (
@@ -199,7 +208,11 @@ def _build_agent(parts: RuntimeParts) -> RuntimeParts:
             scope=parts.profile.scope,
             extra=extra,
         ),
-        middlewares=[note_mw, CompressionMiddleware(sink)],
+        middlewares=[
+            note_mw,
+            *memory_mws,
+            CompressionMiddleware(sink, parts.memory),
+        ],
         context_config=build_context_config(parts.params),
         max_iters=parts.params.max_iters,
         max_retries=parts.params.agent_max_retries,
@@ -219,6 +232,7 @@ def _wrap_runtime(parts: RuntimeParts) -> AgentScopeRuntime:
         note_middleware=parts.note_mw,
         toolkit_middlewares=parts.toolkit_mws,
         compression_sink=parts.compression_sink,
+        memory=parts.memory,
         web_search=parts.web_search,
         search_tool=parts.search_tool,
         params=parts.params,
@@ -232,6 +246,7 @@ def build_agentscope_runtime(
     state: AgentState | None = None,
     web_search: bool | None = None,
     params: ModelParams | None = None,
+    session_id: str = "",
 ) -> AgentScopeRuntime:
     """装配真实运行时（env 提供模型凭据）。
 
@@ -249,8 +264,8 @@ def build_agentscope_runtime(
     parts = _resolve_runtime_inputs(system_prompt, workdir, profile, state, web_search, params)
     # 2) 联网工具：只有 tool 模式且后端可用才建，预算实例要交给运行时持有
     parts = _build_search_tool(parts)
-    # 3) 建中间件与压缩 sink：密钥注入、档位说明、压缩帧收集
-    parts = _build_middlewares(parts)
+    # 3) 建中间件、压缩 sink 与记忆运行时（无 session_id 时不装配记忆）
+    parts = _build_middlewares(parts, session_id)
     # 4) 建 Agent：工具按档位装配，模型参数与上下文窗口同源
     parts = _build_agent(parts)
     # 5) 包成运行时：中间件、sink 与当前参数交给运行时持有
@@ -282,6 +297,7 @@ def session_runtime_factory(base: object) -> Callable[..., Any]:
             state=state,
             web_search=web_search,
             params=effective_params(session=model_config or {}),
+            session_id=session_id,
         )
 
     return make

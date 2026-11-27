@@ -49,6 +49,9 @@ _KNOWN_PREFIXES: Final = (
     ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_\-]{10,}")),
     ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}")),
     ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}")),
+    # 下划线分段的 key（`sk_live_...`）会被下面的「标识符闸」当成命名放过，
+    # 所以必须在这里显式列出，否则放宽闸门等于开一个漏报口子。
+    ("stripe_key", re.compile(r"\b[sr]k_(?:live|test)_[A-Za-z0-9]{10,}")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
     (
         "private_key",
@@ -87,6 +90,8 @@ _VALUE_MAX: Final = 2048
 # 只认「全小写」——`Tr0ub4dor3xKq9mZpL2nQ` 这类混合大小写的随机串必须放过；
 # `estimate_prefix_tokens`、`devops_agent.memory.tokens` 才是要拦的。
 _IDENTIFIER_RE: Final = re.compile(r"[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*\Z")
+# 下划线段：`sha256_checksum_v2_helper_name` 的每一段都像英文词
+_WORD_RE: Final = re.compile(r"[a-z][a-z0-9]*\Z")
 _KEYWORDS: Final = frozenset(
     {
         "continue",
@@ -160,13 +165,33 @@ def shape_ok(value: str, confidence: str) -> bool:
     return _looks_random(value)
 
 
-def _looks_random(value: str) -> bool:
-    # 标识符只有在「不含数字」时才算误报形状：`estimate_prefix_tokens`、
-    # `devops_agent.memory.tokens` 都没有数字；而 `abcdefghij1234567890`
-    # 这类小写 alnum 串恰恰是常见 API key，必须放过。
-    has_digit = any(char.isdigit() for char in value)
-    if _IDENTIFIER_RE.match(value) and not has_digit:
+def _is_identifier(value: str) -> bool:
+    """像「有意义的命名」而不是随机串。
+
+    旧判据是「是标识符**且不含数字**」，于是 `sha256_checksum_v2_helper_name`
+    被排除在外：同一行只要有 `token:` 之类的位置提示，函数名就会被当凭据替换，
+    模型读到的源码不可编译。新判据是「形状 + 分段含义」：
+
+    - 点分路径逐段判定；
+    - 段内含 `_` 时按 `_` 再分，每段都要像英文词（`v2`、`sha256` 都算）；
+    - 单段只有「不含数字」才算标识符——`abcdefghij1234567890` 这类单段小写
+      alnum 串是常见 API key，必须继续按随机串处理。
+    """
+    if not _IDENTIFIER_RE.match(value):
         return False
+    for segment in value.split("."):
+        if "_" in segment:
+            if not all(_WORD_RE.match(word) for word in segment.split("_")):
+                return False
+        elif any(char.isdigit() for char in segment):
+            return False
+    return True
+
+
+def _looks_random(value: str) -> bool:
+    if _is_identifier(value):
+        return False
+    has_digit = any(char.isdigit() for char in value)
     if value.lower() in _KEYWORDS or not any(char.isalpha() for char in value):
         return False
     # 首选判据：字母 + 数字同时出现（随机 token 的绝大多数）。

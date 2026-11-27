@@ -239,3 +239,21 @@ def test_read_tool_source_code_is_byte_identical() -> None:
         ]
 
     assert asyncio.run(collect())[0].content[0].text == source
+
+
+def test_readonly_shell_command_uses_code_profile() -> None:
+    """`cat` / `sed -n` 读源码与 Read 同一风险面；写盘与 printenv 不降档。
+
+    这条钉的是档案选择，不是脱敏结果：两个档案的差异只在熵兜底，
+    构造一个「只在 output 命中」的样本等于造一个真实中不存在的形状。
+    """
+    from devops_agent.secrets.middleware import _profile_for
+
+    bash = type("Bash", (), {"name": "Bash"})()
+    read = type("Read", (), {"name": "Read"})()
+    assert _profile_for(bash, {"command": "sed -n '1,80p' src/a.py"}) == "code"
+    assert _profile_for(bash, {"command": "cat src/a.py | grep token"}) == "code"
+    assert _profile_for(bash, {"command": "printenv"}) == "output"
+    assert _profile_for(bash, {"command": "cat a.py > out.txt"}) == "output"
+    assert _profile_for(bash, {"command": "sed -i 's/a/b/' a.py"}) == "output"
+    assert _profile_for(read, {}) == "code"

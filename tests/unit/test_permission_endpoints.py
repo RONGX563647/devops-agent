@@ -83,18 +83,21 @@ def _post_stream(payload: dict[str, Any]) -> str:
         return "".join(resp.iter_text())
 
 
-def test_permissions_listing_hides_unrestricted(park_runtime: ParkRuntime) -> None:
+def test_permissions_listing_includes_unrestricted(park_runtime: ParkRuntime) -> None:
     resp = client.get("/api/permissions")
     assert resp.status_code == 200
     data = resp.json()
     keys = [item["key"] for item in data["available"]]
     assert data["default"] == "workspace"
-    assert "unrestricted" not in keys
+    assert "unrestricted" in keys
     assert {"key", "label", "note", "fallback", "write"} <= set(data["available"][0])
 
 
-def test_requesting_unavailable_profile_is_403(park_runtime: ParkRuntime) -> None:
-    """越权档位必须显式拒绝，不能静默降级 —— 否则用户以为自己在放开档。"""
+def test_requesting_unavailable_profile_is_403(
+    park_runtime: ParkRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """收窄可用集后，越权档位必须显式拒绝，不能静默降级 —— 否则用户以为自己在放开档。"""
+    monkeypatch.setenv("DEVOPS_AGENT_PERMISSION_PROFILES", "readonly,workspace,execute,auto")
     resp = client.post(
         "/run/stream",
         json={"session_id": "s1", "user_input": "hi", "permission": "unrestricted"},
@@ -126,9 +129,10 @@ def test_switch_permission_applies_to_live_session(
 
 
 def test_switch_permission_validates_whitelist_and_session(
-    park_runtime: ParkRuntime,
+    park_runtime: ParkRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """切档不是提权后门：未开放档仍 403，路径与 body 的会话必须一致。"""
+    monkeypatch.setenv("DEVOPS_AGENT_PERMISSION_PROFILES", "readonly,workspace,execute,auto")
     forbidden = client.post(
         "/api/session/s1/permission",
         json={"session_id": "s1", "permission": "unrestricted"},

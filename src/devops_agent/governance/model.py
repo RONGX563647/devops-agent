@@ -123,8 +123,15 @@ PROFILES: dict[str, PermissionProfile] = {
 # 默认档：前端不传档位时用它
 DEFAULT_PROFILE_KEY = "workspace"
 
-# 默认可用集：不含 unrestricted —— 要显式配置才开放
-DEFAULT_AVAILABLE: tuple[str, ...] = ("readonly", "workspace", "execute", "auto")
+# 默认可用集：包含 unrestricted，前端可在二次确认后选择全放开档。
+# 环境部署可通过 DEVOPS_AGENT_PERMISSION_PROFILES 收窄（例如去掉 unrestricted）。
+DEFAULT_AVAILABLE: tuple[str, ...] = (
+    "readonly",
+    "workspace",
+    "execute",
+    "auto",
+    "unrestricted",
+)
 
 # 由严到宽的稳定顺序。默认档配置写错时按它回落，**不能用 sorted()**：
 # 字典序首个是 "auto"（无人值守），等于配置错误把用户推向最不想有人盯的档位。

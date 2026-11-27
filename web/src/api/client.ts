@@ -8,6 +8,8 @@
 import type {
   Attachment,
   Breakdown,
+  ConfigDomain,
+  ConfigIndex,
   Health,
   HealthMetrics,
   InputStage,
@@ -284,3 +286,42 @@ export function clearSessionModelConfig(sessionId: string): Promise<SessionModel
   );
 }
 
+
+// --- 配置中心（ADR-0005）-------------------------------------------------
+
+/** 域清单 + 存储位置：面板首页用它决定显示「写到哪里」。 */
+export function fetchConfigIndex(): Promise<ConfigIndex> {
+  return getJson<ConfigIndex>('/api/config');
+}
+
+/** 单个域的生效值 / 默认值 / 来源 / 边界。 */
+export function fetchConfigDomain(domain: string): Promise<ConfigDomain> {
+  return getJson<ConfigDomain>(`/api/config/${encodeURIComponent(domain)}`);
+}
+
+/** 增量写入：`null` 表示删掉覆盖、回落到下层；`version` 用于乐观锁。 */
+export function patchConfigDomain(
+  domain: string,
+  patch: Record<string, unknown>,
+  version: number,
+): Promise<ConfigDomain> {
+  return sendJson<ConfigDomain>(`/api/config/${encodeURIComponent(domain)}`, 'PATCH', {
+    patch,
+    version,
+  });
+}
+
+/** 恢复默认：给 keys 只清这几项，all=true 清全部。 */
+export function resetConfigDomain(
+  domain: string,
+  body: { keys?: string[]; all?: boolean },
+): Promise<ConfigDomain> {
+  return sendJson<ConfigDomain>(`/api/config/${encodeURIComponent(domain)}/reset`, 'POST', body);
+}
+
+/** 导出该域的覆盖项 yaml：可直接进 PR 评审。 */
+export async function exportConfigYaml(domain: string): Promise<string> {
+  const resp = await fetch(`/api/config/${encodeURIComponent(domain)}/export`);
+  if (!resp.ok) throw new Error(`导出失败 ${resp.status}`);
+  return resp.text();
+}

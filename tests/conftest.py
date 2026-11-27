@@ -27,3 +27,17 @@ def _isolate_openjudge_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     """
     monkeypatch.setenv("DEVOPS_AGENT_OPENJUDGE_DB_PATH", str(tmp_path / "openjudge.db"))
     monkeypatch.setenv("DEVOPS_AGENT_OPENJUDGE_OVERLAY", str(tmp_path / "openjudge-overlay"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_config_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """配置库也必须在 tmp：否则测试会读到开发机调过的阈值。
+
+    `config_store` 的覆盖层默认落在 `workspace/config.db`。不隔离的话，
+    「我本地把健康分权重改过」就会让一批断言变红，而且报错指向的是评分逻辑
+    而不是配置来源。库不存在时读路径只返回空层，不会创建文件。
+    """
+    from devops_agent.config_store import invalidate
+
+    monkeypatch.setenv("DEVOPS_AGENT_CONFIG_DB", str(tmp_path / "config.db"))
+    invalidate()

@@ -103,6 +103,7 @@ def prepare(
     thin = tuple(_redact_text(value, namer, None)[0] for value in thin_refs)
     text, all_blocks, budget_stage = _budget(text, all_blocks, _build_policy())
     text, compose_stage = _compose(text, all_blocks, misses, thin)
+    fallback = _fallback_summary(thin, ref_misses, attach_misses)
 
     return PreparedInput(
         original=user_input,
@@ -118,4 +119,21 @@ def prepare(
         ),
         references=tuple(refs),
         redactions=redact_stage.items,
+        fallback=fallback,
     )
+
+
+def _fallback_summary(
+    thin: Sequence[str], ref_misses: Sequence[str], attach_misses: Sequence[str]
+) -> str:
+    """缺口一句话（只描述事实）：怎么补由网关按 net 能力决定，管线不认识联网模式。"""
+    parts: list[str] = []
+    if thin:
+        parts.append(f"{len(thin)} 条引用内容不足")
+    # thin 已经在「内容不足」里算过，这里只报真正没取到的
+    not_found = max(0, len(ref_misses) - len(thin))
+    if not_found:
+        parts.append(f"{not_found} 条引用未取到")
+    if attach_misses:
+        parts.append(f"{len(attach_misses)} 份附件未取到")
+    return "，".join(parts)

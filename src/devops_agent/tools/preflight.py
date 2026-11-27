@@ -122,9 +122,13 @@ def health_payload() -> dict[str, Any]:
     探针看到 200 就认为进程健康，所以缺依赖**不能**变成 5xx —— 那只会让容器
     反复重启，而重启治不好缺少的可执行文件。状态放在 body 里，由调用方判断。
     """
+    from devops_agent.input.pipeline.sanitize import capabilities
+
     return {
         "tools": {
             item.tool: {"available": item.available, "binary": item.binary}
             for item in tool_readiness()
         },
+        # 内容安全链的实际实现：缺 [sanitize] extra 时这里会说清楚，而不是静默降级
+        "sanitize": capabilities(),
     }

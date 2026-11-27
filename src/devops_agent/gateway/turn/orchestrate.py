@@ -74,7 +74,7 @@ def run_turn(
         if not await settle_abandoned(port, limits):
             raise RuntimeError(SETTLE_FAILED)
         # 3) 解析输入：阶段帧推前端 + 缓存进 recorder；只有 text 进模型上下文
-        prepared = prepare_payload(user_input, list(attachments), lease.recorder)
+        prepared = prepare_payload(user_input, list(attachments), lease.recorder, port)
         for frame in prepared.frames:
             yield sse_frame(frame)
         # 4) 转发事件流，末尾按「自动拒绝 / 挂起 / 正常结束」收尾
@@ -164,16 +164,32 @@ async def settle_abandoned(port: RuntimePort, limits: RunLimits) -> bool:
 
 
 def prepare_payload(
-    user_input: str, attachments: Sequence[str], recorder: RunRecorder
+    user_input: str, attachments: Sequence[str], recorder: RunRecorder, port: RuntimePort
 ) -> PreparedPayload:
-    """解析输入：阶段事件进 recorder 并转成帧，只有 text 进模型（失败退回原文）。"""
+    """解析输入：阶段事件进 recorder 并转成帧，只有 text 进模型（失败退回原文）。
+
+    有缺口时把 L1 降级信号拼到正文末尾（SPEC-0012 §4.2）：**怎么补由这里决定**——
+    管线只负责说「缺什么」，它不认识联网模式；网关知道本轮是否有 web_search 工具。
+    """
     prepared = prepare_input(user_input, load_attachments(list(attachments)))
     if prepared is None:
         return PreparedPayload(text=user_input, frames=[])
     stage_frames = parse_events(prepared)
     for frame in stage_frames:
         recorder.consume(frame)  # 阶段缓存进 recorder，finish 时随 run 一起落库
-    return PreparedPayload(text=prepared.text, frames=stage_frames)
+    text = prepared.text + _fallback_note(prepared.fallback, port)
+    return PreparedPayload(text=text, frames=stage_frames)
+
+
+def _fallback_note(fallback: str, port: RuntimePort) -> str:
+    """把缺口变成可执行的一步：有检索工具就建议检索，没有就建议 shell 或说明缺口。"""
+    if not fallback:
+        return ""
+    if port.web_search() is True:
+        advice = "可调用 web_search 补检索；同一地址不要重复抓取。"
+    else:
+        advice = "未授予检索工具：请用 shell 自取或直接说明缺口，不要重复抓同一地址。"
+    return f"\n\n[网络获取] {fallback}。{advice}"
 
 
 async def finish_or_park(

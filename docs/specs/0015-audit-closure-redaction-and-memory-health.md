@@ -404,3 +404,17 @@ history_max = max(0, threshold - fixed - output)
 全库扫描（`src/**/*.py`，259 文件）实施前后对比：输入侧 9 文件 / 21 处 → **0**；
 代码档案 111 文件 / 342 处标识符误伤 → **0**。门禁由
 `tests/unit/test_redaction_repo_scan.py` 常驻执行。
+
+### 12.1 与 SPEC-0013 v5（#133）合并时的三处收敛
+
+#133 先合入 `main`，本分支 rebase 后两套改动在 `memory/` 正面相遇，按「谁的契约更严就留谁」合并：
+
+1. **召回失败只留一个出口**：#133 让 `recall()` 返回三元组 `(card, hits, error)`，
+   本方案返回 `RecallResult`。最终留 `RecallResult`，并把 #133 的 `error` 字符串
+   降级为 `errors: dict[layer, "Type: msg"]` —— `reasons` 仍是稳定枚举（前端过滤用），
+   异常细节单独给排障，二者不混在 `reason` 里。`test_memory_middleware.py::A22` 的断言随之调整。
+2. **轮次键合一**：#133 的 `_turn_key(reply, messages)` 与本文档 §5 的 `is_user_turn()`
+   是两件事（前者做缓存键，后者判真实输入），都保留；`on_model_call` 内所有
+   `reply` 参数统一改名 `turn`，避免与 `reply_id` 为空的情形混淆。
+3. **`CONTEXT_RESTORE` 不再复活**：#133（M5）已把恢复失败改为结构化日志 + `/health` 计数，
+   D 的 `events.py` 改动因此只保留 `CONTEXT_ESTIMATE_DELTA`，不恢复该常量。

@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from devops_agent import model_settings
+from devops_agent.model_catalog import ProviderError, get_catalog
 from devops_agent.model_settings import InvalidConfig
 from devops_agent.observability import repository as repo
 from devops_agent.observability.recorder import utc_now
@@ -115,6 +116,28 @@ def _conflict(version: int, resolved: dict[str, Any]) -> HTTPException:
     )
 
 
+def _capability(values: dict[str, Any]) -> Any:
+    """当前模型的能力卡（四源合并）。查不到返回 None，不抛 —— 面板要能显示。"""
+    try:
+        return get_catalog().capability(
+            str(values.get("provider") or ""), str(values.get("model") or "")
+        )
+    except Exception:  # noqa: BLE001 - 能力查询失败不该让配置读取 500
+        logger.warning("能力卡查询失败", exc_info=True)
+        return None
+
+
+def _check_provider(values: dict[str, Any]) -> None:
+    """`provider` 的合法性在运行期用注册表判（BOUNDS 里写死 id 会随 yaml 失效）。"""
+    provider = values.get("provider")
+    if not provider:
+        return
+    try:
+        get_catalog().registry.get(str(provider))
+    except ProviderError as exc:
+        raise _invalid(InvalidConfig("provider", exc.reason)) from None
+
+
 def _checked_values(
     stored_layer: dict[str, Any],
     session_layer: dict[str, Any] | None = None,
@@ -122,14 +145,77 @@ def _checked_values(
     domain: str = DEFAULT_DOMAIN,
     remedy: str | None = None,
 ) -> dict[str, Any]:
-    """解析 + 校验，返回完整参数值；非法时抛 400。"""
-    resolved = model_settings.resolve(session_layer, stored_layer, domain=domain)
+    """解析 + 校验，返回完整参数值；非法时抛 400。
+
+    校验顺序：`BOUNDS` → 联动约束 → 能力卡 schema。schema 只能收紧，
+    不会放宽 BOUNDS（`validate` 里两段是串联，不是替代）。
+    """
+    resolved = model_settings.resolve(
+        session_layer, stored_layer, domain=domain, capability=get_catalog()
+    )
     values = model_settings.values_of(resolved)
+    _check_provider(values)
+    cap = _capability(values)
     try:
-        model_settings.validate(values)
+        model_settings.validate(values, schema=cap.parameter_schema if cap else None)
     except InvalidConfig as exc:
         raise _invalid(exc, remedy=remedy) from None
     return values
+
+
+def _registry_view(values: dict[str, Any]) -> tuple[int, str]:
+    """注册表里有几个网关、当前生效的是哪一个。
+
+    面板的下拉框要一个具体值：空 provider 表示「跟随注册表默认」，这里替它算出
+    到底是哪一个 —— 否则界面显示空选项，实际却已经连上了某个网关。
+    """
+    provider = str(values.get("provider") or "")
+    try:
+        registry = get_catalog().registry
+    except ProviderError:
+        return 0, provider
+    return len(registry.providers), provider or registry.default_id
+
+
+def _current_view(cap: Any, model: str) -> dict[str, Any]:
+    """当前模型的匹配与来源。查不到能力卡时给一张「什么都没查到」的形状。"""
+    if cap is None:
+        return {
+            "matched_by": "none",
+            "context_source": "",
+            "card_may_be_stale": False,
+            "status": "",
+            "deprecated_at": None,
+            "label": model,
+        }
+    context_source = cap.source_of("context_size")
+    return {
+        "matched_by": cap.matched_by,
+        "context_source": context_source,
+        "card_may_be_stale": context_source == "card",
+        "status": cap.status,
+        "deprecated_at": cap.deprecated_at or None,
+        "label": cap.label,
+    }
+
+
+def _catalog_block(values: dict[str, Any]) -> dict[str, Any]:
+    """`/api/model-config` 的 `catalog` 段：这个模型的能力从哪来。"""
+    configured, provider = _registry_view(values)
+    model = str(values.get("model") or "")
+    return {
+        "providers_configured": configured,
+        "provider": provider,
+        "current": _current_view(_capability(values), model),
+    }
+
+
+def _soft_warnings(values: dict[str, Any]) -> list[str]:
+    """模型名匹配不上只警告不报错：网关的 `/models` 常不全，手填是合法用法。"""
+    cap = _capability(values)
+    if cap is not None and cap.matched_by == "none" and values.get("model"):
+        return ["未在内置卡中找到该模型，窗口按未校准处理"]
+    return []
 
 
 def _body_payload(
@@ -140,8 +226,14 @@ def _body_payload(
     domain: str = DEFAULT_DOMAIN,
 ) -> dict[str, Any]:
     """GET / PATCH / reset 共用的响应体。"""
-    resolved = model_settings.resolve(session_layer, stored_layer, domain=domain)
-    return model_settings.payload(resolved, version)
+    resolved = model_settings.resolve(
+        session_layer, stored_layer, domain=domain, capability=get_catalog()
+    )
+    values = model_settings.values_of(resolved)
+    body = model_settings.payload(resolved, version)
+    body["catalog"] = _catalog_block(values)
+    body["warnings"] = [*body["warnings"], *_soft_warnings(values)]
+    return body
 
 
 def _db_save(values: dict[str, Any], *, expected: int) -> int | None:
@@ -238,7 +330,7 @@ def read_model_layers(session: str | None = None, domain: str = DEFAULT_DOMAIN) 
     """
     stored, version = _stored_now()
     overrides = _session_overrides(session) if session else {}
-    resolved = model_settings.resolve(overrides, stored, domain=domain)
+    resolved = model_settings.resolve(overrides, stored, domain=domain, capability=get_catalog())
     return {
         "version": version,
         "file_path": str(model_settings.local_path()),

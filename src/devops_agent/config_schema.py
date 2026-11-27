@@ -290,9 +290,16 @@ class ModelSettings(BaseModel):
 
     # 空串 = 用环境变量 DEVOPS_AGENT_MODEL
     name: str = ""
+    # 选中的网关实例（providers.yaml 的 id）。空串 = 用注册表默认项
+    provider: str = ""
     # 上下文窗口：同时决定压缩阈值、圆环分母、压缩后保留量
     context_size: int = Field(default=128_000, ge=8192, le=2_000_000)
-    # 部署者有没有确认过这个窗口值；false 时前端显示「未校准」
+    # 窗口是否跟随模型能力（SPEC-0018 §6.4）。
+    # None = 谁都没表态，由注册表形态决定：匿名 provider → false，有 providers.yaml → true。
+    # 不能直接给 False：那样「配了网关却不会跟随」，与 §4.4 的默认相反。
+    context_auto: bool | None = None
+    # 部署者有没有确认过这个窗口值；false 时前端显示「未校准」。
+    # SPEC-0018 后降级为「匿名 provider + 静态窗口」这条路径上的兜底标记。
     context_calibrated: bool = False
     # 两级重试：最坏尝试 = (1 + model) × (1 + agent)
     model_max_retries: int = Field(default=3, ge=0, le=5)

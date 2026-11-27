@@ -212,6 +212,42 @@ class GatewayPolicy(BaseModel):
     sessions: GatewaySessionsPolicy = Field(default_factory=GatewaySessionsPolicy)
 
 
+# --- 沙箱执行面（sandbox 域）-------------------------------------------
+#
+# 执行面在进程启动期固定（`hot=restart`），这里只放「部署者能决定」的旋钮，
+# 不放容器实现细节：容器创建 / 镜像构建 / 文件同步全部由
+# `agentscope.workspace.DockerWorkspace` 承担。
+
+
+class SandboxDockerPolicy(BaseModel):
+    """DockerWorkspace 的构造参数（与内置签名逐项对应）。"""
+
+    # 基础镜像：必须自带 python3；生产建议用 digest 固定
+    base_image: str = Field(default="python:3.11-slim", min_length=1)
+    # 额外 Python 包装进 gateway venv（不是宿主环境）
+    extra_pip: list[str] = Field(default_factory=list)
+    # 显式透传进容器的环境变量；禁止放密钥（密钥仍走 SecretInjectionMiddleware）
+    env: dict[str, str] = Field(default_factory=dict)
+    # 容器内 gateway 端口；不映射到宿主机
+    gateway_port: int = Field(default=5600, ge=1, le=65_535)
+
+
+class SandboxPolicy(BaseModel):
+    """沙箱执行面：模式、是否允许回落、空闲回收与 Docker 参数。
+
+    `mode` 是**请求**模式；实际生效模式由 `SandboxManager` 解析后写入
+    `ExecutionTarget.mode`。`required=True` 时任何回落都视为违约：
+    静默从容器降到宿主是安全事故，不是可用性优化。
+    """
+
+    mode: Literal["local", "docker", "auto"] = "local"
+    # true：初始化失败不回落，对话端点 503；生产 docker 部署建议 true
+    required: bool = False
+    # 非聊天工作区（评测 case）空闲回收；聊天主工作区不回收
+    ttl_seconds: int = Field(default=900, gt=0)
+    docker: SandboxDockerPolicy = Field(default_factory=SandboxDockerPolicy)
+
+
 # --- 模型参数（model.yaml 的 model 段）----------------------------------
 
 
@@ -378,4 +414,6 @@ __all__ = [
     "RiskPolicy",
     "RulePolicy",
     "RuntimePolicy",
+    "SandboxDockerPolicy",
+    "SandboxPolicy",
 ]

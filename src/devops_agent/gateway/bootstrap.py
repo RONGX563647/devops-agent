@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from devops_agent.gateway.settings import Settings
 from devops_agent.runtime.assembly import build_agentscope_runtime
@@ -22,14 +23,17 @@ CODE_NO_CREDENTIALS = "no_model_credentials"
 NOTICE_NO_CREDENTIALS = "未配置模型凭据（DEVOPS_AGENT_API_KEY），当前回复只是回显输入，不会调用模型"
 
 
-def select_runtime() -> AgentRuntime:
-    """按环境变量选择运行时：配齐凭据用真实模型，否则回退 Echo（便于自检/测试）。"""
+def select_runtime(execution: Any | None = None) -> AgentRuntime:
+    """按环境变量选择运行时：配齐凭据用真实模型，否则回退 Echo（便于自检/测试）。
+
+    `execution` 是启动期固定的执行面（`ExecutionTarget`）；省略时走本机路径。
+    """
     if Settings().has_credentials():
-        return build_agentscope_runtime()
+        return build_agentscope_runtime(execution=execution)
     return EchoRuntime()
 
 
-def pick_runtime() -> AgentRuntime:
+def pick_runtime(execution: Any | None = None) -> AgentRuntime:
     """装配期的选择，带降级：装配失败退回 Echo 并喊出来。
 
     为什么不在 `select_runtime` 里降级：测试要能拿到真实异常。生产入口需要的是
@@ -37,7 +41,7 @@ def pick_runtime() -> AgentRuntime:
     这与 `warn_missing_tools` 的取舍一致：降级是可用状态，只报警不拒绝启动。
     """
     try:
-        return select_runtime()
+        return select_runtime(execution)
     except Exception:  # noqa: BLE001 - 任何装配失败都不该拦住进程
         logger.exception("运行时装配失败，降级为 Echo；对话不会调用模型")
         return EchoRuntime()
@@ -122,6 +126,37 @@ def warn_memory_backend() -> None:
             status.get("effective", ""),
             status["reason"],
         )
+
+
+def describe_sandbox(state: Any) -> dict[str, Any]:
+    """`/health.sandbox` 的自述：请求模式、实际生效、降级原因与容器标识。
+
+    降级不能静默：`required=true` 初始化失败时 `sandbox_error` 非空，这里如实
+    标 `degraded=true` 并给出原因码；`auto` 回落本机时 reason 同样可见。
+    """
+    manager = getattr(state, "sandbox_manager", None)
+    execution = getattr(state, "execution", None)
+    error = getattr(state, "sandbox_error", None)
+    if manager is not None:
+        payload: dict[str, Any] = dict(manager.status())
+    else:
+        payload = {
+            "mode": execution.mode if execution is not None else "local",
+            "effective": execution.mode if execution is not None else "local",
+            "degraded": False,
+            "reason": "",
+            "workspace_id": "",
+            "image": "",
+            "host_workdir": str(execution.host_workdir) if execution is not None else "",
+            "tool_workdir": execution.tool_workdir if execution is not None else "",
+            "containers": 0,
+        }
+    if error is not None:
+        message = getattr(error, "message", "") or ""
+        code = getattr(error, "code", "sandbox_unavailable")
+        payload["degraded"] = True
+        payload["reason"] = f"{code}: {message}".strip(": ")
+    return payload
 
 
 def warn_runtime(runtime: AgentRuntime) -> None:

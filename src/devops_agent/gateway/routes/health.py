@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request
 
 from devops_agent.config_store import health as config_health
 from devops_agent.config_store import mode as config_mode
-from devops_agent.gateway.bootstrap import describe_runtime
+from devops_agent.gateway.bootstrap import describe_runtime, describe_sandbox
 from devops_agent.memory.runtime import memory_status
 from devops_agent.memory.snapshot import restore_stats
 from devops_agent.tools.preflight import health_payload
@@ -53,6 +53,8 @@ def health(request: Request) -> dict[str, Any]:
     return {
         "status": HEALTH_STATUS_OK,
         "runtime": describe_runtime(request.app.state.runtime),
+        # 执行面：模式 / 实际生效 / 降级原因；Docker 不可用或回落本机时这里可见
+        "sandbox": describe_sandbox(request.app.state),
         "config": config_status(),
         "memory": {
             "short_term": status["short_term"],

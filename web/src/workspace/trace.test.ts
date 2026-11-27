@@ -232,6 +232,48 @@ describe('记忆泳道', () => {
     expect(lanes.model).toHaveLength(0);
     expect(lanes.tool).toHaveLength(0);
   });
+
+  it('两轮出现同名记忆步骤时，步骤 id 与泳道 id 都不重复', () => {
+    /** 真实流里记忆步骤按「单轮内帧序号」编号，两轮撞出同一个 id 是常态。 */
+    const memoryStep = (at: string, endedAt: string) => ({
+      id: 'memory:MEMORY_RETRIEVE_END:7',
+      kind: 'memory' as const,
+      label: '记忆检索 · 长期',
+      detail: '命中 2 条',
+      state: 'success' as const,
+      at,
+      endedAt,
+    });
+    const turns = turnsFromMessages([
+      user('u1', '第一问', '2026-11-23T10:00:00.000Z'),
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '',
+        at: '2026-11-23T10:00:01.000Z',
+        endedAt: '2026-11-23T10:00:03.000Z',
+        steps: [memoryStep('2026-11-23T10:00:01.000Z', '2026-11-23T10:00:01.005Z')],
+      },
+      user('u2', '第二问', '2026-11-23T10:02:00.000Z'),
+      {
+        id: 'a2',
+        role: 'assistant',
+        text: '',
+        at: '2026-11-23T10:02:01.000Z',
+        endedAt: '2026-11-23T10:02:03.000Z',
+        steps: [memoryStep('2026-11-23T10:02:01.000Z', '2026-11-23T10:02:01.005Z')],
+      },
+    ]);
+
+    expect(turns[0].items[0].id).not.toBe(turns[1].items[0].id);
+    const lanes = buildLanes(turns);
+    expect(lanes.memory).toHaveLength(2);
+    expect(new Set(lanes.memory.map((span) => span.id)).size).toBe(2);
+    // 点泳道块要选中自己那一轮：stepId 必须指回本轮的步骤 id
+    expect(lanes.memory.map((span) => span.stepId)).toEqual(
+      turns.map((turn) => turn.items[0].id),
+    );
+  });
 });
 
 describe('traceStats 缓存口径', () => {
@@ -328,7 +370,7 @@ describe('计时口径与三个视图的数据', () => {
 
   it('模型调用进入步骤列表，计时来源分三档', () => {
     const [turn] = timedTurn();
-    const model = turn.items.find((item) => item.id === 'model:1');
+    const model = turn.items.find((item) => item.kind === 'model');
     expect(model?.kind).toBe('model');
     expect(model?.title).toBe('qwen3.8');
     expect(model?.timing).toEqual({
@@ -343,8 +385,8 @@ describe('计时口径与三个视图的数据', () => {
 
   it('占比分母只算真实步骤，估算值与正文不占份额', () => {
     const [turn] = timedTurn();
-    const model = turn.items.find((item) => item.id === 'model:1')!;
-    const tool = turn.items.find((item) => item.id === 'tool:t1')!;
+    const model = turn.items.find((item) => item.kind === 'model')!;
+    const tool = turn.items.find((item) => item.kind === 'tool')!;
     expect(model.share).toBeCloseTo(10 / 12, 5);
     expect(tool.share).toBeCloseTo(2 / 12, 5);
     expect(Math.round(topShare(durationRows([turn], () => true), 1) * 100)).toBe(83);

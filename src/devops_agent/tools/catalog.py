@@ -25,6 +25,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from agentscope.tool import (
+    BackendBase,
     Bash,
     Edit,
     FunctionTool,
@@ -49,6 +50,9 @@ READONLY_TOOL_NAMES: tuple[str, ...] = READONLY_NAMES
 WRITE_TOOL_NAMES: tuple[str, ...] = WRITE_NAMES
 
 Middlewares = Sequence[ToolMiddlewareBase] | None
+# 工具 backend 的工厂：省略时按 cwd 建 `_WorkdirBackend`（本机语义不变），
+# Docker 模式传入「返回同一个 DockerBackend」的闭包。
+BackendFactory = Callable[[], BackendBase]
 
 
 def _constant(tool: ToolBase) -> Callable[[], ToolBase]:
@@ -84,6 +88,7 @@ def _factories(
     middlewares: Middlewares,
     scope: str,
     extra: Mapping[str, ToolBase] | None = None,
+    backend_factory: BackendFactory | None = None,
 ) -> dict[str, Callable[[], ToolBase]]:
     """工具名 → 构造器。用惰性构造避免为没选中的工具白建 backend。
 
@@ -101,12 +106,18 @@ def _factories(
     `reset()`，所以不能每次装配都 new 一个新的，必须由运行时持有同一个对象。
     """
 
-    def backend() -> LocalBackend:
-        """每个工具独占一个 backend 实例，避免将来有状态时互相污染。"""
+    def backend() -> BackendBase:
+        """取一个 backend：本机模式逐工具新建，容器模式共用一个无状态后端。
+
+        本机模式每个工具独占实例，避免将来有状态时互相污染；Docker 模式下
+        `DockerBackend` 本身无会话状态，共用同一实例即可。
+        """
+        if backend_factory is not None:
+            return backend_factory()
         return _WorkdirBackend(cwd)
 
     # 守卫在最外层：先判路径，命中就短路，后面的密钥注入与工具执行都不跑。
-    # 这里是它唯一的挂载点 —— 由调用方记得传等于迟早漏挂。
+    # 边界用 `cwd`（docker 模式即 /workspace），不是宿主目录。
     mws: list[ToolMiddlewareBase] = [build_guard(cwd, scope), *(middlewares or [])]
     factories: dict[str, Callable[[], ToolBase]] = {
         "bash": lambda: Bash(cwd=cwd, middlewares=mws, backend=backend()),
@@ -128,15 +139,21 @@ def build_toolkit_for(
     *,
     scope: str = "workspace",
     extra: Mapping[str, ToolBase] | None = None,
+    backend_factory: BackendFactory | None = None,
+    tool_cwd: str | None = None,
 ) -> Toolkit:
     """按名字装配工具集（档位切换的唯一入口）。
 
     未知名直接抛 ValueError —— 静默跳过会让「放开档少了写工具」这种问题
     表现成「权限切了但模型还是不改文件」，很难查。
     `scope` 决定敏感路径守卫是否把「工作区内」当硬边界（只有 readonly 档是）。
+
+    `tool_cwd` 覆盖工具与 guard 使用的路径（docker 模式传 `/workspace`）；
+    `backend_factory` 覆盖 backend 来源（docker 模式传入共享的 DockerBackend）。
+    两者省略时行为与本机模式逐字节一致。
     """
-    cwd = str(Path(workdir).resolve())
-    factories = _factories(cwd, middlewares, scope, extra)
+    cwd = tool_cwd or str(Path(workdir).resolve())
+    factories = _factories(cwd, middlewares, scope, extra, backend_factory)
     unknown = [name for name in names if name not in factories]
     if unknown:
         raise ValueError(f"未知工具: {', '.join(unknown)}")

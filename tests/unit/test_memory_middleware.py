@@ -265,7 +265,7 @@ def test_note_body_not_truncated_by_trace_preview(tmp_path) -> None:  # type: ig
 
 
 def test_retrieval_failure_reports_error_not_miss(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """A22：后端抛异常时 state=error，reason 带异常类名；miss 只表示真的没有。"""
+    """A22：后端抛异常时 state=error；reason 是稳定枚举，异常类名落 errors。"""
 
     class Boom:
         name = "local"
@@ -288,7 +288,9 @@ def test_retrieval_failure_reports_error_not_miss(tmp_path) -> None:  # type: ig
     asyncio.run(middleware.on_model_call(agent, {"messages": messages, "tools": []}, next_handler))
     end = [f for f in runtime.sink.drain() if f["type"] == events.MEMORY_RETRIEVE_END]
     assert end and end[0]["state"] == "error"
-    assert "RuntimeError" in end[0]["reason"]
+    # reason 是枚举（前端按它过滤/提示），异常类名走 errors 字段供排障
+    assert end[0]["reason"] == events.REASON_LONG_TERM_UNAVAILABLE
+    assert "RuntimeError" in end[0]["memory"]["errors"]["long_term"]
 
 
 def test_empty_reply_id_assembles_once_per_turn(tmp_path) -> None:  # type: ignore[no-untyped-def]

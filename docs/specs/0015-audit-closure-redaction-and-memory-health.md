@@ -81,10 +81,10 @@ PY
 ```python
 @dataclass(frozen=True, slots=True)
 class Rule:
-    name: str                                  # 占位符基底名
+    name: str  # 占位符基底名
     pattern: re.Pattern[str]
     confidence: Literal["known_prefix", "assigned", "entropy"]
-    profiles: frozenset[str]                   # {"input"} / {"output"} / {"code"}
+    profiles: frozenset[str]  # {"input"} / {"output"} / {"code"}
 ```
 
 派生函数：`match(text, profile) -> list[Candidate]`、`shape_ok(value) -> bool`、`replace(text, candidates, namer) -> str`。
@@ -149,7 +149,7 @@ python scripts/audit_false_secrets.py --purge    # 需人工确认后执行
 class RecallResult:
     card: dict[str, Any] | None
     hits: list[Hit]
-    degraded: tuple[str, ...] = ()            # ("episodic",) / ("long_term",) / 两者
+    degraded: tuple[str, ...] = ()  # ("episodic",) / ("long_term",) / 两者
     reasons: dict[str, str] = field(default_factory=dict)
 ```
 
@@ -227,9 +227,11 @@ def snapshot() -> dict[str, Any]: ...
 INJECTED = "injected"
 _LEGACY_INJECTED_NAMES = frozenset({"system", "user"})
 
+
 def injected_note(text: str, *, kind: str) -> UserMsg:
     """所有 user 角色的注入消息都必须经由此处构造。"""
     return UserMsg(name="system", content=text, metadata={INJECTED: kind})
+
 
 def is_user_turn(msg: Any) -> bool:
     if getattr(msg, "role", "") != "user":
@@ -378,3 +380,27 @@ history_max = max(0, threshold - fixed - output)
 2. `health` 计数是否需要持久化到 `runs` 表以便跨重启诊断（倾向：首版不持久化，进程内存够回答「现在坏没坏」）。
 3. `profile="code"` 的判定是按工具名硬编码，还是让工具自己在 schema 里声明 `output_profile`（倾向：先硬编码在 `secrets/middleware.py` 的一张映射表里，MCP 工具接入时再改为声明式）。
 4. `CONTEXT_ESTIMATE_DELTA` 是否进前端上下文面板（依赖前端排期，不阻塞本规格）。
+
+## 12. 实施记录（2026-11-27）
+
+按 §8 的四个 PR 落成四个提交，均在本分支内：
+
+| 提交 | 内容 | 落地与差异 |
+|---|---|---|
+| `fix: 脱敏规则单源化…` | `redaction/rules.py` + 两侧改造 + 全库门禁 | 与方案一致；`Audit` 脚本改为**逐条确认**（`all` 才批量），不做自动清理 |
+| `fix: 记忆失败可见化…` | `RecallResult` + `memory/health.py` + 尾帧补发 + 两处接口 | 与方案一致；`/health` 只加 `memory.degraded` 布尔 |
+| `refactor: 轮次边界单源…` | `memory/turns.py` + 两处改调 + 架构守卫 | 与方案一致；守卫测试同时禁止旧谓词字符串回归 |
+| `feat: token 口径可校准…` | 校准 fixture + 对账事件 + 安全垫 | 对账帧覆盖流式与非流式：流式包一层读末帧用量；只在首次调用发 |
+
+实施期修正的两处判断：
+
+1. **形状闸不能简单按「标识符」否决**：`abcdefghij1234567890` 这类小写 alnum
+   串是常见 API key，与 `estimate_prefix_tokens` 的区别是**有没有数字**。
+   最终判据是「标识符形状且无数字」才否决，另加「大小写混合 + ≥20 字符 + 熵 ≥3.8」
+   覆盖无数字的 base64 串。
+2. **`_ASSIGNED_RE` 的 `\s*` 不只是跨行问题**：它还让 `token: str` 这种类型注解
+   具备匹配条件。分隔符收紧到 `[ \t]{0,4}` 后，跨行吞语句与注解误判一起消失。
+
+全库扫描（`src/**/*.py`，259 文件）实施前后对比：输入侧 9 文件 / 21 处 → **0**；
+代码档案 111 文件 / 342 处标识符误伤 → **0**。门禁由
+`tests/unit/test_redaction_repo_scan.py` 常驻执行。

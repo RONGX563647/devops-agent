@@ -12,13 +12,14 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any, cast
 
 from agentscope.agent import Agent
-from agentscope.message import Msg, UserMsg
+from agentscope.message import Msg
 from agentscope.middleware import MiddlewareBase
 
 from devops_agent.memory import events, health
 from devops_agent.memory.runtime import MemoryRuntime, estimate_prefix_tokens
 from devops_agent.memory.short_term import trim_messages
 from devops_agent.memory.tokens import estimate_tokens
+from devops_agent.memory.turns import injected_note, is_user_turn
 
 
 def _text_of(msg: Any) -> str:
@@ -35,7 +36,7 @@ def _text_of(msg: Any) -> str:
 
 def _last_user_text(messages: list[Msg]) -> str:
     for msg in reversed(messages):
-        if msg.role == "user" and msg.name not in ("system", "user"):
+        if is_user_turn(msg):
             return _text_of(msg)
     return ""
 
@@ -106,7 +107,7 @@ class MemoryMiddleware(MiddlewareBase):
             note, _meta = await self._assemble(agent, trimmed, turn)
             self._note_cache[turn] = note
         if note:
-            trimmed.append(UserMsg(name="system", content=note))
+            trimmed.append(injected_note(note, kind="memory"))
         if self._assembled_turn != turn:
             self._assembled_turn = turn
             tools = list(input_kwargs.get("tools") or [])

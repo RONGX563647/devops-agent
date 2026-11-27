@@ -57,10 +57,30 @@ export interface ModelConfig {
   derived: ModelDerived;
   warnings: string[];
   version: number;
+  /** 部署默认落盘的位置（config/model.local.yaml 的绝对路径）。 */
+  file_path?: string;
   /** 该会话的覆盖项（GET 带 session 时返回）。 */
   overrides?: Partial<ModelValues>;
   /** 改部署默认后的传播结果：多少会话已生效、多少等当前轮结束。 */
   affected?: { applied: number; deferred: number };
+}
+
+/** 一层参数：`writable=false` 的层只能改文件或环境变量。 */
+export interface ModelLayer {
+  id: 'session' | 'file' | 'stored' | 'base';
+  label: string;
+  writable: boolean;
+  path?: string;
+  values: Partial<ModelValues>;
+}
+
+/** GET /api/model-config/layers 的响应：每一层各自写了什么。 */
+export interface ModelLayers {
+  version: number;
+  file_path: string;
+  layers: ModelLayer[];
+  effective: ModelValues;
+  sources: Record<string, ModelSource>;
 }
 
 /** 会话级改动的响应：applied=false 表示没有活跃实例，下一轮才装配。 */

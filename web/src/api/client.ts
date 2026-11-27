@@ -12,6 +12,7 @@ import type {
   HealthMetrics,
   InputStage,
   ModelConfig,
+  ModelLayers,
   ModelPatch,
   PendingState,
   PermissionCatalog,
@@ -245,6 +246,15 @@ export function patchModelConfig(
   version?: number,
 ): Promise<ModelConfig> {
   return sendJson<ModelConfig>('/api/model-config', 'PATCH', { patch, version });
+}
+
+/** 四层原始值：界面用它画「这个值到底从哪来」的完整链路。 */
+export function fetchModelLayers(session?: string, domain?: string): Promise<ModelLayers> {
+  const params = new URLSearchParams();
+  if (session) params.set('session', session);
+  if (domain) params.set('domain', domain);
+  const suffix = params.toString();
+  return getJson<ModelLayers>(`/api/model-config/layers${suffix ? `?${suffix}` : ''}`);
 }
 
 /** 清除部署默认里的覆盖项，回落到 yaml / env / 框架默认。 */

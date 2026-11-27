@@ -1,26 +1,29 @@
 // @vitest-environment jsdom
-/** 模型设置面板：来源徽标、两个保存按钮、危险确认、越界禁用、只读项。
-
-这些用例盯的是「界面有没有撒谎」：
-- 推算值必须用后端给的（前端自己乘一次就迟早和后端对不上）；
-- 「保存到本会话」与「设为部署默认」必须走不同端点，且后者要二次确认；
-- 越界时保存要禁用，但服务端仍是唯一裁判。
+/** 模型设置抽屉：分类树、保存范围、来源链、危险确认、只读项。
+ *
+ * 这些用例盯的是「界面有没有撒谎」：
+ * - 主按钮必须是「保存为全局默认」，会话保存降为次要并常驻提示「换会话失效」；
+ * - 推算值直接用后端给的（前端自己乘一次就迟早和后端对不上）；
+ * - 徽标点开要能看到每一层的原值，而不是一个孤零零的「配置文件」；
+ * - 有未保存改动时 Esc 不能静默丢弃。
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ModelConfig, ModelValues } from '../types';
-import { ModelConfigPopover } from './model-config/Popover';
+import type { ModelConfig, ModelLayers, ModelValues } from '../types';
+import { ModelConfigDrawer } from './model-config/Drawer';
 
 const saveSession = vi.fn();
 const saveDefaults = vi.fn();
 const clearSession = vi.fn();
+const loadLayers = vi.fn();
 
 vi.mock('../api/client', () => ({
   ApiError: class ApiError extends Error {},
   patchSessionModelConfig: (...args: unknown[]) => saveSession(...args),
   patchModelConfig: (...args: unknown[]) => saveDefaults(...args),
   clearSessionModelConfig: (...args: unknown[]) => clearSession(...args),
+  fetchModelLayers: (...args: unknown[]) => loadLayers(...args),
 }));
 
 const VALUES: ModelValues = {
@@ -39,6 +42,8 @@ const VALUES: ModelValues = {
   reserve_ratio: 0.1,
   context_buffer_ratio: 0.2,
 };
+
+const FILE_PATH = 'E:/code/devops-agent/config/model.local.yaml';
 
 function config(over: Partial<ModelConfig> = {}): ModelConfig {
   return {
@@ -68,16 +73,41 @@ function config(over: Partial<ModelConfig> = {}): ModelConfig {
     },
     warnings: [],
     version: 3,
+    file_path: FILE_PATH,
     ...over,
   };
 }
+
+const layers: ModelLayers = {
+  version: 3,
+  file_path: FILE_PATH,
+  layers: [
+    { id: 'session', label: '本次会话', writable: true, values: { temperature: 0.2 } },
+    {
+      id: 'file',
+      label: 'config/model.local.yaml',
+      writable: true,
+      path: FILE_PATH,
+      values: { model: 'qwen3.8-flash' },
+    },
+    { id: 'stored', label: '数据库旧值（迁移残留）', writable: true, values: {} },
+    {
+      id: 'base',
+      label: 'config/model.yaml / 环境变量 / 框架默认',
+      writable: false,
+      values: { context_size: 128_000 },
+    },
+  ],
+  effective: VALUES,
+  sources: {},
+};
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
 function mount(cfg: ModelConfig | undefined, contextTokens: number | null = null) {
   render(
     <QueryClientProvider client={queryClient}>
-      <ModelConfigPopover
+      <ModelConfigDrawer
         session="s1"
         config={cfg}
         contextTokens={contextTokens}
@@ -86,24 +116,55 @@ function mount(cfg: ModelConfig | undefined, contextTokens: number | null = null
     </QueryClientProvider>,
   );
   fireEvent.click(screen.getByRole('button', { name: '模型设置' }));
+  return document.querySelector('dialog.mcd') as HTMLDialogElement;
 }
 
 beforeEach(() => {
   saveSession.mockReset();
   saveDefaults.mockReset();
   clearSession.mockReset();
+  loadLayers.mockReset();
   saveSession.mockResolvedValue({ effective_from: '下一次模型调用' });
-  saveDefaults.mockResolvedValue({ affected: { applied: 2, deferred: 1 } });
+  saveDefaults.mockResolvedValue({
+    affected: { applied: 2, deferred: 1 },
+    file_path: FILE_PATH,
+  });
   clearSession.mockResolvedValue({});
+  loadLayers.mockResolvedValue(layers);
 });
 
 afterEach(cleanup);
 
-describe('ModelConfigPopover', () => {
+describe('ModelConfigDrawer', () => {
+  it('标题下常驻显示落盘位置与会话覆盖条数', () => {
+    mount(config({ overrides: { temperature: 0.2, max_iters: 30 } }));
+    expect(screen.getByText(/本次会话覆盖 2 项（换会话失效）/)).toBeTruthy();
+    expect(screen.getByText('config/model.local.yaml')).toBeTruthy();
+    // 全路径放 title：鼠标悬停能确认写到哪
+    expect(screen.getByTitle(FILE_PATH)).toBeTruthy();
+  });
+
+  it('左树切换分组：一次只显示一组的表单', () => {
+    mount(config());
+    expect(screen.getByLabelText('上下文窗口')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /采样/ }));
+    expect(screen.getByLabelText('温度')).toBeTruthy();
+    expect(screen.getByLabelText('top_p')).toBeTruthy();
+    expect(screen.queryByLabelText('上下文窗口')).toBeNull();
+  });
+
+  it('点二级节点跳到对应字段并高亮', () => {
+    mount(config());
+    fireEvent.click(screen.getByRole('button', { name: /采样/ }));
+    fireEvent.click(screen.getByRole('button', { name: '温度' }));
+    expect(screen.getByRole('button', { name: '温度' }).getAttribute('aria-current')).toBe('true');
+  });
+
   it('每行给出处：yaml / env / framework-default 徽标', () => {
     mount(config());
     expect(screen.getAllByText('环境变量').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('配置文件').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button', { name: /采样/ }));
     // 来源是框架默认的项要显示成「未配置」，这是「该确认一下」的提示
     expect(screen.getAllByText('未配置').length).toBeGreaterThan(0);
   });
@@ -123,43 +184,46 @@ describe('ModelConfigPopover', () => {
         },
       }),
     );
+    fireEvent.click(screen.getByRole('button', { name: /执行/ }));
     // 若前端自己乘 (1+3)×(1+3)=16，这里就会是 16 而不是 99
     expect(screen.getByText(/最坏 99 次模型请求/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /上下文压缩/ }));
     expect(screen.getByText(/阈值 77,777 tokens/)).toBeTruthy();
   });
 
-  it('有会话覆盖时标题标出条数', () => {
-    mount(config({ overrides: { temperature: 0.2, max_iters: 30 } }));
-    expect(screen.getByText('本会话 2 项')).toBeTruthy();
+  it('主按钮是保存为全局默认，且写文件前先二次确认', async () => {
+    mount(config());
+    fireEvent.change(screen.getByLabelText('上下文窗口'), { target: { value: '64000' } });
+    // 改窗口属于危险项，要先勾确认
+    fireEvent.click(screen.getByLabelText('我了解上面的影响'));
+    fireEvent.click(screen.getByRole('button', { name: '保存为全局默认' }));
+    expect(screen.getByText(/将写入/)).toBeTruthy();
+    expect(saveDefaults).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '确认写入' }));
+    await waitFor(() => expect(saveDefaults).toHaveBeenCalledTimes(1));
+    // 乐观并发：必须带上读到的 version
+    expect(saveDefaults.mock.calls[0][1]).toBe(3);
+    await waitFor(() => expect(screen.getByText(/换会话仍在/)).toBeTruthy());
   });
 
-  it('保存到本会话不碰部署默认', async () => {
+  it('仅本次会话走会话端点，不碰全局默认', async () => {
     mount(config());
+    fireEvent.click(screen.getByRole('button', { name: /采样/ }));
     fireEvent.change(screen.getByLabelText('温度'), { target: { value: '0.3' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存到本会话' }));
+    fireEvent.click(screen.getByRole('button', { name: '仅本次会话' }));
     await waitFor(() => expect(saveSession).toHaveBeenCalledTimes(1));
     expect(saveSession.mock.calls[0][0]).toBe('s1');
     expect(saveSession.mock.calls[0][1]).toEqual({ temperature: 0.3 });
     expect(saveDefaults).not.toHaveBeenCalled();
   });
 
-  it('设为部署默认先二次确认，确认后才写', async () => {
-    mount(config());
-    fireEvent.change(screen.getByLabelText('温度'), { target: { value: '0.4' } });
-    fireEvent.click(screen.getByRole('button', { name: '设为部署默认' }));
-    expect(screen.getByText(/将影响所有会话/)).toBeTruthy();
-    expect(saveDefaults).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '确认写入' }));
-    await waitFor(() => expect(saveDefaults).toHaveBeenCalledTimes(1));
-    // 乐观并发：必须带上读到的 version
-    expect(saveDefaults.mock.calls[0][1]).toBe(3);
-  });
-
   it('越界时禁用保存（服务端仍是唯一裁判）', () => {
     mount(config());
+    fireEvent.click(screen.getByRole('button', { name: /采样/ }));
     fireEvent.change(screen.getByLabelText('温度'), { target: { value: '3' } });
     expect(screen.getByText(/temperature 不能大于 2/)).toBeTruthy();
-    const save = screen.getByRole('button', { name: '保存到本会话' }) as HTMLButtonElement;
+    const save = screen.getByRole('button', { name: '仅本次会话' }) as HTMLButtonElement;
     expect(save.disabled).toBe(true);
   });
 
@@ -167,7 +231,7 @@ describe('ModelConfigPopover', () => {
     mount(config());
     fireEvent.change(screen.getByLabelText('模型名'), { target: { value: 'another-model' } });
     expect(screen.getByText(/下一次模型调用即生效/)).toBeTruthy();
-    const save = screen.getByRole('button', { name: '保存到本会话' }) as HTMLButtonElement;
+    const save = screen.getByRole('button', { name: '保存为全局默认' }) as HTMLButtonElement;
     expect(save.disabled).toBe(true);
     fireEvent.click(screen.getByLabelText('我了解上面的影响'));
     expect(save.disabled).toBe(false);
@@ -175,42 +239,53 @@ describe('ModelConfigPopover', () => {
 
   it('只读项不可编辑但可见，并说明在哪改', () => {
     mount(config());
-    // 只读行只有说明文字，没有输入框
+    fireEvent.click(screen.getByRole('button', { name: /高级与只读/ }));
     expect(screen.queryByLabelText('api_key')).toBeNull();
     expect(screen.getAllByText('不可在界面修改').length).toBeGreaterThan(0);
     expect(screen.getByText(/DEVOPS_AGENT_API_KEY/)).toBeTruthy();
   });
 
-  it('恢复默认只清本会话', async () => {
+  it('恢复本会话只清会话覆盖', async () => {
     mount(config());
-    fireEvent.click(screen.getByRole('button', { name: '恢复默认' }));
+    fireEvent.click(screen.getByRole('button', { name: '恢复本会话' }));
     await waitFor(() => expect(clearSession).toHaveBeenCalledWith('s1'));
+  });
+
+  it('草稿未保存时 Esc 不静默丢弃改动', () => {
+    const dialog = mount(config());
+    fireEvent.click(screen.getByRole('button', { name: /采样/ }));
+    fireEvent.change(screen.getByLabelText('温度'), { target: { value: '0.3' } });
+    const cancel = new Event('cancel', { cancelable: true });
+    fireEvent(dialog, cancel);
+    expect(cancel.defaultPrevented).toBe(true);
+    expect(screen.getByText(/有未保存的改动/)).toBeTruthy();
+  });
+
+  it('点徽标加载并显示四层链路', async () => {
+    mount(config());
+    fireEvent.click(screen.getByRole('button', { name: '模型名 的来源' }));
+    await waitFor(() => expect(loadLayers).toHaveBeenCalledWith('s1'));
+    const chain = await screen.findByLabelText('模型名 的来源链');
+    expect(chain.textContent).toContain('本次会话');
+    expect(chain.textContent).toContain('config/model.local.yaml');
+    expect(chain.textContent).toContain('只读');
   });
 
   it('清空上下文窗口后保存：发 null 删覆盖，而不是写回继承值', async () => {
     mount(config(), 0);
     fireEvent.change(screen.getByLabelText('上下文窗口'), { target: { value: '' } });
-    // 改窗口属于危险项，要先勾确认；重点是请求体里不能出现继承来的 128000
     fireEvent.click(screen.getByLabelText('我了解上面的影响'));
-    fireEvent.click(screen.getByRole('button', { name: '保存到本会话' }));
+    fireEvent.click(screen.getByRole('button', { name: '仅本次会话' }));
     await waitFor(() => expect(saveSession).toHaveBeenCalledTimes(1));
     expect(saveSession.mock.calls[0][1]).toEqual({ context_size: null });
-  });
-
-  it('Esc 关闭面板（键盘用户不能只能靠点外面）', () => {
-    mount(config());
-    expect(screen.queryByRole('dialog', { name: '模型设置' })).toBeTruthy();
-    fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByRole('dialog', { name: '模型设置' })).toBeNull();
   });
 
   it('模型名保存前 trim 掉首尾空格', async () => {
     mount(config());
     const input = screen.getByLabelText('模型名');
     fireEvent.change(input, { target: { value: '  qwen3.8-flash  ' } });
-    // 离开输入框时才归一：空白消除后与生效值一致，危险提示也随之消失
     fireEvent.blur(input);
-    fireEvent.click(screen.getByRole('button', { name: '保存到本会话' }));
+    fireEvent.click(screen.getByRole('button', { name: '仅本次会话' }));
     await waitFor(() => expect(saveSession).toHaveBeenCalledTimes(1));
     expect(saveSession.mock.calls[0][1]).toEqual({ model: 'qwen3.8-flash' });
   });
@@ -219,7 +294,7 @@ describe('ModelConfigPopover', () => {
     mount(config());
     fireEvent.change(screen.getByLabelText('模型名'), { target: { value: '' } });
     fireEvent.click(screen.getByLabelText('我了解上面的影响'));
-    fireEvent.click(screen.getByRole('button', { name: '保存到本会话' }));
+    fireEvent.click(screen.getByRole('button', { name: '仅本次会话' }));
     await waitFor(() => expect(saveSession).toHaveBeenCalledTimes(1));
     expect(saveSession.mock.calls[0][1]).toEqual({ model: null });
   });

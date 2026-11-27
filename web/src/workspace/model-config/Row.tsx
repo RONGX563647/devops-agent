@@ -1,9 +1,13 @@
-/** 设置面板的一行：左标签 + 中间控件 + 右来源。 */
+/** 来源徽标：一个参数值来自哪一层。
+ *
+ * `framework-default` 不是「默认值」，是「没人设过」——用虚边 + 淡色表示，
+ * 正是 context_size 猜了半年没被发现的根因。`pending` 表示草稿还没保存，
+ * 这时不能谎称它已经是本会话的值。
+ */
 
-import type { ReactNode } from 'react';
 import type { ModelSource } from '../../types';
 
-/** 来源徽标文案。`framework-default` 不是「默认值」，是「没人设过」。 */
+/** 来源徽标文案。 */
 export const SOURCE_LABEL: Record<ModelSource, string> = {
   session: '本会话',
   stored: '部署默认',
@@ -12,26 +16,10 @@ export const SOURCE_LABEL: Record<ModelSource, string> = {
   'framework-default': '未配置',
 };
 
-/** 来源徽标：只读项与框架默认各用不同色调，一眼能分出「这行能不能改」。 */
-function SourceBadge({ source }: { source: ModelSource }) {
-  return <span className={`mc-src is-${source}`}>{SOURCE_LABEL[source] ?? source}</span>;
-}
-
-interface RowProps {
-  label: string;
-  source?: ModelSource;
-  hint?: string;
-  children: ReactNode;
-}
-
-/** 一行：左标签 + 中间控件 + 右来源。 */
-export function Row({ label, source, hint, children }: RowProps) {
+export function SourceBadge({ source, pending }: { source: ModelSource; pending?: boolean }) {
   return (
-    <div className="mc-row">
-      <span className="mc-row-label">{label}</span>
-      <span className="mc-row-control">{children}</span>
-      {source ? <SourceBadge source={source} /> : <span />}
-      {hint && <span className="mc-row-hint">{hint}</span>}
-    </div>
+    <span className={`mc-src is-${pending ? 'pending' : source}`}>
+      {pending ? '待保存' : (SOURCE_LABEL[source] ?? source)}
+    </span>
   );
 }

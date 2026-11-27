@@ -25,9 +25,13 @@ export interface ConfigDomainSummary {
 
 /** 配置库健康：读不到覆盖时所有域静默回落代码默认值，界面必须能说出来。 */
 export interface ConfigHealth {
+  /** db / file；环境变量拼错时 /health 报 invalid */
+  mode?: string;
   /** 最近一次读库失败；正常时为空串。缺省视为「没坏」（兼容旧服务端）。 */
   db_error?: string;
   degraded?: boolean;
+  /** /health 用的错误原文（与 db_error 同义，仅命名不同） */
+  error?: string;
 }
 
 export interface ConfigIndex extends ConfigHealth {

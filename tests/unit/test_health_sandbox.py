@@ -16,15 +16,20 @@ client = TestClient(app)
 class _Manager:
     def status(self) -> dict[str, object]:
         return {
-            "mode": "docker",
-            "effective": "docker",
+            "mode": "opensandbox",
+            "effective": "opensandbox",
+            "provider": "opensandbox",
             "degraded": False,
             "reason": "",
             "workspace_id": "wid-1",
-            "image": "python:3.11-slim",
+            "sandbox_id": "sbx-1",
+            "image": "devops-agent-sandbox@sha256:abc",
             "host_workdir": "/host/ws",
             "tool_workdir": "/workspace",
             "containers": 1,
+            "init_ms": 1800,
+            "reused": None,
+            "bootstrap_skipped": True,
         }
 
 
@@ -32,14 +37,20 @@ def test_describe_sandbox_without_manager_defaults_local() -> None:
     state = SimpleNamespace(sandbox_manager=None, execution=None, sandbox_error=None)
     payload = describe_sandbox(state)
     assert payload["effective"] == "local"
+    assert payload["provider"] == "local"
     assert payload["degraded"] is False
+    assert payload["reused"] is None
+    assert payload["bootstrap_skipped"] is None
 
 
 def test_describe_sandbox_reports_manager_status() -> None:
     state = SimpleNamespace(sandbox_manager=_Manager(), execution=None, sandbox_error=None)
     payload = describe_sandbox(state)
-    assert payload["mode"] == "docker"
+    assert payload["mode"] == "opensandbox"
+    assert payload["provider"] == "opensandbox"
     assert payload["workspace_id"] == "wid-1"
+    assert payload["sandbox_id"] == "sbx-1"
+    assert payload["init_ms"] == 1800
     assert payload["containers"] == 1
 
 

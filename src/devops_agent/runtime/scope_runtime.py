@@ -85,10 +85,12 @@ class AgentScopeRuntime:
         self._profile = profile if profile is not None else default_profile()
         self._execution = execution
         self._workdir = workdir if workdir is not None else resolve_workdir()
-        # 工具/权限使用工具路径（docker 为 /workspace），宿主路径只做审计。
+        # 工具/权限使用工具路径（docker / opensandbox 为 /workspace），宿主路径只做审计。
         self._tool_workdir = execution.tool_workdir if execution is not None else str(self._workdir)
         self._backend_factory: BackendFactory | None = (
-            execution.backend_factory if execution is not None and execution.is_docker else None
+            execution.backend_factory
+            if execution is not None and execution.uses_shared_backend
+            else None
         )
         # 热替换要保住这两件装配期的依赖：换 toolkit 时密钥注入不能丢，
         # 换档位时末尾的档位说明必须同步改，否则「切了但模型还按旧档写」。

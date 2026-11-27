@@ -1,10 +1,12 @@
-"""执行目标：local/docker 的路径与 shell 映射。"""
+"""执行目标：local/docker/opensandbox 的路径与 shell 映射。"""
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from agentscope.tool import LocalBackend
+from agentscope.workspace import OpenSandboxWorkspace
 
 from devops_agent.executor.boundary import build_docker_workspace, build_local_workspace
 from devops_agent.executor.target import CONTAINER_SHELL, CONTAINER_WORKDIR, build_target
@@ -21,6 +23,15 @@ def _fake_docker(host: Path):
     return workspace
 
 
+def _fake_opensandbox(host: Path):
+    """构造未启动的 OpenSandboxWorkspace，并注入 backend / sandbox id。"""
+    workspace = OpenSandboxWorkspace(image="fake:1")
+    workspace._backend = LocalBackend()  # noqa: SLF001 - 测试替身
+    # sandbox_id 是公开属性，内部读 _sandbox.id；这里只伪造句柄，不碰实现字段逻辑。
+    workspace._sandbox = SimpleNamespace(id="sbx-1")  # noqa: SLF001 - 测试替身
+    return workspace
+
+
 def test_local_target_maps_host_path(tmp_path: Path) -> None:
     workspace = build_local_workspace(str(tmp_path))
     target = build_target(workspace, tmp_path)
@@ -28,8 +39,10 @@ def test_local_target_maps_host_path(tmp_path: Path) -> None:
     assert target.mode == "local"
     assert target.tool_workdir == str(tmp_path)
     assert target.is_docker is False
+    assert target.uses_shared_backend is False
     assert target.shell
     assert target.degraded_reason == ""
+    assert target.init_ms == 0
 
 
 def test_docker_target_maps_container_path(tmp_path: Path) -> None:
@@ -40,8 +53,24 @@ def test_docker_target_maps_container_path(tmp_path: Path) -> None:
     assert target.tool_workdir == CONTAINER_WORKDIR
     assert target.shell == CONTAINER_SHELL
     assert target.is_docker is True
+    assert target.uses_shared_backend is True
     assert target.host_workdir == tmp_path
     # docker 模式六个工具共享同一个 backend
+    assert target.backend_factory() is target.backend
+
+
+def test_opensandbox_target_maps_container_path(tmp_path: Path) -> None:
+    """OpenSandboxWorkspace 不是 DockerWorkspace 子类，必须单独分派。"""
+    workspace = _fake_opensandbox(tmp_path)
+    target = build_target(workspace, tmp_path, init_ms=1234)
+
+    assert target.mode == "opensandbox"
+    assert target.tool_workdir == CONTAINER_WORKDIR
+    assert target.shell == CONTAINER_SHELL
+    assert target.is_docker is False
+    assert target.uses_shared_backend is True
+    assert target.sandbox_id == "sbx-1"
+    assert target.init_ms == 1234
     assert target.backend_factory() is target.backend
 
 

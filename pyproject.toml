@@ -31,6 +31,9 @@ parse = ["pypdf>=4.0"]
 sanitize = ["nh3>=0.2", "trafilatura>=1.8"]
 # OpenJudge 评测基准：第三方包只在 devops_agent/openjudge/ 内 import，保持可选依赖隔离
 openjudge = ["py-openjudge==0.2.5"]
+# OpenSandbox 执行面（SPEC-0019）：未装时 mode=local/docker 完全不受影响，
+# mode=opensandbox 由 SandboxManager 按 required/auto 语义降级并给出原因码。
+opensandbox = ["agentscope[workspace-opensandbox]>=2.0"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -67,6 +70,12 @@ strict = true
 # py-openjudge 未提供 py.typed，裁判模块只能当无类型依赖用；其余仍然严格检查。
 [[tool.mypy.overrides]]
 module = ["openjudge.*"]
+ignore_missing_imports = true
+
+# opensandbox 是可选 extra：未安装时 mypy 仍要能检查 executor 层，
+# 运行时路径按 SPEC-0019 的 required/auto 语义降级。
+[[tool.mypy.overrides]]
+module = ["opensandbox.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

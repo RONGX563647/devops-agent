@@ -29,6 +29,50 @@ def select_runtime() -> AgentRuntime:
     return EchoRuntime()
 
 
+def pick_runtime() -> AgentRuntime:
+    """装配期的选择，带降级：装配失败退回 Echo 并喊出来。
+
+    为什么不在 `select_runtime` 里降级：测试要能拿到真实异常。生产入口需要的是
+    「配置库坏了也能起来服务，让人看到 /health 而不是 connection refused」——
+    这与 `warn_missing_tools` 的取舍一致：降级是可用状态，只报警不拒绝启动。
+    """
+    try:
+        return select_runtime()
+    except Exception:  # noqa: BLE001 - 任何装配失败都不该拦住进程
+        logger.exception("运行时装配失败，降级为 Echo；对话不会调用模型")
+        return EchoRuntime()
+
+
+def load_settings() -> Settings:
+    """装配期读取网关策略；失败时用代码默认值，同样不拦住启动。
+
+    注意 `gateway` 域的 `hot=restart`：策略在装配期固定，所以坏库降级出来的
+    默认值会一直用到进程重启 —— 这也是必须让 `/health` 说出「配置降级」的原因。
+    """
+    try:
+        return Settings.load()
+    except Exception:  # noqa: BLE001 - 策略读不到不该拦住进程
+        logger.exception("网关策略加载失败，使用代码默认值")
+        return Settings()
+
+
+def _effective_model() -> str:
+    """模型名以真正生效的解析结果为准。
+
+    旧实现读 `Settings().model()`（只读 `DEVOPS_AGENT_MODEL`），而实际跑的是
+    `model_settings.resolve()` 的结果 —— 界面在「模型抽屉里选了 A、环境变量写着 B」
+    时会显示 B。自述字段说错比不说更糟，所以走同一个解析器。
+    """
+    try:
+        from devops_agent.model_settings import resolve, stored_defaults, values_of
+
+        values = values_of(resolve(stored=stored_defaults(), domain=Settings().domain()))
+        return str(values.get("model") or "")
+    except Exception:  # noqa: BLE001 - 自述失败不该让 /health 500
+        logger.warning("读取生效模型名失败，回落环境变量", exc_info=True)
+        return Settings().model()
+
+
 def describe_runtime(runtime: AgentRuntime) -> dict[str, str]:
     """当前运行时的自述，供 `/health` 与前端横幅使用。
 
@@ -43,7 +87,7 @@ def describe_runtime(runtime: AgentRuntime) -> dict[str, str]:
             "code": CODE_NO_CREDENTIALS,
             "notice": NOTICE_NO_CREDENTIALS,
         }
-    return {"kind": KIND_AGENTSCOPE, "model": Settings().model(), "code": "", "notice": ""}
+    return {"kind": KIND_AGENTSCOPE, "model": _effective_model(), "code": "", "notice": ""}
 
 
 def warn_missing_tools() -> None:

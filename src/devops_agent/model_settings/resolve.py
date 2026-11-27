@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -9,9 +10,12 @@ from enum import StrEnum
 from typing import Any
 
 from devops_agent.config import ModelSettings, load_model
+from devops_agent.config_store import health as config_health
 from devops_agent.model_settings import file_store
 from devops_agent.model_settings.bounds import EDITABLE
 from devops_agent.observability import repository as repo
+
+logger = logging.getLogger(__name__)
 
 MODEL_ENV = "DEVOPS_AGENT_MODEL"
 # settings 表里这份配置的键名：一张 KV 表装所有「前端可改的配置域」
@@ -108,12 +112,20 @@ def invalidate() -> None:
 
 
 def _read_stored() -> tuple[dict[str, Any], int]:
-    """从 settings 表读部署默认；库不可用时返回空配置（回落 yaml/env）。"""
+    """从 settings 表读部署默认；库不可用时返回空配置（回落 yaml/env）。
+
+    `except Exception` 保留（存储故障不该挡住一次对话），但不再静默：与
+    `config_store` 共用一份降级计数，`/health` 的 `config.degraded` 会亮起来。
+    旧实现的三种失败语义各说各话（500 / 静默 / 报错），排障时根本分不清是
+    「没配」还是「读不到」。
+    """
     try:
         with repo.connect() as conn:
             repo.init_db(conn)
             saved = repo.load_setting(conn, SETTING_KEY)
-    except Exception:  # noqa: BLE001 - 存储故障不该挡住一次对话
+    except Exception as exc:  # noqa: BLE001 - 存储故障不该挡住一次对话
+        config_health.note_failure("model", f"{type(exc).__name__}: {exc}")
+        logger.warning("模型参数库不可读，回落 config/model*.yaml 与环境变量", exc_info=True)
         return {}, 0
     return saved if saved is not None else ({}, 0)
 

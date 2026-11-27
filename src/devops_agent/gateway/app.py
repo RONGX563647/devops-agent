@@ -8,23 +8,34 @@
 1. `load_env()` 只调一次，且早于任何「读 env 做决定」的代码；
 2. 不把它放进 `select_runtime()` —— 否则测试里 monkeypatch.delenv 会被 .env 填回；
 3. 启动告警在挂完路由之后，失败不影响服务可用。
+
+降级约定：运行时装配失败、网关策略读不到时**不拒绝启动**，退回 Echo / 代码默认并
+打日志 —— 配置库坏了应该是「/health 显示降级」，不是「端口连不上」。唯一的例外是
+`DEVOPS_AGENT_CONFIG_MODE` 拼错：那是静态配置错误，两种模式的语义完全不同，
+必须立刻报错而不是猜一个。
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import FastAPI
 
+from devops_agent.config_store import schema
 from devops_agent.config_store.api import router as config_router
 from devops_agent.env import load_env
 from devops_agent.gateway.bootstrap import (
     describe_runtime,
-    select_runtime,
+    load_settings,
+    pick_runtime,
     warn_memory_backend,
     warn_missing_tools,
     warn_runtime,
 )
+
+# 兼容再导出：测试与旧代码从 `gateway.app` 取 `select_runtime`。
+from devops_agent.gateway.bootstrap import select_runtime as select_runtime
 from devops_agent.gateway.routes import (
     confirm_router,
     health_router,
@@ -32,7 +43,6 @@ from devops_agent.gateway.routes import (
     stream_router,
 )
 from devops_agent.gateway.routes.memory import router as memory_router
-from devops_agent.gateway.settings import Settings
 from devops_agent.input.api import router as attachments_router
 from devops_agent.model_api import router as model_config_router
 from devops_agent.observability.api import router as observability_router
@@ -45,6 +55,8 @@ from devops_agent.tools.api import router as tools_router
 from devops_agent.tools.context_api import router as context_router
 
 APP_TITLE = "devops-agent"
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
@@ -59,11 +71,13 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
     """
     # 1) .env 只加载一次，且早于任何「读 env 做决定」的代码
     load_env()
+    # 1.5) 配置模式是静态错误必须当场报：`dbb` 不该被当成 file 静默跑
+    schema.mode()
     # 2) 运行时：显式注入优先，否则按凭据选择（配了 key 走真模型，否则 Echo）
     application = FastAPI(title=APP_TITLE)
-    application.state.runtime = runtime if runtime is not None else select_runtime()
+    application.state.runtime = runtime if runtime is not None else pick_runtime()
     # 3) 策略与会话注册表：注册表懒建 —— 替换 runtime 后下一次请求自然用新工厂
-    application.state.settings = Settings.load()
+    application.state.settings = load_settings()
     application.state.sessions = None
     application.state.sessions_base = None
     # 4) 路由：外部能力模块在前，网关自己的 HTTP 面在后（/health 先于流式端点）
@@ -88,9 +102,12 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
     application.include_router(confirm_router)
     application.include_router(session_router)
     # 5) 启动告警：只喊一次，且不 fail-fast（缺 rg 不该拒绝启动）
-    warn_missing_tools()
-    warn_memory_backend()
-    warn_runtime(application.state.runtime)
+    try:
+        warn_missing_tools()
+        warn_memory_backend()
+        warn_runtime(application.state.runtime)
+    except Exception:  # noqa: BLE001 - 告警自身失败更不能拦住服务
+        logger.warning("启动告警执行失败", exc_info=True)
     return application
 
 

@@ -24,6 +24,7 @@ from devops_agent.governance.model import PermissionProfile
 from devops_agent.governance.presets import default_profile
 from devops_agent.memory.observer import MemoryMiddleware
 from devops_agent.memory.runtime import MemoryRuntime
+from devops_agent.memory.snapshot import record_restore_failure
 from devops_agent.model_settings import ModelParams, effective_params
 from devops_agent.runtime.chat_model import build_chat_model, build_context_config
 from devops_agent.runtime.compression import CompressionMiddleware, CompressionSink
@@ -298,7 +299,7 @@ def session_runtime_factory(base: object) -> Callable[..., Any]:
     ) -> Any:
         if not isinstance(base, AgentScopeRuntime):
             return base
-        state = AgentState.model_validate_json(state_json) if state_json else None
+        state = _restore_state(session_id, state_json)
         return build_agentscope_runtime(
             profile=profile,
             state=state,
@@ -308,3 +309,19 @@ def session_runtime_factory(base: object) -> Callable[..., Any]:
         )
 
     return make
+
+
+def _restore_state(session_id: str, state_json: str | None) -> AgentState | None:
+    """解析会话快照；坏快照退回新会话，但必须留痕。
+
+    直接抛会让整个会话建不起来（用户看到 500）；静默吞掉则会「历史莫名清空」，
+    排障时连一句日志都没有。折中是记 warning + 计数，`/health` 能看到
+    `memory.restores.failed` 在涨（SPEC-0013 §18.2 M5）。
+    """
+    if not state_json:
+        return None
+    try:
+        return AgentState.model_validate_json(state_json)
+    except Exception as exc:  # noqa: BLE001 - 坏快照只能按新会话处理
+        record_restore_failure(session_id, exc)
+        return None

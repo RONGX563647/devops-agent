@@ -21,6 +21,7 @@ from devops_agent.env import load_env
 from devops_agent.gateway.bootstrap import (
     describe_runtime,
     select_runtime,
+    warn_memory_backend,
     warn_missing_tools,
     warn_runtime,
 )
@@ -88,6 +89,7 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
     application.include_router(session_router)
     # 5) 启动告警：只喊一次，且不 fail-fast（缺 rg 不该拒绝启动）
     warn_missing_tools()
+    warn_memory_backend()
     warn_runtime(application.state.runtime)
     return application
 

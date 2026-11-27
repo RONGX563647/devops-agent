@@ -21,17 +21,27 @@ class ShortTermPolicy(BaseModel):
 
 
 class EpisodicPolicy(BaseModel):
-    """中期（会话情景）的卡片与版本策略。"""
+    """中期（会话情景）的卡片与版本策略。
+
+    没有 `trigger_turns`：中期只由框架的压缩阈值触发（`trigger_ratio × window`），
+    曾经存在的「每 N 轮压缩」从未有消费点，留着只会让调参的人以为改了有效果
+    （SPEC-0013 §18.2 M2）。
+    """
 
     enabled: bool = True
-    trigger_turns: int = Field(default=6, ge=1, le=200)
+    # 卡片正文上限：既是写库前的截断，也是注入时的正文上限（与 note 预算取小）
     max_chars: int = Field(default=3000, ge=200, le=200_000)
     max_versions: int = Field(default=20, ge=1, le=500)
     ttl_days: int = Field(default=30, ge=1, le=3650)
 
 
 class LongTermPolicy(BaseModel):
-    """长期（语义 + 程序性）的后端与检索策略。"""
+    """长期（语义 + 程序性）的后端与检索策略。
+
+    `backend` 是**请求**而不是承诺：`mem0` / `agentic` 尚未接入，请求它们时
+    会降级为 `local` 并在状态接口里写明 `requested` / `effective` / `reason`
+    （SPEC-0013 §18.2 M1）。
+    """
 
     enabled: bool = True
     backend: Literal["auto", "mem0", "agentic", "local", "off"] = "auto"
@@ -40,7 +50,9 @@ class LongTermPolicy(BaseModel):
     min_score: float = Field(default=0.35, ge=0, le=1)
     max_entries: int = Field(default=200, ge=1, le=10_000)
     ttl_days: int = Field(default=90, ge=1, le=3650)
-    write_on: Literal["turn", "session_end"] = "turn"
+    # 只有「回合结束写入」一种实现；`session_end` 曾在枚举里但从未被实现，
+    # 收窄后写错值会在加载配置时就报错，而不是静默不写（SPEC-0013 §18.2 M4）。
+    write_on: Literal["turn"] = "turn"
 
 
 class MemoryBudgetPolicy(BaseModel):
@@ -81,7 +93,11 @@ class MemoryTracePolicy(BaseModel):
 
 
 class MemoryPolicy(BaseModel):
-    """memory.yaml 的完整类型化视图（三层 + 预算 + 上下文 + 轨迹）。"""
+    """memory.yaml 的完整类型化视图（三层 + 预算 + 上下文 + 轨迹）。
+
+    没有 `compress` 段：曾经的 `fail_open` 没有任何消费点，删掉而不是留着当装饰
+    （SPEC-0013 §18.8 M12）。压缩失败时的行为由 `CompressionMiddleware` 固定。
+    """
 
     enabled: bool = True
     user_id: str = ""
@@ -90,7 +106,6 @@ class MemoryPolicy(BaseModel):
     long_term: LongTermPolicy = Field(default_factory=LongTermPolicy)
     budget: MemoryBudgetPolicy = Field(default_factory=MemoryBudgetPolicy)
     context: MemoryContextPolicy = Field(default_factory=MemoryContextPolicy)
-    compress: dict[str, bool] = Field(default_factory=lambda: {"fail_open": True})
     trace: MemoryTracePolicy = Field(default_factory=MemoryTracePolicy)
 
 

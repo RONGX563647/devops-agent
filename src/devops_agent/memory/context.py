@@ -3,7 +3,8 @@
 不变量：
 - 只注入「有内容」的段；空段不产生标题，避免每轮多一段无效文本。
 - 中期卡先于长期命中；调用方保证档位说明在两者之前。
-- 只放预览与结论，不放原文；长度按字符预算硬截断。
+- 注入长度由「卡片 max_chars ∩ note 里分给中期的预算」决定；
+  轨迹里的 `summary_preview_chars` 只用于接口预览，不参与注入。
 """
 
 from __future__ import annotations
@@ -33,12 +34,15 @@ def _bullets(items: list[str], limit: int) -> str:
 _CARD_SECTIONS = (("产物", "artifacts"), ("未决", "pending"), ("错误", "errors"))
 
 
-def _card_sections(card: dict[str, Any], max_chars: int, summary_preview_chars: int) -> list[str]:
+def _card_sections(card: dict[str, Any], max_chars: int, body_max_chars: int) -> list[str]:
     version = int(card.get("version", 0) or 0)
     parts = [EPISODIC_HEADER.format(version=version)]
     text = str(card.get("text") or "").strip()
     if text:
-        parts.append(clip(text, summary_preview_chars))
+        # 正文是权威摘要：上限取「卡片 max_chars」与「note 里分给中期的预算」的较小值。
+        # 这里曾经用轨迹预览长度（160 字）截断，等于把「展示用的预览」当成「注入用的正文」，
+        # 真实会话的 compress_context 摘要远超 160 字，注入侧被静默截断（SPEC-0013 §18.2 M3）。
+        parts.append(clip(text, body_max_chars))
     for label, key in _CARD_SECTIONS:
         items = [str(item) for item in card.get(key) or []]
         if items:
@@ -46,9 +50,9 @@ def _card_sections(card: dict[str, Any], max_chars: int, summary_preview_chars: 
     return parts
 
 
-def format_episodic(card: dict[str, Any], *, max_chars: int, summary_preview_chars: int) -> str:
+def format_episodic(card: dict[str, Any], *, max_chars: int, body_max_chars: int) -> str:
     """把中期卡渲染成一段；text 是权威摘要，其余字段只做补充。"""
-    sections = _card_sections(card, max_chars, summary_preview_chars)
+    sections = _card_sections(card, max_chars, body_max_chars)
     return clip("\n".join(sections), max_chars)
 
 
@@ -70,17 +74,17 @@ def build_note(
     *,
     note_max_chars: int,
     episodic_ratio: float,
-    summary_preview_chars: int,
+    card_max_chars: int,
     top_k: int,
 ) -> str:
     """中期 + 长期合成为一条 note；两段都空时返回空串。"""
     episodic_budget = int(note_max_chars * episodic_ratio)
     long_budget = max(0, note_max_chars - episodic_budget)
+    # 正文上限 = min(卡片 max_chars, 中期在 note 里的预算)：两个上限都可能更紧
+    body_max_chars = min(card_max_chars, episodic_budget)
     sections: list[str] = []
     if card:
-        episodic = format_episodic(
-            card, max_chars=episodic_budget, summary_preview_chars=summary_preview_chars
-        )
+        episodic = format_episodic(card, max_chars=episodic_budget, body_max_chars=body_max_chars)
         if episodic:
             sections.append(episodic)
     long_term = format_long_term(hits, top_k=top_k, max_chars=long_budget)

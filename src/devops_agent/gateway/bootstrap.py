@@ -61,6 +61,25 @@ def warn_missing_tools() -> None:
         )
 
 
+def warn_memory_backend() -> None:
+    """长期记忆请求了未接入的后端时喊一次。
+
+    不喊的后果是「配置里写着 mem0、实际跑的是 local」，而这两者对用户是
+    同一句「有记忆」，只有排障时才会发现根本没走向量检索。与缺依赖同理：
+    只报警不拒绝启动，降级本身是可用状态。
+    """
+    from devops_agent.memory.runtime import memory_status
+
+    status = memory_status()
+    if status.get("reason"):
+        logger.warning(
+            "长期记忆降级：requested=%s effective=%s（%s）",
+            status.get("requested", ""),
+            status.get("effective", ""),
+            status["reason"],
+        )
+
+
 def warn_runtime(runtime: AgentRuntime) -> None:
     """降级到 Echo 只打日志，不拒绝启动 —— 自检和测试都要用 Echo。
 

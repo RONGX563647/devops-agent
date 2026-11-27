@@ -158,7 +158,9 @@ def _drop_old_turns(messages: list[Msg], max_turns: int, report: TrimReport) -> 
 def trim_messages(messages: list[Msg], policy: ShortTermPolicy) -> tuple[list[Msg], TrimReport]:
     """对请求 messages 做一次确定性裁剪；返回新列表与统计。
 
-    顺序：工具结果头尾保留 → 重复读取去重 → 淘汰最旧轮次。
+    顺序：重复读取去重 → 工具结果头尾保留 → 淘汰最旧轮次。
+    「去重在前」不是笔误：先截断会把同一份输出压成同一段头尾，
+    重复读取反而认不出来。
     """
     report = TrimReport()
     # 去重必须看原文：先截断会让「同一份输出」变成同一段头尾，反而难以识别

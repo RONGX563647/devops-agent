@@ -98,8 +98,8 @@
 
 职责：跨会话记住“这个人/这台机器的稳定事实”。
 
-- 后端：`mem0` / `agentic` / `auto`；`mem0` 只在 `memory/` 内 import，缺包时退化。
-- 写入：回合结束或会话结束（默认 `session_end`）；只写稳定、可复用、非敏感内容。
+- 后端：请求侧保留 `mem0` / `agentic` / `auto`，`effective` 目前只有 `local` / `off`；请求未接入的后端时降级为 `local`，状态接口用 `requested` / `effective` / `reason` 三字段说明（§18.2 M1）。
+- 写入：只有「回合结束写入」一种实现（`write_on: turn`）；`session_end` 未实现，配置里写它会在加载时报错。
 - 去重/冲突：交给后端（mem0 的 update/delete），不自研合并。写入前过 `input/pipeline/redact.py` 脱敏。
 - 读取：`top_k` + `min_score` + 去重 + 字符预算；默认 `scope=session`，鉴权后再开 `user`。
 - 遗忘：`ttl_days`、`max_entries`、删除 API、低置信度衰减；会话结束时做 consolidation。
@@ -216,7 +216,7 @@ Hmax = 0.8 × 128000 − 8000 − 12800 = 81600
 约束与降级：
 
 - `S + O >= R × W` 时 `Hmax=0`：视为配置错误，启动期告警并在 `/health` 的 `memory.reason` 里说明；运行时仍可用，但不启用记忆注入。
-- 某层未启用（如长期 `off`）时，其份额按 6:1:1 并入短期/中期/余量，不重新定义比例。
+- 某层未启用（如长期 `off`）时，其份额**全部并入短期**；`headroom` 不参与再分配（§18.4）。
 - token 计数取不到时用 `tools/context_api.py::estimate_tokens()` 估算，并在事件里标记 `estimated=true`；估算只影响预算分配，不影响是否压缩（压缩仍由框架判定）。
 
 ### 5.5 注入格式与去重
@@ -342,7 +342,7 @@ Hmax = 0.8 × 128000 − 8000 − 12800 = 81600
 | 层 | 触发条件 | 方法 | 产出 |
 |---|---|---|---|
 | 短期 | 工具结果超 `tool_output_chars`；重复读取；轮数超 `max_turns`；token 超短期份额 | 确定性裁剪/去重，无 LLM | 回收 token，保留头尾 |
-| 中期 | 框架压缩真正发生（`compressed=True`）；每 `trigger_turns` 轮；短期压缩后仍超预算 | `compress_context()` | 新版本记忆卡 |
+| 中期 | 框架压缩真正发生（`compressed=True`）；短期压缩后仍超预算 | `compress_context()` | 新版本记忆卡 |
 | 长期 | 会话结束；每 `consolidate_every_runs` 次运行 | 后端去重/合并/衰减 | 条目数收敛 |
 
 ### 6.3 三层压缩管线
@@ -481,19 +481,18 @@ memory:
     dedup_reads: true
   episodic:
     enabled: true
-    trigger_turns: 6
     max_chars: 3000
     max_versions: 20
     ttl_days: 30
   long_term:
     enabled: true
-    backend: auto          # auto | mem0 | agentic | off
+    backend: auto          # auto | mem0 | agentic | local | off（effective 只有 local / off）
     scope: session         # session | user
     top_k: 5
     min_score: 0.35
     max_entries: 200
     ttl_days: 90
-    write_on: session_end  # turn | session_end
+    write_on: turn         # 只有 turn；session_end 未实现，写它会在加载时报错
   budget:
     short_term_ratio: 0.50
     episodic_ratio: 0.30
@@ -506,8 +505,6 @@ memory:
     snapshot_max_chars: 1500000   # 会话快照体积上限
     snapshot_version: 2           # 写入新快照的版本号
     assemble_event: true          # 是否发 CONTEXT_ASSEMBLED
-  compress:
-    fail_open: true
   trace:
     query_preview_chars: 120
     hit_preview_chars: 80
@@ -678,3 +675,17 @@ P5-1 删除 `trigger_turns` 会同时影响 `openjudge/memory/variants.py`，**�
 - `variants.py:33` 传 `trigger_turns=6`，P5-1 必须同步删除；这是当前唯一会让评测直接崩掉的耦合点。
 - CP（压缩保真）的现役用例摘要都短于 160 字，所以当前通过**不能证明注入长度够用**：真实会话的 `compress_context` 摘要通常远超 160 字，M3 修好前这部分内容会在注入侧被静默截断。CP 目前只覆盖了短摘要场景。
 - M3 修完需要重跑 `off / short / full` 三档基线。历史批次的 gain 偏低时，注入截断是可疑原因之一，但只有重跑后才能把它与检索质量区分开。
+
+### 18.8 P5 实施补充
+
+落地时照 §18.5 的验收逐条写测试，暴露出三处需要在这里说清的口径差异。**本节优先于 18.2 中与之冲突的表述。**
+
+**M12（新增差距）`compress.fail_open` 同样是死配置。** 它只在 `MemoryPolicy` 里声明，全仓没有任何读取点；A17 要求「yaml 每个键都有消费点」时被扫出来。处置：删除 `MemoryPolicy.compress` 字段、`memory.yaml` 的 `compress` 段与 4.4 的示例片段。压缩失败时的行为固定在 `CompressionMiddleware`，不做可配开关 —— 一个没人读的开关比没有开关更容易误导。
+
+**A17 的校准：`trigger_turns` 用结构断言，不是「构造即报错」。** 18.5 原文要求「构造该配置应校验失败」，但 pydantic 默认忽略未知键（配置中心 `_build` 也依赖这一点丢弃旧键）。要让它报错就得给 `EpisodicPolicy` 加 `extra="forbid"`，代价是存量 `config.db` 里残留的 `trigger_turns` 覆盖会把整份配置打成无效、服务起不来。因此改为两条断言：字段不在 `EpisodicPolicy.model_fields` 里，且 `memory.yaml` 不含该键。`write_on=session_end` 仍然用校验失败来钉住 —— 它是枚举收窄，本来就该在加载期报错。
+
+**M5 / M6 的落点与时机。**
+
+- 版本戳写在 `AgentScopeRuntime.snapshot()` 里（`memory/snapshot.py::stamp_snapshot`），不依赖记忆是否启用：`/api/context` 读的是状态里的键，与记忆开关无关。
+- 恢复失败计数在 `memory.snapshot` 的进程级计数里，`/health` 的 `memory.restores` 暴露 `{restore_failures, last_error}`；空快照是新会话，不计数。
+- `MEMORY_TRIM(reason=snapshot_cap)` 在保存时发出，而保存发生在流结束之后，所以这一帧会在**下一次** `drain()` 时才被读走。这是已知且可接受的归属偏移：它描述的是「本轮开始时看到的历史被裁过」，不是「本轮请求裁剪」。

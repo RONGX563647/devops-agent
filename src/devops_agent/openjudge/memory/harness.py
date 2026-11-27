@@ -131,7 +131,7 @@ async def _privacy_audit(
         leak_runtime = MemoryRuntime(f"{leak_scope}:probe", leak_policy, MemorySink(), db_path)
         leak_count = 0
         for query in (*case.gold, *secrets):
-            _card, hits = await leak_runtime.recall(query)
+            _card, hits, _error = await leak_runtime.recall(query)
             leak_count += len(hits)
         run.metrics["leak_count"] = leak_count
 
@@ -354,7 +354,7 @@ def _count_retrieval(case: MemoryCase, hits: list[Any], run: CaseRun) -> None:
 
 
 async def _run_probe(case: MemoryCase, probe: Probe, runtime: MemoryRuntime, run: CaseRun) -> None:
-    card, hits = await runtime.recall(probe.question)
+    card, hits, _error = await runtime.recall(probe.question)
     note = runtime.note(card, hits)
     result = _probe_result(probe, note, hits)
     run.probes.append(result)

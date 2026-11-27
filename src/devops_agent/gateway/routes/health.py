@@ -13,6 +13,7 @@ from fastapi import APIRouter, Request
 
 from devops_agent.gateway.bootstrap import describe_runtime
 from devops_agent.memory.runtime import memory_status
+from devops_agent.memory.snapshot import restore_stats
 from devops_agent.tools.preflight import health_payload
 
 router = APIRouter()
@@ -37,7 +38,11 @@ def health(request: Request) -> dict[str, Any]:
             "episodic": status["episodic"],
             "long_term": status["long_term"],
             "backend": status["backend"],
+            "requested": status["requested"],
+            "effective": status["effective"],
             "reason": status["reason"],
+            # 快照损坏退回新会话的次数：非零说明「历史莫名清空」有据可查
+            "restores": restore_stats(),
         },
         "context": status["context"],
         **health_payload(),

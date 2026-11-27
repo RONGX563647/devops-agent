@@ -43,6 +43,8 @@ def health(request: Request) -> dict[str, Any]:
             "reason": status["reason"],
             # 快照损坏退回新会话的次数：非零说明「历史莫名清空」有据可查
             "restores": restore_stats(),
+            # 只放一个布尔：探针关心「记忆现在是不是在降级」，明细在 /api/memory/status
+            "degraded": bool(status["health"]["degraded"]),
         },
         "context": status["context"],
         **health_payload(),

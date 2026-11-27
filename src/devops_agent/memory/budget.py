@@ -45,17 +45,22 @@ def compute_budget(
     headroom_ratio: float,
     episodic_enabled: bool = True,
     long_term_enabled: bool = True,
+    estimate_margin_ratio: float = 0.0,
 ) -> Budget:
     """按「窗口 − 固定前缀 − 输出预留」推导历史面额度，再按比例分账。
 
     1) 阈值与窗口同源：threshold = trigger_ratio × window；
     2) 输出预留优先取 max_tokens，否则用 reserve_ratio × window；
-    3) 未启用的层把份额并给短期，不重新定义比例。
+    3) 固定前缀按 `estimate_margin_ratio` 上浮：估算低估时先吃安全垫，
+       而不是吃模型窗口（估算器误差不会因此把请求顶到边界）；
+    4) 未启用的层把份额并给短期，不重新定义比例。
+
+    `estimate_margin_ratio` 默认 0：保持纯函数的历史口径，调用方按策略传值。
     """
     window = max(0, int(context_size))
     threshold = _share(window, trigger_ratio)
     output = max(0, int(max_tokens)) if max_tokens else _share(window, reserve_ratio)
-    fixed = max(0, int(prefix_tokens))
+    fixed = max(0, int(prefix_tokens * (1.0 + max(0.0, estimate_margin_ratio))))
     history_max = max(0, threshold - fixed - output)
 
     short = short_term_ratio

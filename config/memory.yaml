@@ -37,6 +37,8 @@ memory:
     episodic_ratio: 0.30
     long_term_ratio: 0.10
     headroom_ratio: 0.10
+    # 固定前缀安全垫：估算低估时先吃这 10%，避免顶到窗口边界
+    estimate_margin_ratio: 0.10
 
   context:
     enabled: true
@@ -45,6 +47,7 @@ memory:
     snapshot_max_chars: 1500000
     snapshot_version: 2
     assemble_event: true
+    estimate_audit: true
 
   trace:
     query_preview_chars: 120

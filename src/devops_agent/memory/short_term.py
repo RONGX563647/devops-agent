@@ -12,6 +12,7 @@ from typing import Any
 
 from agentscope.message import Msg
 
+from devops_agent.memory.turns import is_user_turn
 from devops_agent.memory_policy import ShortTermPolicy
 
 _OMITTED = "[重复读取已省略]"
@@ -138,11 +139,7 @@ def _dedupe_reads(messages: list[Msg], report: TrimReport) -> list[Msg]:
 
 def _turn_starts(messages: list[Msg]) -> list[int]:
     """用户输入消息的位置；系统注脚与框架摘要不算一轮的开始。"""
-    return [
-        index
-        for index, msg in enumerate(messages)
-        if msg.role == "user" and msg.name not in ("system", "user")
-    ]
+    return [index for index, msg in enumerate(messages) if is_user_turn(msg)]
 
 
 def _drop_old_turns(messages: list[Msg], max_turns: int, report: TrimReport) -> list[Msg]:

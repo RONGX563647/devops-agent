@@ -19,7 +19,7 @@ from devops_agent.config import (
     load_model,
 )
 from devops_agent.input.pipeline.redact import redact_preview
-from devops_agent.memory import events
+from devops_agent.memory import events, health
 from devops_agent.memory.budget import Budget, compute_budget
 from devops_agent.memory.candidate import is_candidate
 from devops_agent.memory.context import build_note, clip
@@ -37,6 +37,27 @@ _MAX_WRITE_CHARS = 1000
 def _hit_hash(hits: list[Hit]) -> str:
     body = ",".join(str(hit.id) for hit in hits)
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:8]
+
+
+@dataclass(frozen=True, slots=True)
+class RecallResult:
+    """一轮召回的完整结果，含降级信息。
+
+    为什么不是一个 `(card, hits)` 元组：空元组既可能是「确实没有」，也可能是
+    「后端挂了被吞掉」。调用方要能区分，否则故障永远显示成正常的 miss。
+    """
+
+    card: dict[str, Any] | None
+    hits: list[Hit]
+    degraded: tuple[str, ...] = ()
+    reasons: dict[str, str] = field(default_factory=dict)
+    # 层的异常明细（`Type: msg`）：reason 给稳定枚举，errors 留给排障
+    errors: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def reason(self) -> str:
+        """降级原因（多层级用逗号连接）；无降级时为空串。"""
+        return ",".join(self.reasons[layer] for layer in self.degraded if layer in self.reasons)
 
 
 def _model_budget(agent: Agent, prefix_tokens: int, policy: Any) -> Budget:
@@ -59,6 +80,7 @@ def _model_budget(agent: Agent, prefix_tokens: int, policy: Any) -> Budget:
         headroom_ratio=policy.budget.headroom_ratio,
         episodic_enabled=policy.episodic.enabled,
         long_term_enabled=policy.long_term.enabled,
+        estimate_margin_ratio=policy.budget.estimate_margin_ratio,
     )
 
 
@@ -91,30 +113,39 @@ class MemoryRuntime:
         return _model_budget(agent, prefix_tokens, self.policy)
 
     # --- 召回 ---------------------------------------------------------
-    async def recall(self, query: str) -> tuple[dict[str, Any] | None, list[Hit], str]:
-        """取 active 中期卡与长期命中，并报告失败。
+    async def recall(self, query: str) -> RecallResult:
+        """取 active 中期卡与长期命中；失败降级为空并记健康，不抛给主流程。
 
-        第三个返回值是错误描述：空串表示「查过了，确实没有」，非空表示
-        「查的时候出错了」。这两者在事件里必须是不同状态 —— 把故障显示成
-        `miss`，用户看到的是「没有相关记忆」，实际是记忆根本没查成
+        失败必须能被调用方看见：`degraded` 记哪几层坏了（事件据此从 `miss`
+        改判 `error`），`reasons` 给稳定枚举，`errors` 留 `Type: msg` 供排障
         （SPEC-0013 §18.2 M8）。
         """
+        degraded: list[str] = []
+        reasons: dict[str, str] = {}
+        errors: dict[str, str] = {}
         card: dict[str, Any] | None = None
-        hits: list[Hit] = []
-        error = ""
         try:
             card = self.episodic.active(self.session_id)
         except Exception as exc:  # noqa: BLE001 - 存储故障只影响记忆
-            card = None
-            error = f"episodic {type(exc).__name__}: {exc}"
+            degraded.append("episodic")
+            reasons["episodic"] = events.REASON_EPISODIC_UNAVAILABLE
+            errors["episodic"] = f"{type(exc).__name__}: {exc}"
+            health.note_failure("episodic", reasons["episodic"])
+        else:
+            health.note_success("episodic")
+        hits: list[Hit] = []
         try:
             hits = await self.long_term.search(
                 query, self.policy.long_term.top_k, self.policy.long_term.min_score
             )
         except Exception as exc:  # noqa: BLE001
-            hits = []
-            error = error or f"long_term {type(exc).__name__}: {exc}"
-        return card, hits, error
+            degraded.append("long_term")
+            reasons["long_term"] = events.REASON_LONG_TERM_UNAVAILABLE
+            errors["long_term"] = f"{type(exc).__name__}: {exc}"
+            health.note_failure("long_term", reasons["long_term"])
+        else:
+            health.note_success("long_term")
+        return RecallResult(card, hits, tuple(degraded), reasons, errors)
 
     def note(
         self,
@@ -236,16 +267,20 @@ class MemoryRuntime:
         try:
             result = await self.long_term.write(text)
         except Exception as exc:  # noqa: BLE001
+            health.note_failure("long_term", events.REASON_WRITE_FAILED)
             self.sink.emit(
                 events.frame(
                     events.MEMORY_WRITE_END,
                     layer="long",
                     state="error",
-                    reason=f"{type(exc).__name__}: {exc}",
+                    reason=events.REASON_WRITE_FAILED,
+                    exc_type=type(exc).__name__,
+                    exc_msg=str(exc)[:200],
                     latency_ms=int((time.perf_counter() - start) * 1000),
                 )
             )
             return {"stored": False, "deduped": False, "error": str(exc)}
+        health.note_success("long_term")
         self.sink.emit(
             events.frame(
                 events.MEMORY_WRITE_END,
@@ -300,6 +335,8 @@ class MemoryRuntime:
                 "threshold": int(settings.trigger_ratio * settings.context_size),
                 "snapshot_version": self.policy.context.snapshot_version,
             },
+            # 开关说明「打算做什么」，health 说明「当下是否在降级」——两者缺一不可
+            "health": health.snapshot(),
         }
 
 

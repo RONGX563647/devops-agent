@@ -1,0 +1,10 @@
+{
+  "model": "qwen-max",
+  "measured_at": "2026-11-27",
+  "system_chars": 452,
+  "tools_chars": 10147,
+  "expected_tokens": 3060,
+  "tolerance": 0.08,
+  "drift_tolerance": 0.15,
+  "source": "线上单次调用 usage.prompt_tokens 与 452 字系统提示 + 10147 字符工具 schema 的反推（旧样本 409/10139 ≈ 3060）"
+}

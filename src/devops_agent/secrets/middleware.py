@@ -22,6 +22,7 @@ from typing import Any
 from agentscope.message import TextBlock
 from agentscope.tool import ToolChunk, ToolMiddlewareBase
 
+from devops_agent.redaction import rules
 from devops_agent.secrets.capture import Captured, capture_output
 from devops_agent.secrets.vault import inject, mask, resolver
 
@@ -29,6 +30,11 @@ from devops_agent.secrets.vault import inject, mask, resolver
 Resolver = Callable[[str], str | None]
 # 输出捕获的登记函数：接收一条捕获项，返回最终入库名；保箱不可用时可降级
 Capture = Callable[[Captured], str]
+
+# 读源码的工具：输出走 `profile="code"`，关掉熵兜底 —— 否则函数名、模块路径
+# 会被当成高熵凭据，模型读到的源码不可编译（SPEC-0015 §3）。
+# 这里用工具名做映射而不是让工具自报：MCP 工具接入时再改为声明式（见规格 §11）。
+CODE_PROFILE_TOOLS = frozenset({"Read", "Grep", "Glob"})
 
 # 只在 debug 级别记一行「哪个工具用掉了几个占位符」，便于排查注入没生效的场景
 logger = logging.getLogger(__name__)
@@ -82,7 +88,15 @@ def _make_capture(capture: Capture | None) -> Capture:
     return _register
 
 
-def _mask_chunk(chunk: ToolChunk, resolved: Mapping[str, str], capture: Capture) -> ToolChunk:
+def _profile_for(tool: Any) -> str:
+    """按工具名选脱敏档案：读源码的工具不做熵兜底，其余按输出处理。"""
+    name = str(getattr(tool, "name", ""))
+    return rules.PROFILE_CODE if name in CODE_PROFILE_TOOLS else rules.PROFILE_OUTPUT
+
+
+def _mask_chunk(
+    chunk: ToolChunk, resolved: Mapping[str, str], capture: Capture, profile: str
+) -> ToolChunk:
     """回抹本次注入的真值 + 捕获输出里新出现的明文；非文本块递归处理 text 字段。
 
     非文本块（结构化/附件）也常带 `text` 字段，不能默默透传——递归处理
@@ -93,7 +107,7 @@ def _mask_chunk(chunk: ToolChunk, resolved: Mapping[str, str], capture: Capture)
     for block in chunk.content:
         if isinstance(block, TextBlock):
             text = mask(block.text, dict(resolved))
-            text, captured = capture_output(text, register=capture)
+            text, captured = capture_output(text, register=capture, profile=profile)
             if text != block.text:
                 changed = True
             content.append(block.model_copy(update={"text": text}))
@@ -104,7 +118,7 @@ def _mask_chunk(chunk: ToolChunk, resolved: Mapping[str, str], capture: Capture)
             raw = getattr(block, "text", None)
             if isinstance(raw, str):
                 text = mask(raw, dict(resolved))
-                text, _ = capture_output(text, register=capture)
+                text, _ = capture_output(text, register=capture, profile=profile)
                 if text != raw:
                     changed = True
                     block = block.model_copy(update={"text": text})
@@ -141,9 +155,10 @@ class SecretInjectionMiddleware(ToolMiddlewareBase):
             replaced = input_kwargs
         if resolved:
             logger.debug("向工具 %s 注入 %d 个密钥", getattr(tool, "name", "?"), len(resolved))
+        profile = _profile_for(tool)
         async for chunk in next_handler(**replaced):
             # 无条件过一遍：即便本次没注入任何密钥，工具也可能自己读到明文。
-            yield _mask_chunk(chunk, resolved, self._capture)
+            yield _mask_chunk(chunk, resolved, self._capture, profile)
 
 
 def build_secret_middleware(

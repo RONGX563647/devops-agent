@@ -157,26 +157,32 @@ def shape_ok(value: str, confidence: str) -> bool:
         return False
     if confidence == CONFIDENCE_KNOWN:
         return True
+    return _looks_random(value)
+
+
+def _looks_random(value: str) -> bool:
     # 标识符只有在「不含数字」时才算误报形状：`estimate_prefix_tokens`、
     # `devops_agent.memory.tokens` 都没有数字；而 `abcdefghij1234567890`
     # 这类小写 alnum 串恰恰是常见 API key，必须放过。
     has_digit = any(char.isdigit() for char in value)
     if _IDENTIFIER_RE.match(value) and not has_digit:
         return False
-    if value.lower() in _KEYWORDS:
-        return False
-    if not any(char.isalpha() for char in value):
+    if value.lower() in _KEYWORDS or not any(char.isalpha() for char in value):
         return False
     # 首选判据：字母 + 数字同时出现（随机 token 的绝大多数）。
     if has_digit:
         return True
     # 次选判据：够长、大小写混合、熵足够（覆盖无数字的 base64 串）。
     # 全大写/全小写的单词与常量（DEVOPS_AGENT_API_KEY）不满足「大小写混合」。
+    return _mixed_case_entropy(value)
+
+
+def _mixed_case_entropy(value: str) -> bool:
+    if len(value) < 20:
+        return False
     has_lower = any(char.islower() for char in value)
     has_upper = any(char.isupper() for char in value)
-    return (
-        has_lower and has_upper and len(value) >= 20 and shannon_entropy(value) >= _ENTROPY_STRICT
-    )
+    return has_lower and has_upper and shannon_entropy(value) >= _ENTROPY_STRICT
 
 
 def _base_of(key: str) -> str:

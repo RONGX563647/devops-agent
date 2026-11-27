@@ -66,6 +66,8 @@ class PreparedInput:
     stages: tuple[Stage, ...]
     references: tuple[Reference, ...]
     redactions: int
+    # 缺口一句话（内容不足 / 未取到）；空串表示资料齐全。怎么补由网关按 net 能力决定
+    fallback: str = ""
 
     @property
     def degraded(self) -> int:

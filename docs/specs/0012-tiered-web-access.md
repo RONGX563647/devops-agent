@@ -260,3 +260,23 @@ web:
 1. `thin` 是否按 URL 类型区分阈值（changelog 短是正常的）。
 2. L0 拿到 thin 时，要不要再抓一次「同域搜索结果页」，而不是直接交给 L2。
 3. L2 结果是否做「同域最多 2 条」去重，避免上下文被同一站点占满。
+
+## 15. 实施记录
+
+### 15.1 已落地（2026-11-27）
+
+| PR | 范围 | 关键产物 |
+|---|---|---|
+| #118（P1+P2） | 内容安全 + 四态 + 预算 | `input/pipeline/sanitize.py`（nh3 → trafilatura → 归一 → 注入标记 → 包封 → 头 70/尾 30 裁剪）、`input/pipeline/egress.py`（守卫：scheme / 主机 / 端口 / 域名 / `is_global` / 逐跳重定向）、`thin` 四态、`total_ms` / `min_total_chars` / `total_chars` 预算与「够用即停」、`[sanitize]` extra |
+| 本 PR（P3 部分） | L1 降级信号 + 披露 | `PreparedInput.fallback`（管线只描述「缺什么」）、网关 `_fallback_note`（按 `web_search` 是否授予给出「检索」或「shell」建议）、`/health.sanitize` 披露实际净化实现 |
+
+已过的验收：A2/A3（thin 保留并标注）、A4（够用即停）、A5（预算跳过不判 error）、A6/A7（`<script>`、零宽与控制字符）、A8（注入只标记且不产生 tool_call）、A9（未装 extra 明示）、A13（既有用例回归）。
+
+### 15.2 与方案的偏离（如实记录）
+
+1. **P4 没有新建 `web_access.yaml`**：`prefetch` / `security` 旋钮直接加在 `config/input.yaml` 的 `InputPolicy`。
+   再开一个配置文件只会让「抓取上限在哪」有两个答案；等 `search` 侧也需要部署旋钮时再合并。
+2. **`runs.web_access` 审计列未做**：要同时改 DB 迁移、repository、API、前端四处，按「一个 PR 一件事」拆到下一批。
+3. **前端「网络获取」轨迹行未做**：`web/**` 改动需先走 `modern-web-guidance` 流程，单独 PR。
+4. **`thin` 不判本地文件**：阈值只用于网页正文——用户自己指的文件，多小都算他给的。
+5. **L2 不做「仅有缺口时才授予」**：保持「授予即可用」，否则「我只是想搜一下」会被掐断；成本靠提示词「先用已有材料」+ `summary.web` 观测。

@@ -70,7 +70,9 @@ def test_health_payload_is_compact(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(preflight, "check_binary", lambda name: None)
 
     payload: dict[str, Any] = preflight.health_payload()
-    assert payload == {"tools": {"grep": {"available": False, "binary": "rg"}}}
+    assert payload["tools"] == {"grep": {"available": False, "binary": "rg"}}
+    # 内容安全链也要自述：缺 [sanitize] extra 时靠这段而不是靠猜
+    assert set(payload["sanitize"]) == {"sanitizer", "extractor", "degraded", "reason"}
 
 
 def test_install_hint_falls_back_for_unknown_binary() -> None:

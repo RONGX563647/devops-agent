@@ -26,7 +26,13 @@ export function HealthPanel({ health }: Props) {
 
   return (
     <section className="panel">
-      <h2>健康分拆解</h2>
+      <div className="panel-head">
+        <h2>健康分拆解</h2>
+        {/* 权重与预算在配置中心改：把「这个分是怎么算的」和「怎么调」放在同一屏 */}
+        <a className="cfg-link" href="?tab=settings&domain=health">
+          评分口径 →
+        </a>
+      </div>
       <div className="health-head">
         <div className="health-score">
           <span className="health-score-value">总分 {health.score}</span>

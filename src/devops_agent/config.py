@@ -1,45 +1,27 @@
-"""配置加载 —— config/*.yaml 的唯一读取入口，输出强类型对象。
+"""配置加载 —— 强类型对象的唯一入口。
 
-路径定位优先级：
-1. 环境变量 DEVOPS_AGENT_CONFIG_DIR（测试 / 部署覆盖）
-2. 包位置推断的项目根 <root>/config（src/ 布局）
-
-配置文件缺失时回退到内置默认值（wheel 不含 config/）。
+`config_store` 负责四层合流（代码默认 ← yaml 基线 ← 环境变量 ← config.db 覆盖），
+本文件只把合流后的 dict 变成模型。policy / gates / model 仍是纯 yaml：
+前两者分别属于「安全域知识」与「CI 构建期」，后者有自己的一套落盘实现。
 """
 
 from __future__ import annotations
 
-import os
 import re
 from functools import cache
-from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Literal
 
-import yaml
 from pydantic import BaseModel, Field, model_validator
 
+# `as` 同名是显式再导出：旧代码与测试从 `config` 取这两个名字，改名只该改 import 源。
+from devops_agent.config_files import CONFIG_DIR_ENV as CONFIG_DIR_ENV
+from devops_agent.config_files import config_dir as config_dir
+from devops_agent.config_files import read_yaml
+from devops_agent.config_store import store
 from devops_agent.memory_policy import MemoryPolicy
 
-CONFIG_DIR_ENV = "DEVOPS_AGENT_CONFIG_DIR"
-
-
-def config_dir() -> Path:
-    """返回配置文件目录，环境变量优先。"""
-    override = os.environ.get(CONFIG_DIR_ENV)
-    if override:
-        return Path(override).expanduser().resolve()
-    return Path(__file__).resolve().parents[2] / "config"
-
-
-def _load_yaml(name: str) -> dict[str, Any]:
-    path = config_dir() / name
-    if not path.is_file():
-        return {}
-    with path.open(encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
-    if not isinstance(raw, dict):
-        raise ValueError(f"{path} 顶层必须是映射")
-    return cast(dict[str, Any], raw)
+# 兼容旧名：既有代码与测试都通过 `config._load_yaml` / `config.config_dir` 取配置。
+_load_yaml = read_yaml
 
 
 # 权限（档位、工具集、builtin 规则）不在这里读配置：它是代码契约，声明在
@@ -339,11 +321,12 @@ def load_gates() -> QualityGates:
     return QualityGates.model_validate(data.get("quality_gates", data))
 
 
-@cache
 def load_health() -> HealthPolicy:
-    """加载并缓存健康分配置（health.yaml 的 health 段）。"""
-    data = _load_yaml("health.yaml")
-    return HealthPolicy.model_validate(data.get("health", data))
+    """健康分口径：代码默认 ← health.yaml ← 环境变量 ← config.db 覆盖。
+
+    不在这里 @cache：存取层自带 TTL 缓存，函数级缓存会让面板改完仍算旧口径。
+    """
+    return HealthPolicy.model_validate(store.effective("health"))
 
 
 @cache
@@ -359,12 +342,12 @@ def load_model() -> ModelSettings:
 
 @cache
 def load_gateway() -> GatewayPolicy:
-    """加载并缓存网关策略（gateway.yaml 的 gateway 段）。
+    """网关策略：代码默认 ← gateway.yaml ← 环境变量 ← config.db 覆盖。
 
-    缺文件时回落内置默认 —— 与 `load_policy` 同一降级策略：写错配置不该让服务起不来。
+    仍保留 @cache：装配期读一次就固定（`Settings.load()`），改完要重启进程 ——
+    与其假装热更新，不如让界面明说「重启后生效」。
     """
-    data = _load_yaml("gateway.yaml")
-    return GatewayPolicy.model_validate(data.get("gateway", data))
+    return GatewayPolicy.model_validate(store.effective("gateway"))
 
 
 class InputPolicy(BaseModel):
@@ -412,56 +395,27 @@ class InputPolicy(BaseModel):
     wrap_untrusted: bool = True
 
 
-@cache
 def load_input() -> InputPolicy:
-    """加载并缓存输入管线策略（input.yaml 的 input 段）。
+    """输入管线策略：代码默认 ← input.yaml ← 环境变量 ← config.db 覆盖。
 
-    缺文件时回落内置默认，与其余 loader 同一降级策略。
+    每次抓取都读（存取层有 TTL 缓存），所以面板改完立即生效。
     """
-    data = _load_yaml("input.yaml")
-    return InputPolicy.model_validate(data.get("input", data))
+    return InputPolicy.model_validate(store.effective("input"))
 
 
-def _env_bool(name: str) -> bool | None:
-    """环境变量布尔：只在显式给了 0/1/true/false 时生效，其余视为未设置。"""
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return None
-    return raw.strip().lower() in ("1", "true", "yes", "on")
-
-
-@cache
 def load_memory() -> MemoryPolicy:
-    """加载并缓存记忆策略（memory.yaml 的 memory 段），env 覆盖其后生效。
+    """记忆策略：代码默认 ← memory.yaml ← 环境变量 ← config.db 覆盖。
 
-    优先级：env > yaml > 内置默认。文件缺失时全部回落默认，服务照常启动。
+    环境变量（enabled / backend / scope / user_id）由存取层的白名单合并，
+    不再在这里二次覆盖 —— 两处都写会让优先级说不清。装配时读取，下一轮生效。
     """
-    data = _load_yaml("memory.yaml")
-    policy = MemoryPolicy.model_validate(data.get("memory", data))
-    updates: dict[str, Any] = {}
-    enabled = _env_bool("DEVOPS_AGENT_MEMORY_ENABLED")
-    if enabled is not None:
-        updates["enabled"] = enabled
-    user_id = os.environ.get("DEVOPS_AGENT_MEMORY_USER_ID")
-    if user_id:
-        updates["user_id"] = user_id
-    backend = os.environ.get("DEVOPS_AGENT_MEMORY_BACKEND")
-    if backend in ("auto", "mem0", "agentic", "local", "off"):
-        updates["long_term"] = policy.long_term.model_copy(update={"backend": backend})
-    scope = os.environ.get("DEVOPS_AGENT_MEMORY_SCOPE")
-    if scope in ("session", "user"):
-        updates["long_term"] = updates.get("long_term", policy.long_term).model_copy(
-            update={"scope": scope}
-        )
-    return policy.model_copy(update=updates) if updates else policy
+    return MemoryPolicy.model_validate(store.effective("memory"))
 
 
 def clear_cache() -> None:
-    """测试中切换配置目录后调用。"""
+    """测试中切换配置目录 / 库路径后调用。"""
     load_policy.cache_clear()
     load_gates.cache_clear()
-    load_health.cache_clear()
     load_model.cache_clear()
     load_gateway.cache_clear()
-    load_input.cache_clear()
-    load_memory.cache_clear()
+    store.invalidate()

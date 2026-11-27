@@ -129,10 +129,12 @@ def warn_memory_backend() -> None:
 
 
 def describe_sandbox(state: Any) -> dict[str, Any]:
-    """`/health.sandbox` 的自述：请求模式、实际生效、降级原因与容器标识。
+    """`/health.sandbox` 的自述：请求模式、实际生效、降级原因与沙箱标识。
 
     降级不能静默：`required=true` 初始化失败时 `sandbox_error` 非空，这里如实
     标 `degraded=true` 并给出原因码；`auto` 回落本机时 reason 同样可见。
+    `reused` / `bootstrap_skipped` 框架未直接暴露，管理器的 status 如实给 null
+    或经验判断值，这里只透传，不补造。
     """
     manager = getattr(state, "sandbox_manager", None)
     execution = getattr(state, "execution", None)
@@ -140,16 +142,22 @@ def describe_sandbox(state: Any) -> dict[str, Any]:
     if manager is not None:
         payload: dict[str, Any] = dict(manager.status())
     else:
+        mode = execution.mode if execution is not None else "local"
         payload = {
-            "mode": execution.mode if execution is not None else "local",
-            "effective": execution.mode if execution is not None else "local",
+            "mode": mode,
+            "effective": mode,
+            "provider": mode,
             "degraded": False,
             "reason": "",
             "workspace_id": "",
+            "sandbox_id": execution.sandbox_id if execution is not None else "",
             "image": "",
             "host_workdir": str(execution.host_workdir) if execution is not None else "",
             "tool_workdir": execution.tool_workdir if execution is not None else "",
             "containers": 0,
+            "init_ms": execution.init_ms if execution is not None else 0,
+            "reused": None,
+            "bootstrap_skipped": None,
         }
     if error is not None:
         message = getattr(error, "message", "") or ""

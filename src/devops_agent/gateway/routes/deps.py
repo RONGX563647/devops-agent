@@ -13,6 +13,12 @@ from __future__ import annotations
 from fastapi import HTTPException, Request
 
 from devops_agent.gateway.errors import STATUS_OF, ErrorCode, http_error
+from devops_agent.gateway.routes.workspace_deps import (
+    resolve_workspace as resolve_workspace,
+)
+from devops_agent.gateway.routes.workspace_deps import (
+    workspace_service_of as workspace_service_of,
+)
 from devops_agent.gateway.settings import Settings
 from devops_agent.governance.model import PermissionProfile
 from devops_agent.governance.presets import UnknownProfile, resolve

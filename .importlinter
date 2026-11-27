@@ -91,3 +91,23 @@ name = 路由层不得依赖装配根
 type = forbidden
 source_modules = devops_agent.gateway.routes
 forbidden_modules = devops_agent.gateway.app
+
+# 工作区领域（SPEC-0021）保持叶子：领域与存储必须是纯 stdlib + pydantic，
+# 才能在无框架环境里单测；网关依赖它，它不反向依赖网关。
+[importlinter:contract:workspace-no-framework]
+name = workspace 不得依赖 AgentScope（直接或间接）
+type = forbidden
+source_modules = devops_agent.workspace
+forbidden_modules = agentscope
+
+[importlinter:contract:workspace-no-gateway]
+name = workspace 不得反向依赖网关
+type = forbidden
+source_modules = devops_agent.workspace
+forbidden_modules = devops_agent.gateway
+
+[importlinter:contract:observability-no-workspace]
+name = observability 不得依赖 workspace
+type = forbidden
+source_modules = devops_agent.observability
+forbidden_modules = devops_agent.workspace

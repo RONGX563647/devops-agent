@@ -49,12 +49,23 @@ def score(query: str, text: str) -> float:
 
 
 class LocalLongTerm:
-    """会话级 SQLite 长期记忆（兜底实现）。"""
+    """会话 / 用户 / 工作区级 SQLite 长期记忆（兜底实现）。
 
-    def __init__(self, policy: LongTermPolicy, scope_id: str, db_path: Path | None) -> None:
+    `scope` 省略时沿用策略里的值；绑定工作区的会话由装配层显式传
+    `scope='workspace'`，与 `scope_id='workspace:<id>'` 一起决定检索边界。
+    """
+
+    def __init__(
+        self,
+        policy: LongTermPolicy,
+        scope_id: str,
+        db_path: Path | None,
+        scope: str | None = None,
+    ) -> None:
         self._policy = policy
         self._scope_id = scope_id
         self._db_path = db_path
+        self._scope = scope or policy.scope
 
     @property
     def name(self) -> str:
@@ -66,7 +77,7 @@ class LocalLongTerm:
             repo.init_db(conn)
             rows = repo.list_long_term(
                 conn,
-                scope=self._policy.scope,
+                scope=self._scope,
                 scope_id=self._scope_id,
                 limit=max(top_k * 20, 50),
             )
@@ -84,7 +95,7 @@ class LocalLongTerm:
             repo.init_db(conn)
             return repo.save_long_term(
                 conn,
-                scope=self._policy.scope,
+                scope=self._scope,
                 scope_id=self._scope_id,
                 kind=kind,
                 text=text,
@@ -134,7 +145,12 @@ class BackendChoice:
     reason: str = ""
 
 
-def build_long_term(policy: LongTermPolicy, scope_id: str, db_path: Path | None) -> BackendChoice:
+def build_long_term(
+    policy: LongTermPolicy,
+    scope_id: str,
+    db_path: Path | None,
+    scope: str | None = None,
+) -> BackendChoice:
     """按配置选后端；请求未接入的后端时降级为 local 并给出原因。
 
     当前只有 local 可在无额外依赖时工作。`auto` 解析到 local；
@@ -146,7 +162,7 @@ def build_long_term(policy: LongTermPolicy, scope_id: str, db_path: Path | None)
         return BackendChoice(OffLongTerm("长期记忆未启用"), requested, "off", "长期记忆未启用")
     if requested == "off":
         return BackendChoice(OffLongTerm("长期记忆已关闭"), requested, "off", "长期记忆已关闭")
-    local = LocalLongTerm(policy, scope_id, db_path)
+    local = LocalLongTerm(policy, scope_id, db_path, scope)
     if requested in _IMPLEMENTED or requested == "auto":
         return BackendChoice(local, requested, "local")
     return BackendChoice(local, requested, "local", f"{requested} 未接入，已降级为 local")

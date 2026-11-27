@@ -7,3 +7,4 @@ export * from './model';
 export * from './openjudge';
 export * from './openjudge-edit';
 export * from './memory';
+export * from './workspace';

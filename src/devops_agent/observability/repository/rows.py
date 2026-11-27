@@ -38,6 +38,7 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         # 老记录补列后是空串：读出来表示「未记录」，不假装是默认参数
         model_params=row["model_params"] or "",
         web_access=row["web_access"] or "",
+        workspace_id=row["workspace_id"] or "",
     )
 
 

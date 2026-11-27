@@ -226,6 +226,18 @@ def delete_long_term(conn: sqlite3.Connection, memory_id: int) -> bool:
     return cur.rowcount > 0
 
 
+def delete_long_term_scope(conn: sqlite3.Connection, scope: str, scope_id: str) -> int:
+    """删除某个作用域下的全部长期条目，返回删除条数。
+
+    删除工作区时默认清理 `scope='workspace'` 的条目（SPEC-0021 §8）；
+    归档保留，因此只有显式删除会调用这里。
+    """
+    cur = conn.execute(
+        "DELETE FROM long_term_memories WHERE scope=? AND scope_id=?", (scope, scope_id)
+    )
+    return cur.rowcount
+
+
 def delete_expired(conn: sqlite3.Connection) -> None:
     """清理两层过期条目；会话删除时由调用方级联。"""
     now = _now().isoformat()

@@ -21,11 +21,19 @@ def _db() -> Any:
     return repo.connect()
 
 
-def _scope_id(scope: str, session_id: str) -> str:
+def _scope_id(scope: str, session_id: str, workspace_id: str = "") -> str:
+    """按 scope 真正分派（修复旧实现两个分支完全相同的问题）。
+
+    - session：永远 `session:<id>`；
+    - user：配置了 user_id 才共享，否则退回会话；
+    - workspace：固定 `workspace:<id>`，跨工作区不可见。
+    """
     policy = load_memory()
+    if scope == "workspace":
+        return f"workspace:{workspace_id}"
     if scope == "user":
         return policy.user_id or f"session:{session_id}"
-    return policy.user_id or f"session:{session_id}"
+    return f"session:{session_id}"
 
 
 @router.get("/status")
@@ -60,14 +68,21 @@ def _preview(card: dict[str, Any] | None, limit: int) -> dict[str, Any] | None:
 
 @router.get("/long-term")
 def get_long_term(
-    scope: str = Query(default="session", pattern="^(session|user)$"),
+    scope: str = Query(default="session", pattern="^(session|user|workspace)$"),
     session_id: str = "",
+    workspace_id: str = "",
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    """长期记忆列表（分页、预览）；默认会话作用域。"""
+    """长期记忆列表（分页、预览）；默认会话作用域。
+
+    `scope=workspace` 时必须带 `workspace_id`：不猜「当前唯一的工作区」，
+    否则一次参数遗漏就会读出别的代码库的记忆。
+    """
+    if scope == "workspace" and not workspace_id.strip():
+        raise HTTPException(status_code=400, detail="workspace_id_required")
     policy = load_memory()
-    scope_id = _scope_id(scope, session_id)
+    scope_id = _scope_id(scope, session_id, workspace_id)
     preview = policy.trace.hit_preview_chars
     with repo.connect() as conn:
         repo.init_db(conn)

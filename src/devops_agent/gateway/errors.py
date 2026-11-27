@@ -37,6 +37,22 @@ class ErrorCode(StrEnum):
     # 运行时没有续跑能力（只实现了 stream 的替身）
     RUNTIME_NOT_RESUMABLE = "runtime_not_resumable"
 
+    # --- 工作区（SPEC-0021）---------------------------------------------
+    WORKSPACE_DISABLED = "workspace_disabled"
+    WORKSPACE_NOT_FOUND = "workspace_not_found"
+    WORKSPACE_NAME_TAKEN = "workspace_name_taken"
+    WORKSPACE_PATH_TAKEN = "workspace_path_taken"
+    WORKSPACE_LOCAL_DISABLED = "workspace_local_disabled"
+    WORKSPACE_GIT_DISABLED = "workspace_git_disabled"
+    WORKSPACE_PATH_INVALID = "workspace_path_invalid"
+    WORKSPACE_ALREADY_BOUND = "workspace_already_bound"
+    WORKSPACE_ARCHIVED = "workspace_archived"
+    WORKSPACE_LIMIT = "workspace_limit"
+    WORKSPACE_DIRTY = "workspace_dirty"
+    WORKSPACE_IN_USE = "workspace_in_use"
+    WORKSPACE_GIT_FAILED = "workspace_git_failed"
+    WORKSPACE_SOURCE_INVALID = "workspace_source_invalid"
+
     # --- 执行面 ---------------------------------------------------------
     # required=true 时 Docker 执行面不可用：拒绝服务，不悄悄在宿主执行
     SANDBOX_UNAVAILABLE = "sandbox_unavailable"
@@ -54,9 +70,35 @@ STATUS_OF: Final[dict[ErrorCode, int]] = {
     ErrorCode.EMPTY_RESULTS: 400,
     ErrorCode.RUNTIME_NOT_RESUMABLE: 400,
     ErrorCode.SANDBOX_UNAVAILABLE: 503,
+    ErrorCode.WORKSPACE_DISABLED: 404,
+    ErrorCode.WORKSPACE_NOT_FOUND: 404,
+    ErrorCode.WORKSPACE_NAME_TAKEN: 409,
+    ErrorCode.WORKSPACE_PATH_TAKEN: 409,
+    ErrorCode.WORKSPACE_LOCAL_DISABLED: 403,
+    ErrorCode.WORKSPACE_GIT_DISABLED: 403,
+    ErrorCode.WORKSPACE_PATH_INVALID: 400,
+    ErrorCode.WORKSPACE_ALREADY_BOUND: 409,
+    ErrorCode.WORKSPACE_ARCHIVED: 409,
+    ErrorCode.WORKSPACE_LIMIT: 429,
+    ErrorCode.WORKSPACE_DIRTY: 409,
+    ErrorCode.WORKSPACE_IN_USE: 409,
+    ErrorCode.WORKSPACE_GIT_FAILED: 400,
+    ErrorCode.WORKSPACE_SOURCE_INVALID: 400,
 }
 
 
 def http_error(code: ErrorCode) -> HTTPException:
     """按错误码构造 HTTPException（业务代码不再出现裸数字状态码）。"""
     return HTTPException(status_code=STATUS_OF[code], detail=code.value)
+
+
+def workspace_http(code: str) -> HTTPException:
+    """把工作区领域错误码翻译成 HTTPException；未知码按 400 处理。
+
+    领域层不 import FastAPI，翻译只在这里发生，保证错误码与状态码的映射唯一。
+    """
+    try:
+        member = ErrorCode(code)
+    except ValueError:
+        return HTTPException(status_code=400, detail=code)
+    return HTTPException(status_code=STATUS_OF[member], detail=member.value)

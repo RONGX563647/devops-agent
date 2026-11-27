@@ -47,6 +47,7 @@ from devops_agent.gateway.routes import (
     stream_router,
 )
 from devops_agent.gateway.routes.memory import router as memory_router
+from devops_agent.gateway.routes.workspaces import router as workspace_router
 from devops_agent.input.api import router as attachments_router
 from devops_agent.model_api import router as model_config_router
 from devops_agent.observability.api import router as observability_router
@@ -124,6 +125,8 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
     application.state.settings = load_settings()
     application.state.sessions = None
     application.state.sessions_base = None
+    # 工作区服务可被测试/部署注入；未注入时按配置域懒建（enabled=false 时路由 404）
+    application.state.workspace_service = None
     # 4) 路由：外部能力模块在前，网关自己的 HTTP 面在后（/health 先于流式端点）
     for business_router in (
         observability_router,
@@ -139,6 +142,8 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
         # 配置中心（ADR-0005）：health / input / memory / gateway 的部署旋钮
         config_router,
         memory_router,
+        # 工作区（SPEC-0021）：默认关闭，enabled=false 时全部 404
+        workspace_router,
     ):
         application.include_router(business_router)
     application.include_router(health_router)

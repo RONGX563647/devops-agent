@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS runs (
     cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
     work_ms       INTEGER NOT NULL DEFAULT 0,
     wall_ms       INTEGER NOT NULL DEFAULT 0,
-    request_id    TEXT
+    request_id    TEXT,
+    workspace_id  TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_request ON runs(request_id)
     WHERE request_id IS NOT NULL;
@@ -129,7 +130,8 @@ CREATE TABLE IF NOT EXISTS session_states (
     session_id  TEXT PRIMARY KEY,
     state_json  TEXT NOT NULL DEFAULT '',
     permission  TEXT NOT NULL DEFAULT '',
-    updated_at  TEXT NOT NULL
+    updated_at  TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT ''
 );
 -- 通用 KV 配置表：当前只放 model_config，以后 health/gates 的旋钮下放也复用它。
 -- 用 KV 而不是建 model_settings 表，是为了不再为每个配置域加一张表。
@@ -156,7 +158,8 @@ CREATE TABLE IF NOT EXISTS session_memories (
     budget          INTEGER NOT NULL DEFAULT 0,
     source_run_ids  TEXT NOT NULL DEFAULT '[]',
     created_at      TEXT NOT NULL,
-    expires_at      TEXT
+    expires_at      TEXT,
+    workspace_id    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_memories_session ON session_memories(session_id, is_active);
 -- 长期记忆（local 兜底后端）：按 (scope, scope_id, text) 去重，TTL 由 expires_at 控制。
@@ -178,6 +181,49 @@ CREATE INDEX IF NOT EXISTS idx_long_term_scope
 
 # spans 表必须显式包含在 _SCHEMA 里；建表语句是上面单独抽出的 _SPANS_DDL
 _SCHEMA = _SCHEMA + _SPANS_DDL
+
+# 工作区（SPEC-0021）：一工作区一代码库。三张表追加式引入，
+# 老库由 init_db 幂等建表；session_states / runs / session_memories 只补列。
+_WORKSPACE_DDL = """
+CREATE TABLE IF NOT EXISTS workspaces (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    owner           TEXT NOT NULL DEFAULT 'local',
+    root_path       TEXT NOT NULL,
+    default_profile TEXT NOT NULL DEFAULT 'workspace',
+    status          TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active','archived')),
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    archived_at     TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_name
+    ON workspaces(name) WHERE status = 'active';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_root
+    ON workspaces(root_path) WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS workspace_repositories (
+    workspace_id   TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+    source         TEXT NOT NULL CHECK (source IN ('local','git')),
+    managed        INTEGER NOT NULL DEFAULT 0,
+    remote_url     TEXT NOT NULL DEFAULT '',
+    branch         TEXT NOT NULL DEFAULT '',
+    base_commit    TEXT NOT NULL DEFAULT '',
+    credential_ref TEXT NOT NULL DEFAULT '',
+    detected_git   INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspace_sessions (
+    session_id   TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    bound_at     TEXT NOT NULL,
+    bound_by     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_sessions_ws ON workspace_sessions(workspace_id);
+"""
+
+_SCHEMA = _SCHEMA + _WORKSPACE_DDL
 
 # 后加的列（CREATE TABLE IF NOT EXISTS 不会给老库补列，必须 ALTER）。
 # parked：该 run 正在等用户确认；用独立列而不是塞进 status，
@@ -204,12 +250,23 @@ _RUN_COLUMNS: tuple[tuple[str, str], ...] = (
     ("model_params", "TEXT NOT NULL DEFAULT ''"),
     # 网络获取决策（JSON）：谁开了检索、预抓取缺口、走的哪条通路
     ("web_access", "TEXT NOT NULL DEFAULT ''"),
+    # 工作区归属（SPEC-0021）：回答「这轮 run 用了哪个代码库」。
+    # 空串 = 老记录或未绑定工作区，读取方不得当成某个默认工作区。
+    ("workspace_id", "TEXT NOT NULL DEFAULT ''"),
 )
 
 # session_states 上后加的列：会话级模型参数覆盖（JSON；空串 = 无覆盖）。
 # 必须落库：SessionRegistry 是 LRU，会话被回收后从 DB 重建，
 # 覆盖只在内存里的话一次淘汰就丢了。
-_SESSION_COLUMNS: tuple[tuple[str, str], ...] = (("model_config", "TEXT NOT NULL DEFAULT ''"),)
+# workspace_id 是绑定审计列：改变归属的唯一入口是 workspace_sessions，
+# 这里只跟着写，避免「快照说 A、绑定表说 B」的第二套真相。
+_SESSION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("model_config", "TEXT NOT NULL DEFAULT ''"),
+    ("workspace_id", "TEXT NOT NULL DEFAULT ''"),
+)
+
+# session_memories 上后加的列：仅审计（中期仍按 session_id 隔离，不跨会话读）。
+_MEMORY_COLUMNS: tuple[tuple[str, str], ...] = (("workspace_id", "TEXT NOT NULL DEFAULT ''"),)
 
 # spans 上后加的列：逐调用的 token 分拆与缓存命中，用来回答「哪一步开始全冷」。
 _SPAN_COLUMNS: tuple[tuple[str, str], ...] = (
@@ -265,6 +322,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _ensure_columns(conn, "spans", _SPAN_COLUMNS)
     _ensure_span_types(conn)
     _ensure_columns(conn, "session_states", _SESSION_COLUMNS)
+    _ensure_columns(conn, "session_memories", _MEMORY_COLUMNS)
 
 
 def _ensure_span_types(conn: sqlite3.Connection) -> None:

@@ -112,6 +112,14 @@ DOMAINS: tuple[DomainSpec, ...] = (
         hot="restart",
         note="执行模式、是否允许回落、空闲回收与 Docker 参数；启动期固定，改完需重启进程。",
     ),
+    DomainSpec(
+        key="workspace",
+        title="工作区",
+        section="workspaces",
+        model="WorkspacePolicy",
+        hot="restart",
+        note="本地目录白名单与受管克隆根；装配期固定，改完需重启进程。",
+    ),
 )
 
 BY_KEY: dict[str, DomainSpec] = {spec.key: spec for spec in DOMAINS}
@@ -125,11 +133,18 @@ ENV_OVERLAY: dict[str, tuple[tuple[str, str, str, tuple[str, ...]], ...]] = {
         ("enabled", "DEVOPS_AGENT_MEMORY_ENABLED", "bool", ()),
         ("user_id", "DEVOPS_AGENT_MEMORY_USER_ID", "str", ()),
         ("long_term.backend", "DEVOPS_AGENT_MEMORY_BACKEND", "str", ENV_BACKENDS),
-        ("long_term.scope", "DEVOPS_AGENT_MEMORY_SCOPE", "str", ("session", "user")),
+        ("long_term.scope", "DEVOPS_AGENT_MEMORY_SCOPE", "str", ("session", "user", "workspace")),
     ),
     "sandbox": (
         ("mode", "DEVOPS_AGENT_SANDBOX_MODE", "str", ("local", "docker", "auto")),
         ("required", "DEVOPS_AGENT_SANDBOX_REQUIRED", "bool", ()),
+    ),
+    "workspace": (
+        ("enabled", "DEVOPS_AGENT_WORKSPACES_ENABLED", "bool", ()),
+        ("root", "DEVOPS_AGENT_WORKSPACE_ROOT", "str", ()),
+        ("allow_local_import", "DEVOPS_AGENT_WORKSPACE_ALLOW_LOCAL", "bool", ()),
+        ("allowed_local_roots", "DEVOPS_AGENT_WORKSPACE_LOCAL_ROOTS", "list", ()),
+        ("allow_git_import", "DEVOPS_AGENT_WORKSPACE_ALLOW_GIT", "bool", ()),
     ),
 }
 
@@ -144,6 +159,7 @@ MODELS: dict[str, type[BaseModel]] = {
     "RuntimePolicy": config_schema.RuntimePolicy,
     "ModelSettings": config_schema.ModelSettings,
     "SandboxPolicy": config_schema.SandboxPolicy,
+    "WorkspacePolicy": config_schema.WorkspacePolicy,
 }
 
 
@@ -232,6 +248,10 @@ def env_overlay(domain: str) -> dict[str, Any]:
             continue
         if kind == "bool":
             values[key] = raw.strip().lower() in ("1", "true", "yes", "on")
+        elif kind == "list":
+            items = [part.strip() for part in raw.split(",") if part.strip()]
+            if items:
+                values[key] = items
         elif not allowed or raw in allowed:
             values[key] = raw
     return values

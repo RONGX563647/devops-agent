@@ -58,12 +58,14 @@ def claim_entry(
     profile: PermissionProfile,
     session_id: str,
     web_search: bool | None = None,
+    workspace: object | None = None,
 ) -> SessionEntry:
     """取会话实例并做并发前置判定（同步）。
 
     档位或联网开关变了会重建实例；所以「已持锁」要判 acquire 的返回值，不是旧对象。
+    `workspace` 非空时把工作区根作为执行目录并切记忆作用域（SPEC-0021）。
     """
-    entry = registry.acquire(session_id, profile, web_search)
+    entry = registry.acquire(session_id, profile, web_search, workspace=workspace)
     if entry.lock.locked():
         raise http_error(ErrorCode.SESSION_BUSY)
     return entry
@@ -106,9 +108,10 @@ async def open_lease(
     web_search: bool | None,
     settings: Settings,
     request_id: str = "",
+    workspace: object | None = None,
 ) -> SessionLease:
     """主链路入口：取实例 → 409 判定 → 建记录器 → 拿锁。"""
-    entry = claim_entry(registry, profile, session_id, web_search)
+    entry = claim_entry(registry, profile, session_id, web_search, workspace)
     return await hold(
         registry,
         entry,
@@ -133,6 +136,7 @@ def _build_recorder(
         request_id=request_id,
         permission=profile_key,
         model_params=port.params_record(),
+        workspace_id=entry.workspace_id,
     )
     # 先记「本轮有没有检索能力」；预抓取结果由 prepare_payload 再补（SPEC-0012 §7）
     recorder.note_web_access(net=port.web_search())

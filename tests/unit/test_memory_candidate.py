@@ -65,3 +65,15 @@ def test_write_turn_stores_substantive_turn(tmp_path: Any) -> None:  # type: ign
         runtime.write_turn("部署脚本在 scripts/deploy.sh，必须先跑 ruff", "记下了。")
     )
     assert result["stored"] is True
+
+
+def test_meta_preamble_is_not_candidate() -> None:
+    """「我先看一下……」说的是下一步要做什么，不是结论（SPEC-0019 §7.3）。"""
+    ok, reason = is_candidate("以上问题也修复了", "我先看一下工作区里实际的东西")
+    assert ok is False
+    assert reason == "meta_preamble"
+
+
+def test_meta_opener_with_technical_signal_is_still_stored() -> None:
+    ok, _ = is_candidate("看看这个文件", "我先读一下 src/devops_agent/memory/runtime.py")
+    assert ok is True

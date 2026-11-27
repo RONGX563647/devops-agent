@@ -4,9 +4,11 @@
 
 1. `ensure()`：按 `(mode, host_workdir, image)` 缓存已初始化的执行目标，同 key
    并发只创建一次；
-2. `close()` / `close_all()`：调用 `workspace.close()`，异常只记录不抛出；
+2. `close()` / `close_all()`：调用 `workspace.close()`（opensandbox 即 pause），
+   异常只记录不抛出；
 3. `reap_idle()`：回收空闲的可回收工作区（评测 case），聊天主工作区不回收；
-4. `docker_available()`：启动探测 Docker daemon，失败返回原因而不是抛给调用方。
+4. `docker_available()` / `opensandbox_available()`：启动探测，失败返回原因
+   而不是抛给调用方；不做网络连通性探测，连通性留给 `initialize()`。
 
 为什么不用 `agentscope.app._manager.DockerWorkspaceManager`：它位于私有模块，
 隔离键是 `(user_id, agent_id)`，与本仓库「按 workdir 复用 + 评测按 case 销毁」
@@ -16,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import shutil
 import subprocess
@@ -29,21 +32,34 @@ from typing import Literal
 from agentscope.workspace import WorkspaceBase
 
 from devops_agent.config import SandboxPolicy
-from devops_agent.executor.boundary import build_docker_workspace, build_local_workspace
+from devops_agent.executor.boundary import (
+    build_docker_workspace,
+    build_local_workspace,
+    build_opensandbox_workspace,
+    opensandbox_workspace_id,
+)
 from devops_agent.executor.target import ExecutionTarget, build_target
 
 logger = logging.getLogger(__name__)
 
-Mode = Literal["local", "docker"]
+Mode = Literal["local", "docker", "opensandbox"]
 
 # Docker 探测超时：daemon 卡死时不要让启动无限等待
 _PROBE_TIMEOUT_S = 5.0
 
-# 失败原因码（与 SPEC-0018 §8 的失败语义矩阵一致）
+# 失败原因码（与 SPEC-0018 §8 / SPEC-0019 §6 的失败语义矩阵一致）
 CODE_UNAVAILABLE = "sandbox_unavailable"
 CODE_IMAGE_BUILD_FAILED = "sandbox_image_build_failed"
 CODE_START_FAILED = "sandbox_start_failed"
 CODE_TIMEOUT = "sandbox_timeout"
+CODE_PACKAGE_MISSING = "sandbox_package_missing"
+CODE_ENDPOINT_MISSING = "sandbox_endpoint_missing"
+CODE_AUTH_FAILED = "sandbox_auth_failed"
+CODE_IMAGE_UNAVAILABLE = "sandbox_image_unavailable"
+CODE_BOOTSTRAP_FAILED = "sandbox_bootstrap_failed"
+
+# `init_ms` 超过该阈值即判定走了 bootstrap（spec §10 允许的经验判据，不伪造布尔值）
+_BOOTSTRAP_SLOW_MS = 30_000
 
 
 class SandboxUnavailable(RuntimeError):
@@ -89,13 +105,47 @@ def docker_available() -> tuple[bool, str]:
     return True, ""
 
 
-def _classify(exc: BaseException) -> str:
-    """把初始化异常归类成失败原因码（用于 `/health` 与 PR 描述的排障）。"""
+def opensandbox_available(policy: SandboxPolicy) -> tuple[bool, str]:
+    """探测 OpenSandbox 后端是否可用；返回 `(可用, 不可用原因)`。
+
+    只做两项本地判断，不发网络请求：启动期等待远端会把「服务慢」变成「进程起不来」，
+    连通性 / 认证 / 镜像错误一律留给 `initialize()` 走失败矩阵。
+    """
+    if importlib.util.find_spec("opensandbox") is None:
+        return False, (
+            f"{CODE_PACKAGE_MISSING}: 未安装 opensandbox（pip install -e '.[opensandbox]'）"
+        )
+    if not policy.opensandbox.domain:
+        # 空 domain 时 SDK 是否存在可用默认值不属于本仓库能保证的契约；
+        # 当作「未配置 endpoint」显式失败，胜过在 initialize 时给出含糊错误。
+        return False, f"{CODE_ENDPOINT_MISSING}: 未配置 sandbox.opensandbox.domain"
+    return True, ""
+
+
+def _classify(exc: BaseException, mode: Mode) -> str:
+    """把初始化异常归类成失败原因码（用于 `/health` 与排障）。
+
+    docker 与 opensandbox 的错误文案不同，分开归类；顺序是先超时（最确定），
+    再按各后端的关键词匹配，都不中就给通用的启动失败。
+    """
     text = f"{type(exc).__name__}: {exc}".lower()
     if "timeout" in text or "timed out" in text:
         return CODE_TIMEOUT
+    if mode == "opensandbox":
+        return _classify_opensandbox(text)
     if "image" in text or "build" in text:
         return CODE_IMAGE_BUILD_FAILED
+    return CODE_START_FAILED
+
+
+def _classify_opensandbox(text: str) -> str:
+    """OpenSandbox 特有错误分类（text 已转小写）。"""
+    if "bootstrap" in text:
+        return CODE_BOOTSTRAP_FAILED
+    if any(word in text for word in ("401", "403", "auth", "unauthorized", "permission")):
+        return CODE_AUTH_FAILED
+    if "image" in text or "manifest" in text:
+        return CODE_IMAGE_UNAVAILABLE
     return CODE_START_FAILED
 
 
@@ -103,7 +153,7 @@ WorkspaceFactory = Callable[[Mode, Path, SandboxPolicy], WorkspaceBase]
 
 
 def _default_factory(mode: Mode, host_workdir: Path, policy: SandboxPolicy) -> WorkspaceBase:
-    """按模式构造 workspace（构造不启动容器）。"""
+    """按模式构造 workspace（构造不启动容器 / 沙箱）。"""
     if mode == "docker":
         docker = policy.docker
         return build_docker_workspace(
@@ -112,6 +162,22 @@ def _default_factory(mode: Mode, host_workdir: Path, policy: SandboxPolicy) -> W
             env=dict(docker.env),
             extra_pip=docker.extra_pip,
             gateway_port=docker.gateway_port,
+        )
+    if mode == "opensandbox":
+        osb = policy.opensandbox
+        return build_opensandbox_workspace(
+            workspace_id=opensandbox_workspace_id(str(host_workdir)),
+            image=osb.image,
+            domain=osb.domain,
+            protocol=osb.protocol,
+            request_timeout_seconds=osb.request_timeout_seconds,
+            timeout_seconds=osb.timeout_seconds,
+            gateway_port=osb.gateway_port,
+            env=dict(osb.env),
+            extra_pip=osb.extra_pip,
+            resource=dict(osb.resource),
+            network_policy=dict(osb.network_policy),
+            entrypoint=osb.entrypoint,
         )
     return build_local_workspace(str(host_workdir))
 
@@ -125,11 +191,13 @@ class SandboxManager:
         *,
         workspace_factory: WorkspaceFactory | None = None,
         probe: Callable[[], tuple[bool, str]] | None = None,
+        opensandbox_probe: Callable[[], tuple[bool, str]] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.policy = policy
         self._factory = workspace_factory or _default_factory
         self._probe = probe or docker_available
+        self._probe_osb = opensandbox_probe or (lambda: opensandbox_available(policy))
         self._clock = clock
         self._entries: dict[tuple[str, str, str], _Entry] = {}
         self._locks: dict[tuple[str, str, str], asyncio.Lock] = {}
@@ -137,7 +205,7 @@ class SandboxManager:
     async def ensure(self, host_workdir: str | Path, *, reapable: bool = False) -> ExecutionTarget:
         """取得（必要时创建）该工作目录的执行目标；同 key 并发只初始化一次。
 
-        1) 解析请求模式，必要时探测 Docker（失败按 required/auto 决定回落或拒绝）；
+        1) 解析请求模式，必要时探测后端（失败按 required/auto 决定回落或拒绝）；
         2) 命中缓存直接返回并刷新最近使用时间；
         3) 未命中则在 per-key 锁内创建并初始化，失败不写缓存。
         """
@@ -156,41 +224,74 @@ class SandboxManager:
             return target
 
     async def _resolve_mode(self) -> tuple[Mode, str]:
-        """解析实际生效模式：`docker/auto` 需要先确认 daemon 可用。"""
+        """解析实际生效模式：远程后端先探测，失败按 required/auto 回落。
+
+        `auto` 的优先级固定为 opensandbox → docker → local，每级失败原因拼进
+        `degraded_reason`，不允许静默降级。
+        """
         requested = self.policy.mode
         if requested == "local":
             return "local", ""
-        ok, why = self._probe()
+        if requested == "auto":
+            return self._resolve_auto()
+        ok, why = self._probe_for(requested)
         if ok:
-            return "docker", ""
-        if requested == "docker" and self.policy.required:
-            raise SandboxUnavailable(CODE_UNAVAILABLE, why)
+            return requested, ""
+        if self.policy.required:
+            raise SandboxUnavailable(self._required_code(requested, why), why)
         return "local", why
 
+    def _resolve_auto(self) -> tuple[Mode, str]:
+        """`auto` 的固定优先级：opensandbox → docker → local。"""
+        ok, why_osb = self._probe_osb()
+        if ok:
+            return "opensandbox", ""
+        ok, why_docker = self._probe()
+        if ok:
+            return "docker", ""
+        return "local", "; ".join(part for part in (why_osb, why_docker) if part)
+
+    def _probe_for(self, mode: Mode) -> tuple[bool, str]:
+        """按模式选择探测函数。"""
+        return self._probe_osb() if mode == "opensandbox" else self._probe()
+
+    @staticmethod
+    def _required_code(mode: Mode, reason: str) -> str:
+        """required=true 拒绝服务时的错误码：opensandbox 保留具体原因码。"""
+        return _code_of(reason) if mode == "opensandbox" else CODE_UNAVAILABLE
+
     async def _create(self, mode: Mode, host: Path, reason: str) -> ExecutionTarget:
-        """构造并初始化 workspace；docker 失败时按配置回落或拒绝。"""
+        """构造并初始化 workspace；远程后端失败时按配置回落或拒绝。"""
         workspace = self._factory(mode, host, self.policy)
+        started = time.perf_counter()
         try:
             await workspace.initialize()
         except Exception as exc:  # noqa: BLE001 - 失败语义由配置决定
             await self._safe_close(workspace)
-            if mode != "docker":
+            if mode == "local":
                 raise
-            code = _classify(exc)
+            code = _classify(exc, mode)
             message = f"{code}: {exc}"
             if self.policy.required:
                 raise SandboxUnavailable(code, str(exc)) from exc
-            logger.warning("Docker 执行面初始化失败，回落本机（%s）", message)
+            logger.warning("%s 执行面初始化失败，回落本机（%s）", mode, message)
             return await self._create("local", host, message)
-        return build_target(workspace, host, degraded_reason=reason)
+        init_ms = int((time.perf_counter() - started) * 1000)
+        return build_target(workspace, host, degraded_reason=reason, init_ms=init_ms)
 
     def _key(self, mode: Mode, host: Path) -> tuple[str, str, str]:
-        image = self.policy.docker.base_image if mode == "docker" else ""
+        """缓存键：模式 + 宿主目录 + 镜像；换镜像必须产生新沙箱。"""
+        if mode == "docker":
+            image = self.policy.docker.base_image
+        elif mode == "opensandbox":
+            image = self.policy.opensandbox.image
+        else:
+            image = ""
         return mode, str(host), image
 
     @staticmethod
     async def _safe_close(workspace: WorkspaceBase | None) -> None:
-        """关闭 workspace；容器残留只记录，不向调用方抛。"""
+        """关闭 workspace；容器 / 沙箱残留只记录，不向调用方抛。"""
         if workspace is None:
             return
         try:
@@ -238,30 +339,68 @@ class SandboxManager:
             await self.close(host_workdir)
 
     def status(self) -> dict[str, object]:
-        """`/health.sandbox` 的数据源：模式、降级原因与容器标识。"""
-        target = next(iter(self._entries.values()), None)
-        effective = target.target.mode if target is not None else "local"
-        reason = target.target.degraded_reason if target is not None else ""
-        workspace = target.target.workspace if target is not None else None
+        """`/health.sandbox` 的数据源：模式、降级原因与沙箱标识。
+
+        `reused` 框架未暴露（无法区分 resume / 新建），如实置 null；
+        `bootstrap_skipped` 无法直接观测，用 `init_ms` 阈值给出经验判断，
+        不伪造布尔值（SPEC-0019 §10）。
+        """
+        entry = next(iter(self._entries.values()), None)
+        effective = entry.target.mode if entry is not None else "local"
+        reason = entry.target.degraded_reason if entry is not None else ""
+        workspace = entry.target.workspace if entry is not None else None
+        init_ms = entry.target.init_ms if entry is not None else 0
         return {
             "mode": self.policy.mode,
             "effective": effective,
+            "provider": effective,
             "degraded": bool(reason),
             "reason": reason,
             "workspace_id": getattr(workspace, "workspace_id", ""),
-            "image": self.policy.docker.base_image if effective == "docker" else "",
-            "host_workdir": str(target.target.host_workdir) if target is not None else "",
-            "tool_workdir": target.target.tool_workdir if target is not None else "",
+            "sandbox_id": entry.target.sandbox_id if entry is not None else "",
+            "image": self._image_for(effective),
+            "host_workdir": str(entry.target.host_workdir) if entry is not None else "",
+            "tool_workdir": entry.target.tool_workdir if entry is not None else "",
             "containers": len(self._entries),
+            "init_ms": init_ms,
+            "reused": None,
+            "bootstrap_skipped": self._bootstrap_skipped(effective, init_ms),
         }
+
+    def _image_for(self, effective: str) -> str:
+        """实际生效后端使用的镜像；local 无镜像。"""
+        if effective == "docker":
+            return self.policy.docker.base_image
+        if effective == "opensandbox":
+            return self.policy.opensandbox.image
+        return ""
+
+    @staticmethod
+    def _bootstrap_skipped(effective: str, init_ms: int) -> bool | None:
+        """预配置是否生效的经验判断：远程后端且启动未超过慢路径阈值。"""
+        if effective != "opensandbox" or init_ms <= 0:
+            return None
+        return init_ms < _BOOTSTRAP_SLOW_MS
+
+
+def _code_of(reason: str) -> str:
+    """从探测原因里取失败码（`code: detail` 的 code 部分）。"""
+    code = reason.split(":", 1)[0].strip()
+    return code or CODE_UNAVAILABLE
 
 
 __all__ = [
+    "CODE_AUTH_FAILED",
+    "CODE_BOOTSTRAP_FAILED",
+    "CODE_ENDPOINT_MISSING",
     "CODE_IMAGE_BUILD_FAILED",
+    "CODE_IMAGE_UNAVAILABLE",
+    "CODE_PACKAGE_MISSING",
     "CODE_START_FAILED",
     "CODE_TIMEOUT",
     "CODE_UNAVAILABLE",
     "SandboxManager",
     "SandboxUnavailable",
     "docker_available",
+    "opensandbox_available",
 ]

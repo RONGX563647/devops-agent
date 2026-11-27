@@ -119,7 +119,7 @@ class RuntimeParts:
     # /workspace 与 /bin/sh。工具与提示词都只认这一层。
     tool_workdir: str = ""
     shell: str | None = None
-    # docker 模式注入共享 backend；local 模式为 None（沿用 _WorkdirBackend）
+    # docker / opensandbox 注入共享 backend；local 模式为 None（沿用 _WorkdirBackend）
     backend_factory: BackendFactory | None = None
     execution: ExecutionTarget | None = None
     note_mw: ProfileNoteMiddleware | None = None
@@ -140,7 +140,7 @@ def _execution_paths(
     if execution is None:
         base = resolve_workdir(workdir)
         return base, str(base), None, None
-    backend = execution.backend_factory if execution.is_docker else None
+    backend = execution.backend_factory if execution.uses_shared_backend else None
     return execution.host_workdir, execution.tool_workdir, execution.shell, backend
 
 

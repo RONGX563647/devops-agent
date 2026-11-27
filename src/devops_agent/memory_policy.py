@@ -12,12 +12,23 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class ShortTermPolicy(BaseModel):
-    """短期（工作记忆）的确定性裁剪旋钮。"""
+    """短期（工作记忆）的确定性裁剪旋钮。
+
+    `tool_output_chars` 只管**已消化**的旧轮次；尾部 `recent_exempt_results` 个
+    工具结果完整保留，它们正是下一步推理的依据（SPEC-0019 §3）。单轮本身超出
+    预算时才退到 `recent_output_chars` 兜底。
+    """
 
     max_turns: int = Field(default=12, ge=1, le=200)
     tool_output_chars: int = Field(default=1600, ge=80, le=200_000)
     tool_output_head_ratio: float = Field(default=0.7, gt=0, lt=1)
     dedup_reads: bool = True
+    # 尾部 N 个工具结果不参与内容截断：按「块」计数（并行 5 个读就是 5 块）
+    recent_exempt_results: int = Field(default=4, ge=0, le=64)
+    # 单轮本身超预算时的兜底上限，比旧轮次的 1600 宽，仍保留可复原的行号标记
+    recent_output_chars: int = Field(default=6000, ge=200, le=200_000)
+    # 关掉即回到「每轮无条件裁剪」，留给评测对照；生产保持开启
+    trim_on_budget: bool = True
 
 
 class EpisodicPolicy(BaseModel):

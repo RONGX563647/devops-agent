@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
+from devops_agent.config_store.api import router as config_router
 from devops_agent.env import load_env
 from devops_agent.gateway.bootstrap import (
     describe_runtime,
@@ -76,6 +77,8 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
         context_router,
         # 模型参数三层可配（SPEC-0001）：部署默认 / 会话覆盖 / 只读凭据
         model_config_router,
+        # 配置中心（ADR-0005）：health / input / memory / gateway 的部署旋钮
+        config_router,
         memory_router,
     ):
         application.include_router(business_router)

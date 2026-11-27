@@ -44,7 +44,7 @@
 devops-agent/
 ├── pyproject.toml            # 打包 + 依赖 + ruff/mypy/pytest 配置
 ├── config/
-│   ├── policy.yaml           # 权限回落 mode / 档位白名单 / 命令白名单 / builtin deny
+│   ├── policy.yaml           # 确认协议（高危正则 / 沉淀规则）；只读，不进配置库
 │   ├── model.yaml            # 模型参数部署默认（窗口 / 两级重试 / 采样 / 压缩比例）
 │   ├── gates.yaml            # 质量门禁阈值（check_gates.py 读取，唯一来源）
 │   └── health.yaml           # 健康分权重、延迟/token 基准、评分来源权重
@@ -66,7 +66,8 @@ devops-agent/
 │   └── wiki/                 # 分层讲解（Home / Architecture / Permissions / …）
 ├── .github/workflows/        # ci.yml（quality + frontend）、openjudge-nightly.yml
 ├── src/devops_agent/
-│   ├── config.py             # config/*.yaml 的唯一加载入口（@cache 强类型）
+│   ├── config.py             # 强类型配置入口（合流交给 config_store）
+│   ├── config_store/         # 配置中心：SQLite 覆盖层 + 审计 + /api/config
 │   ├── env.py                # 进程启动加载 .env（override=False）
 │   ├── gateway/              # FastAPI 入口：会话/权限/SSE/挂起确认
 │   ├── model_api.py          # 模型参数端点（部署默认 + 会话覆盖）
@@ -328,18 +329,28 @@ trace.tool_calls[] = {
 
 ---
 
-## 模型参数：五层解析
+## 配置：集中到 SQLite，yaml 退为仓库基线
+
+运行期可调的部署策略（健康分口径 / 输入管线 / 记忆策略 / 网关限额）统一走
+`config_store`，四层合流，高到低：
 
 ```
-会话覆盖（DB: session_states.model_config）
-  > 部署默认（DB: settings['model_config']，前端可改、持久化）
-  > config/model.yaml
-  > 环境变量（model / judge_model / enable_search）
-  > 框架默认（context_size / 两级重试 / ContextConfig）
+环境变量白名单（界面锁定）
+  > config.db 覆盖（前端写，只存与下层不同的键）
+  > config/*.yaml 基线（可评审、可 diff、CI 与单测直接读）
+  > 代码里的字段默认值（pydantic）
 ```
 
-`config/model.yaml` 是部署默认的唯一出处，逐项注释了取值理由；改它需重启，改前两层不需要。
-`model_settings.resolve()` 是唯一入口，任何地方要参数都必须走它，不要自己读 yaml 或 env。
+- 库在 `workspace/config.db`（`DEVOPS_AGENT_CONFIG_DB` 可改），**不在仓库内**，随部署备份。
+- 接口：`GET /api/config`（域清单）、`GET|PATCH /api/config/{domain}`、
+  `POST /api/config/{domain}/reset`、`GET /api/config/{domain}/export`、`/audit`。
+  `patch` 里给 `null` 表示删掉覆盖、回落到下层。
+- 生效时机如实回报：`health` / `input` 立即，`memory` 下一轮，`gateway` 重启。
+- 不进库的三类：`policy.yaml`（高危正则，只读）、`gates.yaml`（CI 构建期，
+  checkout 上没有数据库）、HTTP 状态码 / SSE 帧名 / RunStatus 枚举（代码契约）。
+- 测试与 CI 用 `DEVOPS_AGENT_CONFIG_MODE=file`，或把库指到 tmp（见 ADR-0005）。
+
+模型参数仍是独立的一层（`model.local.yaml` + 会话覆盖），原因见 ADR-0003 / 0005。
 
 ```yaml
 model:

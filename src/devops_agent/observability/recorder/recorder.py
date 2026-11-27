@@ -74,6 +74,8 @@ class RunRecorder:
         self._last_tool_key = ""
         # 输入解析阶段在过程中先缓存，finish 时随 run 一起落库（run_id 此时才齐备）
         self._input_stages: list[InputStageRecord] = []
+        # 本轮网络获取的决策（net / 缺口 / 通路）：同样在 finish 时一次写库
+        self._web_access: dict[str, object] = {}
 
     def start(self, session_id: str, user_input: str) -> int:
         """建立 run 记录，返回 run_id。可重复调用（幂等）。"""
@@ -463,10 +465,24 @@ class RunRecorder:
                 wall_ms=wall_ms,
                 error=reason,
             )
-        # 5. 清空过程缓存并标记收尾，避免重复落库
+        # 5. 网络获取决策单独一条 UPDATE（不改 finish_run 的 SQL，减少回归面）
+        if self._web_access:
+            with repo.connect(self._db_path) as conn:
+                repo.set_run_web_access(
+                    conn, self._run_id, json.dumps(self._web_access, ensure_ascii=False)
+                )
+        # 6. 清空过程缓存并标记收尾，避免重复落库
         self._input_stages = []
         self._finished = True
         return self._run_id
+
+    def note_web_access(self, **fields: object) -> None:
+        """记录一项网络获取决策（可多次调用，后者覆盖同名键）。
+
+        不作为独立写库动作：一轮里决策会出现两三次（占会话、预抓取结果、降级原因），
+        每次写一行 UPDATE 只会放大 sqlite 争用；finish 时一次落库就够。
+        """
+        self._web_access.update(fields)
 
     @property
     def run_id(self) -> int | None:

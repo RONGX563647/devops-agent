@@ -177,6 +177,11 @@ def prepare_payload(
     stage_frames = parse_events(prepared)
     for frame in stage_frames:
         recorder.consume(frame)  # 阶段缓存进 recorder，finish 时随 run 一起落库
+    expand = next((stage for stage in prepared.stages if stage.stage == "expand"), None)
+    recorder.note_web_access(
+        fallback=prepared.fallback,
+        prefetch=expand.summary if expand is not None else "",
+    )
     text = prepared.text + _fallback_note(prepared.fallback, port)
     return PreparedPayload(text=text, frames=stage_frames)
 

@@ -54,6 +54,8 @@ class RunOut(BaseModel):
     wall_ms: int = 0
     # 本轮实际下发的模型参数（JSON，只含非默认值）；空串 = 老记录，显示「未记录」
     model_params: str = ""
+    # 本轮网络获取决策（JSON）：net 是否授予、预抓取缺口、走了哪条通路；空串 = 未记录
+    web_access: str = ""
 
 
 class SpanOut(BaseModel):
@@ -445,6 +447,7 @@ def _run_out(run: RunRecord) -> RunOut:
         work_ms=run.work_ms,
         wall_ms=run.wall_ms,
         model_params=run.model_params,
+        web_access=run.web_access,
     )
 
 

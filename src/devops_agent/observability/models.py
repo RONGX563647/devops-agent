@@ -78,6 +78,9 @@ class RunRecord:
     # 本轮实际下发的模型参数（JSON，只含非默认值）。空串 = 老记录/未记录，
     # 读取方要显示「参数未知」而不是按默认值解释 —— 那会造出假的归因。
     model_params: str = ""
+    # 本轮网络获取的决策与结果（JSON）：net 是否授予检索、prefetch 缺口、降级原因。
+    # 空串 = 老记录/未记录；读取方要显示「未记录」，不能当成「没联网」。
+    web_access: str = ""
 
 
 @dataclass(frozen=True, slots=True)

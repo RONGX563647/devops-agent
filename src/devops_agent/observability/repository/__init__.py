@@ -57,6 +57,7 @@ from .runs import (
     get_run,
     list_runs,
     query_runs,
+    set_run_web_access,
     summary_rows,
 )
 from .scores import add_score, all_scores, list_scores
@@ -121,6 +122,7 @@ __all__ = [
     "os",
     "park_run",
     "query_runs",
+    "set_run_web_access",
     "save_long_term",
     "save_memory_version",
     "save_session_model_config",

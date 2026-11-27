@@ -98,6 +98,15 @@ def finish_run(
     )
 
 
+def set_run_web_access(conn: sqlite3.Connection, run_id: int, payload: str) -> None:
+    """写入本轮网络获取决策（JSON）。
+
+    单独一条 UPDATE 而不是塞进 finish_run：决策在 finish 之前就确定了，
+    而 finish 的 SQL 已经被多处断言钉住，改它只会扩大回归面。
+    """
+    conn.execute("UPDATE runs SET web_access=? WHERE id=?", (payload, run_id))
+
+
 def get_run(conn: sqlite3.Connection, run_id: int) -> RunRecord | None:
     """按 id 取运行记录，不存在返回 None。"""
     row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
@@ -182,7 +191,7 @@ def summary_rows(conn: sqlite3.Connection) -> list[RunRecord]:
         """SELECT id, session_id, domain, status, started_at, ended_at, duration_ms,
                   model, total_tokens, health_score, input_tokens, output_tokens, request_id,
                   cache_input_tokens, cache_creation_input_tokens, input, output, permission,
-                  work_ms, wall_ms, error, model_params
+                  work_ms, wall_ms, error, model_params, web_access
            FROM runs"""
     ).fetchall()
     return [_run_from_row(row) for row in rows]

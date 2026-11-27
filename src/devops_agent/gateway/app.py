@@ -53,7 +53,7 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
     1) 加载 .env（进程内只生效一次；显式传 runtime 时跳过选择，但 env 仍要加载，
        因为观测库路径等配置也走 env）；
     2) 选定运行时并挂到 `app.state`（测试/部署可整体替换这个键）；
-    3) 挂网关设置（策略来自 gateway.yaml）与会话注册表占位（懒建）；
+    3) 挂网关设置（策略来自部署配置）与会话注册表占位（懒建）；
     4) 挂路由：业务模块先、网关的 HTTP 面后；
     5) 启动期告警：缺外部工具、降级到 Echo。
     """

@@ -45,8 +45,18 @@ def _rows(domain: str) -> int:
 
 
 def test_override_beats_yaml_and_reports_source(conf: Path) -> None:
+    # 现造一份 yaml 基线：仓库里已不再保留这些部署 yaml，但「yaml 可评审、
+    # 无数据库环境可用」仍是 ADR-0005 的能力，必须继续守住。
+    (conf / "memory.yaml").write_text(
+        "memory:\n  short_term:\n    max_turns: 7\n", encoding="utf-8"
+    )
+    cs.invalidate()
     snapshot = cs.resolved("memory")
+    assert snapshot.values["short_term"]["max_turns"] == 7
     assert snapshot.sources["short_term.max_turns"] == "yaml"
+    # 没被 yaml 覆盖的键必须报 default：来源按「该层自己的键集」判定，
+    # 而不是拿合并后的键集 —— 否则代码默认值会被谎报成 yaml 基线。
+    assert snapshot.sources["short_term.dedup_reads"] == "default"
 
     updated = cs.patch("memory", {"short_term.max_turns": 20})
     assert updated.values["short_term"]["max_turns"] == 20

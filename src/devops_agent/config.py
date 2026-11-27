@@ -183,7 +183,7 @@ class RuntimePolicy(BaseModel):
 
 
 class GatewayStreamPolicy(BaseModel):
-    """流式端点的策略旋钮（gateway.yaml 的 gateway.stream 段）。"""
+    """流式端点的策略旋钮（网关部署策略的 stream 段）。"""
 
     # 同一次 run 最多打扰用户几次确认
     ask_limit: int = Field(default=3, ge=1, le=20)
@@ -198,15 +198,15 @@ class GatewayStreamPolicy(BaseModel):
 
 
 class GatewaySessionsPolicy(BaseModel):
-    """会话注册表策略（gateway.yaml 的 gateway.sessions 段）。"""
+    """会话注册表策略（网关部署策略的 sessions 段）。"""
 
     max_entries: int = Field(default=16, ge=1, le=256)
 
 
 class GatewayPolicy(BaseModel):
-    """gateway.yaml 的完整类型化视图。
+    """网关策略的完整类型化视图。
 
-    只放部署策略；HTTP 状态码、帧名、DB 状态值一律不进来（见 gateway.yaml 的注释）。
+    只放部署策略；HTTP 状态码、帧名、DB 状态值一律不进来。
     """
 
     stream: GatewayStreamPolicy = Field(default_factory=GatewayStreamPolicy)
@@ -267,7 +267,7 @@ class QualityGates(BaseModel):
 
 
 class HealthWeights(BaseModel):
-    """健康分四类信号的权重（来自 health.yaml）。"""
+    """健康分四类信号的权重。"""
 
     execution: float = 0.35
     efficiency: float = 0.25
@@ -276,7 +276,7 @@ class HealthWeights(BaseModel):
 
 
 class HealthPolicy(BaseModel):
-    """health.yaml 的完整类型化视图（评分口径 v2）。
+    """健康分口径的完整类型化视图（评分口径 v2）。
 
     v1 只有「权重 + 一个固定延迟基准」，长任务必然 0 分、缺耗时会白拿 100；
     v2 把这些都做成可配置的旋钮，口径写在配置里而不是散在代码常量里。
@@ -322,7 +322,7 @@ def load_gates() -> QualityGates:
 
 
 def load_health() -> HealthPolicy:
-    """健康分口径：代码默认 ← health.yaml ← 环境变量 ← config.db 覆盖。
+    """健康分口径：代码默认 ← config.db 覆盖 ← 环境变量。
 
     不在这里 @cache：存取层自带 TTL 缓存，函数级缓存会让面板改完仍算旧口径。
     """
@@ -342,7 +342,7 @@ def load_model() -> ModelSettings:
 
 @cache
 def load_gateway() -> GatewayPolicy:
-    """网关策略：代码默认 ← gateway.yaml ← 环境变量 ← config.db 覆盖。
+    """网关策略：代码默认 ← config.db 覆盖 ← 环境变量。
 
     仍保留 @cache：装配期读一次就固定（`Settings.load()`），改完要重启进程 ——
     与其假装热更新，不如让界面明说「重启后生效」。
@@ -351,7 +351,7 @@ def load_gateway() -> GatewayPolicy:
 
 
 class InputPolicy(BaseModel):
-    """输入管线的抓取与体积上限（input.yaml 的 input 段）。
+    """输入管线的抓取与体积上限。
 
     这些以前是 `input/pipeline/fetch.py` 里的模块常量。放进配置的理由与网关一致：
     超时与体积属于「部署环境」而不是「算法」—— 内网代理慢、抓大站点、CI 沙箱受限，
@@ -396,7 +396,7 @@ class InputPolicy(BaseModel):
 
 
 def load_input() -> InputPolicy:
-    """输入管线策略：代码默认 ← input.yaml ← 环境变量 ← config.db 覆盖。
+    """输入管线策略：代码默认 ← config.db 覆盖 ← 环境变量。
 
     每次抓取都读（存取层有 TTL 缓存），所以面板改完立即生效。
     """
@@ -404,7 +404,7 @@ def load_input() -> InputPolicy:
 
 
 def load_memory() -> MemoryPolicy:
-    """记忆策略：代码默认 ← memory.yaml ← 环境变量 ← config.db 覆盖。
+    """记忆策略：代码默认 ← config.db 覆盖 ← 环境变量。
 
     环境变量（enabled / backend / scope / user_id）由存取层的白名单合并，
     不再在这里二次覆盖 —— 两处都写会让优先级说不清。装配时读取，下一轮生效。

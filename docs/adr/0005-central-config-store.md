@@ -40,6 +40,9 @@
 默认层就是 pydantic 字段默认值，不抄一份到 yaml 或数据库：升级代码改默认值时
 不需要迁移，也不会出现「代码默认 12、yaml 也写 12、库里还是 12」三份同值。
 
+> 实施期遗留：`health / input / memory / gateway` 四份 yaml 曾把默认值又抄了一遍，
+> 与本条相违。已于 2026-11-27 删除，见文末「后续修订」。
+
 ### 3. 四层优先级与环境变量锁定
 
 ```
@@ -84,3 +87,30 @@ yaml 仍然参与合流（而不是「首次导入后就丢掉」）：它可评
   观测库会连带配置；配置的寿命明显长于轨迹。
 - **每个域一张表**：结构更显式，代价是每加一个域都要建表 + 迁移。
   KV + 点号路径能在不改 DDL 的前提下新增键。
+
+## 后续修订（2026-11-27）：删除四份同值 yaml
+
+`config/health.yaml`、`config/input.yaml`、`config/memory.yaml`、`config/gateway.yaml`
+已删除。删除前逐项比对过：四份文件共 76 个键，与对应 pydantic 模型的字段默认值
+**完全相同（0 处差异）**——它们只是把 §2 里说的「默认层」抄了第二遍，正是本条
+决策要消灭的「代码默认 12、yaml 也写 12」。
+
+删除不改变任何行为：`config_store` 的 yaml 层在文件缺失时返回空 dict，合流退化为
+「代码默认 ← db 覆盖 ← env」，`load_health / load_input / load_memory / load_gateway`
+的返回值与删除前一致，由 `test_*_loads_after_deployment_yaml_removed` 与
+`test_memory_defaults_load_without_yaml` 钉住。部署者调参走配置面板（写 config.db），
+不再需要「改文件 + 重启」这条与面板并行的旧路径。
+
+仍留在仓库文件里的四份，各自理由未变：
+
+| 文件 | 为什么不能进库 |
+|---|---|
+| `policy.yaml` | 安全域知识（高危正则、永不沉淀名单），改它等于给自己发权限 |
+| `model.yaml` | 写入口在模型抽屉（`model_settings/`），再开一条会制造第二个真相 |
+| `gates.yaml` | CI 在干净 checkout 上跑 `check_gates.py`，那里没有数据库 |
+| `size-baseline.json` | 同上，构建期契约，必须在 PR 里被 diff 看见 |
+
+「yaml 作为可评审基线」的能力没有取消：`config_store` 仍读同段名的 yaml，
+无数据库环境（CI / 测试）依旧只靠代码默认 + 可选 yaml 工作。
+除本节外，ADR-0003 / 0004 / 0005-gateway-subpackages 与早期 spec 里对这几份
+yaml 的引用属历史记录，按 ADR 惯例不回改。

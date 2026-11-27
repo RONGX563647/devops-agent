@@ -69,7 +69,7 @@
 | `app.py` / `bootstrap.py` | 装配根 `create_app()`：注入、挂载、启动告警 | 新增路由 / 新增进程级单例 |
 | `contract.py` | SSE 帧、传输常量、挂起载荷（**叶子**） | 帧字段变（前端同步） |
 | `errors.py` | `ErrorCode` 枚举 + `STATUS_OF` 映射（**叶子**） | 新增错误码（前后端同步） |
-| `settings.py` | env 名 + `config/gateway.yaml` → 强类型策略（**叶子**） | 新增部署旋钮 |
+| `settings.py` | env 名 + 部署配置 → 强类型策略（**叶子**） | 新增部署旋钮 |
 | `turn/orchestrate.py` | 一轮编排：`run_turn` / `resume_turn` / `finish_or_park` | agent 流程变 |
 | `turn/lease.py` | 会话租约：`claim_entry` / `hold` / `open_lease` / `close` | 并发模型变 |
 | `turn/ending.py` | 收尾决策纯函数 + `RunLimits` | 收尾 UX 变 |

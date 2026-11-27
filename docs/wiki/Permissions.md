@@ -155,7 +155,7 @@ run → 权限引擎判 ASK → pending_calls() 非空
 关键实现点：
 
 - **不发 `done`**：前端据此把消息标成「等待确认」而不是「已完成」。
-- **限额与 TTL 是配置**（`config/gateway.yaml` 的 `gateway.stream`）：`ask_limit` /
+- **限额与 TTL 是配置**（`GatewayStreamPolicy`，配置面板可覆盖）：`ask_limit` /
   `park_ttl_seconds` / `settle_rounds`。本文里的 3 / 600 / 2 就是当前默认值。
   决策是纯函数 `gateway/turn/ending.decide_ending`，副作用在 `gateway/turn/orchestrate.finish_or_park`。
 - **TTL 过期**后 confirm 返回 409 `expired`。

@@ -1,4 +1,4 @@
-"""记忆策略类型（memory.yaml 的类型化视图）。
+"""记忆策略类型（三层记忆的配置模型）。
 
 单独成文件是为了让 config.py 保持在 500 行以内；这里只依赖 pydantic，
 不反向依赖 config，因此 config 可以安全地 load 并在命名空间里再导出。
@@ -97,7 +97,7 @@ class MemoryTracePolicy(BaseModel):
 
 
 class MemoryPolicy(BaseModel):
-    """memory.yaml 的完整类型化视图（三层 + 预算 + 上下文 + 轨迹）。
+    """记忆策略的完整类型化视图（三层 + 预算 + 上下文 + 轨迹）。
 
     没有 `compress` 段：曾经的 `fail_open` 没有任何消费点，删掉而不是留着当装饰
     （SPEC-0013 §18.8 M12）。压缩失败时的行为由 `CompressionMiddleware` 固定。

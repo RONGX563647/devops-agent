@@ -1,7 +1,7 @@
 """配置的读取与写入 —— 四层合流、只存差异、乐观锁、审计。
 
-读取：`defaults(yaml)` ← yaml ← env ← db。每次都从代码默认重建，而不是在旧结果上
-打补丁，避免「删掉覆盖后留下的空洞」。
+读取：代码默认 ← yaml 基线 ← db 覆盖 ← env。每次都从代码默认重建，而不是在旧结果
+上打补丁，避免「删掉覆盖后留下的空洞」。
 写入：只落与下层不同的键；写前用 pydantic 校验（越界 400），写后 bump 版本（409）。
 """
 
@@ -160,7 +160,10 @@ def _build(spec: DomainSpec, layer: _DbLayer) -> Snapshot:
         values = model.model_validate(merged).model_dump()
     except ValidationError as exc:
         raise InvalidConfig(_explain(exc)) from exc
-    floor = flatten(merge(defaults, _yaml_layer(spec)))
+    # 来源只认「这一层自己有没有这个键」：yaml 层用自身键集，不能拿合并后的
+    # floor 去判 —— defaults 里的键全在 floor 中，否则 "default" 永远不可达，
+    # 界面会把所有代码默认值谎报成 yaml 基线（删掉 yaml 后尤其误导）。
+    yaml_keys = flatten(_yaml_layer(spec))
     env = flatten(env_overlay(spec.key))
     sources: dict[str, str] = {}
     for key in flatten(values):
@@ -168,7 +171,7 @@ def _build(spec: DomainSpec, layer: _DbLayer) -> Snapshot:
             sources[key] = "env"
         elif key in layer.overrides:
             sources[key] = "db"
-        elif key in floor:
+        elif key in yaml_keys:
             sources[key] = "yaml"
         else:
             sources[key] = "default"

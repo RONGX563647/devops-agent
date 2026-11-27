@@ -176,23 +176,11 @@ class SessionRegistry:
         entry = self._entries.get(session_id)
         key = str(getattr(profile, "key", ""))
         requested_id = str(getattr(workspace, "id", "") or "") if workspace is not None else None
-        workspace_ok = requested_id is None or (
-            entry is not None and entry.workspace_id == requested_id
-        )
-        if (
-            entry is not None
-            and entry.profile == key
-            and workspace_ok
-            and (web_search is None or entry.web_search == web_search)
-        ):
+        if entry is not None and self._reusable(entry, key, web_search, requested_id):
             entry.last_used = _now().timestamp()
             self._entries.move_to_end(session_id)
             return entry
-        target = (
-            workspace
-            if workspace is not None
-            else (entry.workspace_ref if entry is not None else None)
-        )
+        target = workspace if workspace is not None else self._existing_ref(entry)
         if entry is not None:
             # 切换档位/开关/工作区：先把旧状态存下来，再用新配置重建同一个会话
             self.save(session_id)
@@ -201,6 +189,25 @@ class SessionRegistry:
         self._entries[session_id] = fresh
         self._evict()
         return fresh
+
+    @staticmethod
+    def _reusable(
+        entry: SessionEntry,
+        key: str,
+        web_search: bool | None,
+        requested_id: str | None,
+    ) -> bool:
+        """实例能否直接复用：档位一致、工作区未被改投、联网开关未变。"""
+        if entry.profile != key:
+            return False
+        if requested_id is not None and entry.workspace_id != requested_id:
+            return False
+        return web_search is None or entry.web_search == web_search
+
+    @staticmethod
+    def _existing_ref(entry: SessionEntry | None) -> Any | None:
+        """未显式给工作区时沿用现有实例的归属；没有实例才回落到旧路径。"""
+        return entry.workspace_ref if entry is not None else None
 
     def peek(self, session_id: str) -> SessionEntry | None:
         """取当前实例但不重建、不碰档位：切档端点专用。

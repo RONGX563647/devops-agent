@@ -240,6 +240,18 @@ def _walk_bounds(model: type[BaseModel], prefix: str, out: dict[str, dict[str, A
             out[key] = bounds
 
 
+def _coerce_env(kind: str, raw: str, allowed: tuple[str, ...]) -> Any:
+    """把环境变量原文转成该字段类型；None 表示「视为未设置」。"""
+    if kind == "bool":
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    if kind == "list":
+        items = [part.strip() for part in raw.split(",") if part.strip()]
+        return items or None
+    if not allowed or raw in allowed:
+        return raw
+    return None
+
+
 def env_overlay(domain: str) -> dict[str, Any]:
     """读该域的环境变量覆盖；空串与白名单外的值都视为未设置（旧语义）。"""
     import os
@@ -249,14 +261,9 @@ def env_overlay(domain: str) -> dict[str, Any]:
         raw = os.environ.get(name)
         if raw is None or raw == "":
             continue
-        if kind == "bool":
-            values[key] = raw.strip().lower() in ("1", "true", "yes", "on")
-        elif kind == "list":
-            items = [part.strip() for part in raw.split(",") if part.strip()]
-            if items:
-                values[key] = items
-        elif not allowed or raw in allowed:
-            values[key] = raw
+        value = _coerce_env(kind, raw, allowed)
+        if value is not None:
+            values[key] = value
     return values
 
 

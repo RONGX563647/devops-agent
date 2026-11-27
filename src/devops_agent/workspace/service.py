@@ -262,21 +262,7 @@ class WorkspaceService:
                     sessions=[item.session_id for item in sessions],
                 )
             root = Path(workspace.root_path)
-            patch: str | None = None
-            root_removed = False
-            if repository is not None and repository.managed:
-                changed = git.status_porcelain(root)
-                if changed and self.policy.require_clean_on_delete and not force:
-                    raise errors.WorkspaceError(
-                        errors.DIRTY,
-                        "受管克隆目录有未提交改动；先提交/清理，或 force=true",
-                        changed_files=changed,
-                    )
-                if changed:
-                    patch = str(git.write_delete_patch(root, workspace_id))
-                if root.exists():
-                    git.remove_managed_dir(root)
-                root_removed = True
+            patch, root_removed = self._cleanup_managed(repository, root, workspace_id, force=force)
             memory_deleted = store.delete_long_term(conn, self._scope_id(workspace_id))
             store.delete(conn, workspace_id)
         return {
@@ -287,6 +273,32 @@ class WorkspaceService:
             "patch": patch,
             "memory_deleted": memory_deleted,
         }
+
+    def _cleanup_managed(
+        self,
+        repository: Repository | None,
+        root: Path,
+        workspace_id: str,
+        *,
+        force: bool,
+    ) -> tuple[str | None, bool]:
+        """受管克隆的删除前处理：脏目录先 409 或落 patch，再清理目录。
+
+        本地引用（`managed=false`）直接返回，绝不触碰用户目录（I5）。
+        """
+        if repository is None or not repository.managed:
+            return None, False
+        changed = git.status_porcelain(root)
+        if changed and self.policy.require_clean_on_delete and not force:
+            raise errors.WorkspaceError(
+                errors.DIRTY,
+                "受管克隆目录有未提交改动；先提交/清理，或 force=true",
+                changed_files=changed,
+            )
+        patch = str(git.write_delete_patch(root, workspace_id)) if changed else None
+        if root.exists():
+            git.remove_managed_dir(root)
+        return patch, True
 
     # --- 会话绑定 -----------------------------------------------------
     def bind_session(self, session_id: str, workspace_id: str) -> WorkspaceSession:
@@ -328,37 +340,52 @@ class WorkspaceService:
         with store.connect(self.db_path) as conn:
             binding = store.get_session_binding(conn, session_id)
             if requested is not None:
-                workspace = store.get_workspace(conn, requested)
-                if workspace is None:
-                    raise errors.WorkspaceError(errors.NOT_FOUND, "工作区不存在")
-                if workspace.status != "active":
-                    raise errors.WorkspaceError(errors.ARCHIVED, "工作区已归档")
-                if binding is not None and binding.workspace_id != requested:
-                    raise errors.WorkspaceError(
-                        errors.ALREADY_BOUND,
-                        "会话已绑定其他工作区，需新开会话",
-                        workspace_id=binding.workspace_id,
-                    )
-                if binding is None:
-                    store.bind_session(
-                        conn,
-                        WorkspaceSession(
-                            session_id=session_id,
-                            workspace_id=requested,
-                            bound_at=_now(),
-                            bound_by="local",
-                        ),
-                    )
-                    store.set_session_workspace(conn, session_id, requested)
-                return WorkspaceRef(id=workspace.id, root_path=workspace.root_path)
-            if binding is None:
-                return None
-            workspace = store.get_workspace(conn, binding.workspace_id)
-            if workspace is None:
-                return None  # 工作区已删除：回到旧路径，由调用方提示
-            if workspace.status != "active":
-                raise errors.WorkspaceError(errors.ARCHIVED, "工作区已归档")
-            return WorkspaceRef(id=workspace.id, root_path=workspace.root_path)
+                return self._bind_and_ref(conn, session_id, requested, binding)
+            return self._bound_ref(conn, binding)
+
+    @staticmethod
+    def _bind_and_ref(
+        conn: Any,
+        session_id: str,
+        requested: str,
+        binding: WorkspaceSession | None,
+    ) -> WorkspaceRef:
+        """显式 id：校验 active 与归属一致；首次出现即落绑定。"""
+        workspace = store.get_workspace(conn, requested)
+        if workspace is None:
+            raise errors.WorkspaceError(errors.NOT_FOUND, "工作区不存在")
+        if workspace.status != "active":
+            raise errors.WorkspaceError(errors.ARCHIVED, "工作区已归档")
+        if binding is not None and binding.workspace_id != requested:
+            raise errors.WorkspaceError(
+                errors.ALREADY_BOUND,
+                "会话已绑定其他工作区，需新开会话",
+                workspace_id=binding.workspace_id,
+            )
+        if binding is None:
+            store.bind_session(
+                conn,
+                WorkspaceSession(
+                    session_id=session_id,
+                    workspace_id=requested,
+                    bound_at=_now(),
+                    bound_by="local",
+                ),
+            )
+            store.set_session_workspace(conn, session_id, requested)
+        return WorkspaceRef(id=workspace.id, root_path=workspace.root_path)
+
+    @staticmethod
+    def _bound_ref(conn: Any, binding: WorkspaceSession | None) -> WorkspaceRef | None:
+        """已绑定：工作区被删则回落旧路径；归档则拒绝。"""
+        if binding is None:
+            return None
+        workspace = store.get_workspace(conn, binding.workspace_id)
+        if workspace is None:
+            return None  # 工作区已删除：回到旧路径，由调用方提示
+        if workspace.status != "active":
+            raise errors.WorkspaceError(errors.ARCHIVED, "工作区已归档")
+        return WorkspaceRef(id=workspace.id, root_path=workspace.root_path)
 
     # --- 目录浏览与记忆 -----------------------------------------------
     def browse(self, path: str = "") -> dict[str, Any]:

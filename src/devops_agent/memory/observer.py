@@ -19,20 +19,13 @@ from agentscope.middleware import MiddlewareBase
 from devops_agent.memory import events, health
 from devops_agent.memory.runtime import MemoryRuntime, estimate_prefix_tokens
 from devops_agent.memory.short_term import trim_messages
-from devops_agent.memory.tokens import estimate_tokens
+from devops_agent.memory.tokens import content_text, estimate_messages, estimate_tokens
 from devops_agent.memory.turns import injected_note, is_user_turn
 
 
 def _text_of(msg: Any) -> str:
-    content = getattr(msg, "content", "")
-    if isinstance(content, str):
-        return content
-    parts: list[str] = []
-    for block in content if isinstance(content, list) else []:
-        text = getattr(block, "text", None)
-        if isinstance(text, str):
-            parts.append(text)
-    return "\n".join(parts)
+    """消息 → 文本：工具结果取 `output`（字段名不是 `text`），文本块取 `text`。"""
+    return content_text(getattr(msg, "content", ""))
 
 
 def _prompt_tokens(usage: Any) -> int:
@@ -101,16 +94,23 @@ class MemoryMiddleware(MiddlewareBase):
         input_kwargs: dict[str, Any],
         next_handler: Callable[..., Awaitable[Any]],
     ) -> Any:
-        """1) 确定性裁剪；2) 组装并追加记忆 note；3) 交给下一层。"""
+        """1) 确定性裁剪；2) 组装并追加记忆 note；3) 交给下一层。
+
+        预算在裁剪之前算：`history_limit` 决定「这一轮到底该不该动历史」，
+        没有它 `trim_messages` 会退化成每轮无差别改写（SPEC-0019 §3 S0）。
+        """
         messages = list(input_kwargs.get("messages") or [])
-        trimmed, report = trim_messages(messages, self._policy.short_term)
+        tools = list(input_kwargs.get("tools") or [])
+        prefix = estimate_prefix_tokens(_text_of(messages[0]) if messages else "", tools)
+        budget = self._runtime.budget(agent, prefix)
+        history_limit = budget.short_term + budget.headroom
+        trimmed, report = trim_messages(messages, self._policy.short_term, history_limit)
         self._emit_trim(report)
         turn = _turn_key(str(getattr(agent.state, "reply_id", "") or ""), trimmed)
         note = await self._note_for(agent, trimmed, turn)
         if note:
             trimmed.append(injected_note(note, kind="memory"))
-        tools = list(input_kwargs.get("tools") or [])
-        self._emit_assembled_once(agent, trimmed, tools, note, report, turn)
+        self._emit_assembled_once(agent, trimmed, tools, note, report, turn, prefix)
         result = await next_handler(messages=trimmed)
         return self._audit_once(result, trimmed, tools, turn)
 
@@ -143,12 +143,13 @@ class MemoryMiddleware(MiddlewareBase):
         note: str,
         report: Any,
         turn: str,
+        prefix: int,
     ) -> None:
         """装配视图每轮只发一次：同一轮的后续模型调用不再重复。"""
         if self._assembled_turn == turn:
             return
         self._assembled_turn = turn
-        self._emit_assembled(agent, messages, tools, note, report.as_dict())
+        self._emit_assembled(agent, messages, tools, note, report.as_dict(), prefix)
 
     def _audit_once(
         self,
@@ -193,9 +194,8 @@ class MemoryMiddleware(MiddlewareBase):
         if actual <= 0:
             return
         system_text = _text_of(messages[0]) if messages else ""
-        estimated = estimate_prefix_tokens(system_text, tools) + sum(
-            estimate_tokens(_text_of(msg)) for msg in messages
-        )
+        # 历史口径必须含工具结果：漏算它时 ratio 会被放大成噪音，对账失去意义
+        estimated = estimate_prefix_tokens(system_text, tools) + estimate_messages(messages)
         if estimated <= 0:
             return
         self._audited_turn = turn
@@ -281,14 +281,15 @@ class MemoryMiddleware(MiddlewareBase):
         messages: list[Msg],
         tools: list[dict[str, Any]],
         note: str,
-        dropped: dict[str, int],
+        dropped: dict[str, int | str],
+        prefix: int,
     ) -> None:
         """第 0 步的分区视图；Echo/关闭时不发。"""
         if not self._policy.context.enabled or not self._policy.context.assemble_event:
             return
         system_text = _text_of(messages[0]) if messages else ""
         tools_text = json.dumps(tools, ensure_ascii=False)
-        budget = self._runtime.budget(agent, estimate_prefix_tokens(system_text, tools))
+        budget = self._runtime.budget(agent, prefix)
         payload = {
             "zones": {
                 "prefix": {

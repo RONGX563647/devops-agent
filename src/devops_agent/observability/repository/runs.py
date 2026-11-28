@@ -26,8 +26,8 @@ def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
             duration_ms, model, total_tokens, health_score,
             input_tokens, output_tokens, request_id, permission,
             cache_input_tokens, cache_creation_input_tokens, work_ms, wall_ms, model_params,
-            workspace_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            workspace_id, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run.session_id,
             run.domain,
@@ -50,6 +50,7 @@ def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
             run.wall_ms,
             run.model_params,
             run.workspace_id,
+            run.error,
         ),
     )
     assert cur.lastrowid is not None  # INSERT 成功时 sqlite3 保证有 lastrowid

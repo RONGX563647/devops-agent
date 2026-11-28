@@ -187,18 +187,20 @@ function SessionTrace({
     return map;
   }, [shownTurns, overrides, lastIndex]);
 
-  const flat = useMemo(() => turns.flatMap((turn) => turn.items), [turns]);
+  // 选中态只在「当前显示出来的步骤」里找：仅看异常时被筛掉的那一步不该继续占着右侧
+  const flat = useMemo(() => shownTurns.flatMap((turn) => turn.items), [shownTurns]);
   // 手选了轮次/调用组就不再回落到「最慢一步」：否则点哪轮，右侧都被默认步骤牵着走
   const activeStepId =
     selectedStepId ??
     (selectedTurnId === null && selectedGroupKey === null ? initial?.step.id ?? null : null);
   const activeStep = flat.find((step) => step.id === activeStepId) ?? null;
+  const fallbackTurn = shownTurns.find((turn) => turn.id === initial?.turn.id) ?? null;
   const activeTurn =
     (activeStep
-      ? turns.find((turn) => turn.items.some((step) => step.id === activeStep.id))
+      ? shownTurns.find((turn) => turn.items.some((step) => step.id === activeStep.id))
       : null) ??
-    turns.find((turn) => turn.id === selectedTurnId) ??
-    (activeGroup ? null : initial?.turn) ??
+    shownTurns.find((turn) => turn.id === selectedTurnId) ??
+    (activeGroup ? null : fallbackTurn) ??
     null;
 
   function toggleTurn(id: string) {
@@ -360,6 +362,7 @@ function SessionTrace({
                 onSelectStep={selectStep}
                 onSelectTurn={selectTurn}
                 onSelectGroup={(group) => selectGroup(group.key)}
+                onlyErrors={onlyErrors}
               />
             </div>
             {/* key 随步骤/调用组变：换一条时页签回到「概述」，避免误读上一条的参数；

@@ -40,6 +40,8 @@ interface Props {
   onSelectStep: (step: TraceStep) => void;
   onSelectTurn: (turn: TraceTurn) => void;
   onSelectGroup?: (group: CallGroup) => void;
+  /** 只渲染失败步骤时为真：空态要说「没有异常」，而不是「去发一条消息」。 */
+  onlyErrors?: boolean;
 }
 
 const CAPTIONS: Record<TraceMode, string> = {
@@ -62,6 +64,7 @@ export function TraceList({
   onSelectStep,
   onSelectTurn,
   onSelectGroup,
+  onlyErrors = false,
 }: Props) {
   // 步骤详情默认收起：轨迹先给「做了哪些步」，原文要点开才看，长会话才不会一屏塞满参数
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -71,7 +74,14 @@ export function TraceList({
     setExpanded((prev) => ({ ...prev, [id]: !(prev[id] ?? false) }));
 
   if (turns.length === 0) {
-    return <p className="trace-empty">该会话还没有可展示的轨迹，去对话里发一条消息。</p>;
+    // 「仅看异常」下没有轮 = 这段会话本来就没失败步骤，不能说成「还没发过消息」
+    return (
+      <p className="trace-empty">
+        {onlyErrors
+          ? '这段会话没有调用异常的步骤：过滤后没有残留任何失败的工具或模型调用。'
+          : '该会话还没有可展示的轨迹，去对话里发一条消息。'}
+      </p>
+    );
   }
 
   if (mode === 'call') {
@@ -83,6 +93,7 @@ export function TraceList({
           query={query}
           activeStepId={activeStepId}
           activeGroupKey={activeGroupKey}
+          onlyErrors={onlyErrors}
           onSelect={onSelectStep}
           onSelectGroup={onSelectGroup ?? (() => undefined)}
         />

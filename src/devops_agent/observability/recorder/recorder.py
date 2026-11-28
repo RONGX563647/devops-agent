@@ -68,6 +68,9 @@ class RunRecorder(SpanSink):
         self._cache_creation_input_tokens = 0
         self._final_text = ""
         self._finished_reason = ""
+        # 事件里带回来的异常原文：REPLY_END 常常只有 finished_reason=error，
+        # 不在这里接住，finish() 就只能写一句「未捕获到异常信息」
+        self._run_error = ""
         self._finished = False
         self._pending: dict[str, dict[str, object]] = {}
         # 模型调用按 reply_id 排队：一轮 ReAct 里同一 reply 会连续调多次模型，
@@ -277,6 +280,9 @@ class RunRecorder(SpanSink):
 
     def _on_reply_end(self, event: dict[str, object]) -> None:
         self._finished_reason = str(event.get("finished_reason", "")) or "completed"
+        # 事件自带的异常原文优先：框架在内部收口时不会把 exc 抛给调用方
+        if not self._run_error:
+            self._run_error = str(event.get("error") or "")
 
     def _on_input_stage(self, event: dict[str, object]) -> None:
         """缓存一条输入解析阶段；全量保留（含 skip），供事后审计与复现。"""
@@ -307,7 +313,12 @@ class RunRecorder(SpanSink):
             final_status = (
                 "failed" if self._finished_reason in ("error", "exceed_max_iters") else "success"
             )
-        reason = error or ("" if final_status == "success" else "未捕获到异常信息")
+        reason = error or self._run_error or (
+            ""
+            if final_status == "success"
+            # 连事件都没带原文时，至少把结束原因写出来：含糊的「未捕获」等于没记
+            else f"本轮以 {self._finished_reason or 'error'} 结束，事件未携带异常详情"
+        )
         return final_status, reason
 
     def _finish_usage_fields(self) -> tuple[int, int, int, int, int]:

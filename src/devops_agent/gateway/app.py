@@ -52,6 +52,7 @@ from devops_agent.input.api import router as attachments_router
 from devops_agent.model_api import router as model_config_router
 from devops_agent.model_catalog.api import router as providers_router
 from devops_agent.observability.api import router as observability_router
+from devops_agent.observability.recovery import reap_orphan_runs
 from devops_agent.openjudge.api import router as openjudge_router
 from devops_agent.openjudge.api_edit import router as openjudge_edit_router
 from devops_agent.openjudge.memory.api import router as memory_eval_router
@@ -86,11 +87,16 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         """启动期初始化执行面，退出时关闭全部工作区。
 
+        0) 先回收上次进程留下的悬挂 run —— 不回收的话它们永远停在 running，
+           失败率被算低、前端一直显示「进行中」；
         1) 未显式注入 runtime 时，读 sandbox 策略并 `ensure()` 执行目标；
         2) 初始化成功后同步装配真实运行时（此时才有事件循环执行 async 初始化）；
         3) `required=true` 且失败时记录错误，对话端点据此返回 503（不回落宿主）；
         4) 关闭阶段统一 `close_all()`，容器残留只记录。
         """
+        reaped = reap_orphan_runs()
+        if reaped:
+            logger.warning("回收 %d 条悬挂运行记录（上次进程未收尾）", reaped)
         manager: SandboxManager | None = None
         if injected is None:
             manager = SandboxManager(load_sandbox())

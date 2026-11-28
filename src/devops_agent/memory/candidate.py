@@ -33,6 +33,9 @@ _SIGNAL = re.compile(
 _MIN_CHARS = 12
 _MIN_CHARS_WITH_SIGNAL = 6
 
+#: 以问号结尾 = 提问。配合「回答正文为空」使用：只有问题的回合没有可记的内容。
+_QUESTION = re.compile(r"[?？]\s*$")
+
 #: 「我先看一下工作区里实际的东西」这类元话语：描述下一步要做什么，不是结论。
 #: 只在与「无技术信号」同时成立时拒写 —— 这是零信息量却占掉 note 预算的典型
 #: 形态（SPEC-0019 §7.3），带路径/命令/后缀的回合照常写入。
@@ -59,6 +62,9 @@ def is_candidate(user_text: str, assistant_text: str) -> tuple[bool, str]:
     raw = f"{user_text.strip()}\n{assistant_text.strip()}".strip()
     if not raw:
         return False, "empty"
+    # 只有问句、没有正文回答：tool-only 回合就是这个形态，记下来只有问题没有信息
+    if not assistant_text.strip() and _QUESTION.search(user_text.strip()):
+        return False, "question_only"
     # 去掉问候词后只剩一两个字（"谢谢你"→"你"）说明还是寒暄，没有可记的内容
     if len(_bare(user_text)) <= 2:
         return False, "courtesy"

@@ -15,7 +15,6 @@ from typing import Any, cast
 from agentscope.agent import Agent
 
 from devops_agent.config import (
-    load_memory,
     load_model,
 )
 from devops_agent.input.pipeline.redact import redact_preview
@@ -454,35 +453,6 @@ class MemoryRuntime:
             # 开关说明「打算做什么」，health 说明「当下是否在降级」——两者缺一不可
             "health": health.snapshot(),
         }
-
-
-def memory_status() -> dict[str, Any]:
-    """进程级记忆状态（/health 与 /api/memory/status 共用）。"""
-    policy = load_memory()
-    runtime = MemoryRuntime("", policy, MemorySink(), None)
-    state = runtime.status()
-    state["policy"] = {
-        "short_term_ratio": policy.budget.short_term_ratio,
-        "episodic_ratio": policy.budget.episodic_ratio,
-        "long_term_ratio": policy.budget.long_term_ratio,
-        "headroom_ratio": policy.budget.headroom_ratio,
-    }
-    return state
-
-
-def session_counts(session_id: str) -> dict[str, int]:
-    """某个会话的两层条数（管理接口用）；读不到时返回 0。"""
-    policy = load_memory()
-    scope_id = resolve_scope_id(policy, session_id)
-    try:
-        with repo.connect() as conn:
-            repo.init_db(conn)
-            return {
-                "versions": len(repo.list_memory_versions(conn, session_id, 100)),
-                "long_term": repo.count_long_term(conn, policy.long_term.scope, scope_id),
-            }
-    except Exception:  # noqa: BLE001
-        return {"versions": 0, "long_term": 0}
 
 
 def estimate_prefix_tokens(system_text: str, tools: list[dict[str, Any]]) -> int:

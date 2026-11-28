@@ -14,8 +14,8 @@ from fastapi import APIRouter, Request
 from devops_agent.config_store import health as config_health
 from devops_agent.config_store import mode as config_mode
 from devops_agent.gateway.bootstrap import describe_runtime, describe_sandbox, model_status
-from devops_agent.memory.runtime import memory_status
 from devops_agent.memory.snapshot import restore_stats
+from devops_agent.memory.status import memory_status
 from devops_agent.tools.preflight import health_payload
 
 router = APIRouter()
@@ -67,6 +67,8 @@ def health(request: Request) -> dict[str, Any]:
             "requested": status["requested"],
             "effective": status["effective"],
             "reason": status["reason"],
+            # 表里实际有多少条：开关说「打算做什么」，条数说「真的存下来没有」
+            "store": status["store"],
             # 快照损坏退回新会话的次数：非零说明「历史莫名清空」有据可查
             "restores": restore_stats(),
             # 检索算法与写入摘要：回滚时改的就是这两项，探针要能看见当前值

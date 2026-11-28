@@ -11,8 +11,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from devops_agent.config import load_memory
 from devops_agent.memory.context import clip
-from devops_agent.memory.runtime import memory_status
 from devops_agent.memory.scope import resolve_scope_id
+from devops_agent.memory.status import memory_status
 from devops_agent.observability import repository as repo
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])

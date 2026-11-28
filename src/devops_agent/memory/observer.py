@@ -25,7 +25,8 @@ from agentscope.middleware import MiddlewareBase
 from devops_agent.memory import calibration, events, health
 from devops_agent.memory.runtime import MemoryRuntime, estimate_prefix_tokens
 from devops_agent.memory.short_term import STAGE_REASON, trim_messages
-from devops_agent.memory.tokens import count_messages, estimate_tokens, message_text
+from devops_agent.memory.summarize import normalize
+from devops_agent.memory.tokens import count_messages, estimate_tokens, message_prose, message_text
 from devops_agent.memory.tokens import default as tokenizer
 from devops_agent.memory.turns import injected_note, is_user_turn
 
@@ -52,9 +53,10 @@ def _last_user_text(messages: list[Msg]) -> str:
 
 
 def _last_assistant_text(agent: Agent) -> str:
+    """最后一条助手消息的**正文**：工具入参/结果不算「说过的话」（见 `message_prose`）。"""
     for msg in reversed(getattr(agent.state, "context", []) or []):
         if getattr(msg, "role", "") == "assistant":
-            return _text_of(msg)
+            return message_prose(msg)
     return ""
 
 
@@ -64,6 +66,62 @@ def _input_text(inputs: Any) -> str:
     if isinstance(inputs, list):
         return _text_of(inputs[-1]) if inputs else ""
     return _text_of(inputs)
+
+
+#: 命中正文短于此长度就不做「已在上下文」判定：短串（"用 ruff"）到处都能子串
+#: 命中，按它过滤会把真正有用的短结论一起丢掉。
+_ECHO_MIN_CHARS = 24
+
+
+def _context_blob(messages: list[Any]) -> str:
+    """本轮请求里已有的历史文本（归一化后），用于识别「召回把自己说过的话还回来」。"""
+    return normalize("\n".join(_text_of(msg) for msg in messages))
+
+
+def _drop_echoes(hits: list[Any], blob: str) -> list[Any]:
+    """剔掉已经在本轮上下文里的命中（`blob` 传原文即可，内部自己归一化）。
+
+    长期层为保住可检索性存的是「用户原话 + 结论」，而上一轮这段话本来就在历史
+    里：原样注入等于让模型复读自己，还白占 note 预算（实测「召回块里是我上一轮
+    的开场白」就是这种形态）。历史被预算裁掉之后同一条命中会重新生效 —— 那才是
+    长期层该起作用的时刻。
+    """
+    body_blob = normalize(blob)
+    if not body_blob:
+        return hits
+    kept: list[Any] = []
+    for hit in hits:
+        body = normalize(str(getattr(hit, "text", "")))
+        if len(body) >= _ECHO_MIN_CHARS and body in body_blob:
+            continue
+        kept.append(hit)
+    return kept
+
+
+def _retrieve_outcome(
+    *,
+    note: str,
+    has_card: bool,
+    kept: int,
+    requested: int,
+    degraded: tuple[str, ...],
+    degraded_reason: str,
+) -> tuple[str, str]:
+    """召回结果的 (state, reason)；分支顺序就是优先级，集中在一处才看得出语义。
+
+    降级优先于 hit/miss（后端挂了却显示「没命中」等于把故障伪装成正常）；
+    「命中的全在历史里」与「额度被压到 0」都必须与「确实没有记忆」区分开，
+    否则评测会把去重与预算问题一起统计成召回失败。
+    """
+    if degraded:
+        return "error", degraded_reason
+    if note:
+        return "hit", ""
+    if requested and not kept:
+        return "miss", events.REASON_ALREADY_IN_CONTEXT
+    if has_card or kept:
+        return "skipped", events.REASON_BUDGET_EXHAUSTED
+    return "miss", events.REASON_NO_MEMORY
 
 
 def _turn_key(reply: str, messages: list[Msg]) -> str:
@@ -302,24 +360,27 @@ class MemoryMiddleware(MiddlewareBase):
             )
         )
         result = await self._runtime.recall(query)
-        card, hits = result.card, result.hits
+        card = result.card
+        # 召回结果先与「本轮已有的历史」对账：已说过的话不再注入一遍
+        hits = _drop_echoes(result.hits, _context_blob(messages))
+        dropped = len(result.hits) - len(hits)
         marker = self._runtime.marker(card, hits, turn)
         note = self._runtime.note(card, hits, note_max_chars=self._runtime.note_limit(budget))
-        # 降级优先于 hit/miss：后端挂了却显示「没命中」，等于把故障伪装成正常
-        if result.degraded:
-            state, reason = "error", result.reason
-        elif not note and (card or hits):
-            # 有内容但一个字符都没塞进去：额度被预算压到 0。报 miss 会让
-            # 「记忆没被注入」看起来像「没有记忆」，评测与排障都判断错方向。
-            state, reason = "skipped", events.REASON_BUDGET_EXHAUSTED
-        else:
-            state, reason = ("hit" if note else "miss"), ("" if note else events.REASON_NO_MEMORY)
+        state, reason = _retrieve_outcome(
+            note=note,
+            has_card=card is not None,
+            kept=len(hits),
+            requested=len(result.hits),
+            degraded=result.degraded,
+            degraded_reason=result.reason,
+        )
         meta = {
             "episodic_version": marker["episodic_version"],
             "hits": len(hits),
             "ids": [hit.id for hit in hits],
             "scores": [round(hit.score, 3) for hit in hits],
             "kinds": [hit.kind for hit in hits],
+            "echo_dropped": dropped,
             "injected_chars": len(note),
             "query": query[: self._policy.trace.query_preview_chars],
             "degraded": list(result.degraded),

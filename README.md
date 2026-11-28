@@ -13,7 +13,7 @@
 - **端到端可观测性**：事件流 → SQLite（runs / spans / input_stages / eval_scores）→ 观测 API → React 前端。
 - **评测闭环**：题库 + 规则判卷 + 六维裁判 + 基线与回归对比 + 静态契约 lint + 夜间流水线。
 
-三个能力域的业务提示词与真实工具函数**尚未填充**；`TeamPipeline` / `GoalPipeline` / Mem0 记忆 / Docker 沙箱目前只有装配工厂与单测，生产链路未接线。详见文末 [Roadmap](#roadmap尚未实现)。
+三个能力域的业务提示词与真实工具函数**尚未填充**；`TeamPipeline` / `GoalPipeline` 只有装配工厂。记忆三层与沙箱执行面已接线：短期/中期/长期默认走 local（BM25 检索 + 抽取式摘要），`Mem0` / `agentic` 后端未接入、配置后降级为 local 并如实报 `requested/effective`；沙箱走 OpenSandbox，Docker 不可用时降级本机。详见文末 [Roadmap](#roadmap尚未实现)。
 
 ---
 
@@ -432,7 +432,7 @@ SSE 帧约定：
 | 沙箱执行面 | `LocalWorkspace` / `DockerWorkspace` | Local ✅；Docker 仅单测 |
 | 权限治理 | `PermissionEngine` + `PermissionContext` + `PermissionRule` | ✅ `governance/policy.py` |
 | 上下文压缩 | `ContextConfig` + 压缩中间件 | ✅ `runtime/compression.py` |
-| 长期记忆 | `Mem0Middleware` / `AgenticMemoryMiddleware` | ❌ 仅工厂 + 单测 |
+| 长期记忆 | 自建 `local`（SQLite + BM25）；`Mem0Middleware` / `AgenticMemoryMiddleware` | local ✅ `memory/`；Mem0/agentic ❌ 未接入（配置后退化为 local） |
 | 编排 | `TeamPipeline` / `GoalPipeline` / `TeamMember` | ❌ 仅工厂 + 单测 |
 | 模型路由 | `ModelRouterMiddleware` | ❌ 未实现 |
 
@@ -655,7 +655,7 @@ PYTHONPATH=src E:/code/devops-agent/.venv/Scripts/python.exe -m pytest --cov=dev
 
 1. **首个能力域闭环**：选 `debug` 域，写真实 `FunctionTool` + system_prompt + 评测用例，跑通「提 bug → 定位 → 打分」。
 2. **多 Agent 编排接线**：把 `TeamPipeline` / `GoalPipeline` 接入网关，实现跨 Agent 结果共享（当前 `memory/ledger.py` 只有 Mem0 工厂）。
-3. **容器执行面**：`build_docker_workspace()` 已就绪但未接入运行时，生产部署应改为 Docker 沙箱 + 只读挂载。
+3. **容器执行面**：OpenSandbox 执行面已接入启动流程（`SandboxManager.ensure()`），Docker 不可用时降级本机并在 `/health.sandbox` 标明；缺少的是「跨机器沙箱」与预配置镜像的版本管理。
 4. **评测补齐**：五赛道里有 C 赛道覆盖写入能力，但只有 14 例；仍缺重复运行/随机种子（flaky 检测）、成本核算、git SHA 溯源。
 5. **技能沉淀**：`skills/`、`config/agents/` 的能力配置化。
 

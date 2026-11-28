@@ -10,18 +10,17 @@ const fetchPermissions = vi.fn();
 
 vi.mock('../api/client', () => ({ fetchPermissions: () => fetchPermissions() }));
 
-/** 后端开放的四档：默认不放 unrestricted。 */
+/** 后端默认开放的五档：含 unrestricted（选项存在，但选中要二次确认）。 */
 const AVAILABLE: PermissionMeta[] = [
   { key: 'readonly', label: '只读', note: '只能读文件', fallback: 'deny', write: false },
   { key: 'workspace', label: '工作区可写', note: '可改工作区文件', fallback: 'ask', write: false },
   { key: 'execute', label: '可执行', note: '白名单命令可直接跑', fallback: 'ask', write: false },
   { key: 'auto', label: '无人值守', note: '定时任务用', fallback: 'deny', write: false },
-];
-
-const ALL: PermissionMeta[] = [
-  ...AVAILABLE,
   { key: 'unrestricted', label: '全放开', note: '跳过所有逐次确认', fallback: 'hard_deny', write: true },
 ];
+
+/** 后端默认可用集已含放开档，测试里 ALL 与 AVAILABLE 同源，避免两份列表漂移。 */
+const ALL: PermissionMeta[] = AVAILABLE;
 
 function catalog(available: PermissionMeta[] = AVAILABLE): PermissionCatalog {
   return { default: 'workspace', available };
@@ -77,6 +76,7 @@ describe('PermissionPicker', () => {
       expect.stringContaining('工作区可写'),
       expect.stringContaining('可执行'),
       expect.stringContaining('无人值守'),
+      expect.stringContaining('全放开'),
     ]);
     expect(items[1].getAttribute('aria-checked')).toBe('true');
     expect(items[0].getAttribute('aria-checked')).toBe('false');
@@ -141,26 +141,36 @@ describe('PermissionPicker', () => {
     expect(screen.queryByRole('menu', { name: '权限档位' })).toBeNull();
   });
 
-  it('后端还没回时用兜底列表，且不含放开档', () => {
+  it('后端还没回时用兜底列表，放开档存在但仍需二次确认', async () => {
     fetchPermissions.mockReturnValue(new Promise<PermissionCatalog>(() => {}));
-    mount('workspace');
+    const { onChange } = mount('workspace');
     open();
 
     const items = screen.getAllByRole('menuitemradio');
     expect(items).toHaveLength(FALLBACK_PROFILES.length);
-    expect(items.some((item) => item.textContent?.includes('全放开'))).toBe(false);
+    expect(items.some((item) => item.textContent?.includes('全放开'))).toBe(true);
     expect(items.map((item) => item.getAttribute('aria-checked'))).toEqual([
       'false',
       'true',
       'false',
       'false',
+      'false',
     ]);
+
+    // 兜底列表里的放开档同样走二次确认，不能因为接口没回就绕过确认
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /全放开/ }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByText(/跳过所有逐次确认/)).toBeTruthy();
   });
 
-  it('当前档位不在开放集里时回落到第一项，不显示失效名字', () => {
-    fetchPermissions.mockReturnValue(new Promise<PermissionCatalog>(() => {}));
+  it('当前档位不在开放集里时回落到第一项，不显示失效名字', async () => {
+    fetchPermissions.mockResolvedValue(
+      catalog([AVAILABLE[0], AVAILABLE[1], AVAILABLE[2], AVAILABLE[3]]),
+    );
+    // 后端显式收窄（不含 unrestricted）时，按钮回落到第一档而不是显示失效名字
     mount('unrestricted');
-    // 兜底列表没有 unrestricted，按钮应显示第一档而不是空白
-    expect(screen.getByRole('button', { name: '选择权限档位' }).textContent).toContain('只读');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '选择权限档位' }).textContent).toContain('只读'),
+    );
   });
 });

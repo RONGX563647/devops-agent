@@ -404,7 +404,7 @@ CLI 与服务层共用同一组函数，不复制业务逻辑。
 - 创建工作区向导：两个页签「选择本地目录」（`browse` 接口 + 路径输入）与「导入 Git」（URL/分支/凭据）。
 - 聊天页顶部显示当前工作区切换器；未绑定时显示「未绑定工作区」而非静默落默认。
 - 详情页展示：来源、`managed`、分支、`base_commit`、会话数、长期记忆条数、归档/删除按钮。
-- 改动 `web/**` 必须先按 AGENTS §3.8 读取 `skills/modern-web-guidance/SKILL.md` 并检索；本 spec 不含前端实现细节。
+- 改动 `web/**` 必须先按 AGENTS §3.8 读取 `skills/.seed/modern-web-guidance/SKILL.md` 并检索；本 spec 不含前端实现细节。
 
 ## 11. 配置
 

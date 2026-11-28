@@ -78,24 +78,35 @@ def _context_blob(messages: list[Any]) -> str:
     return normalize("\n".join(_text_of(msg) for msg in messages))
 
 
+def _already_said(text: str, blob: str) -> bool:
+    """这条记忆的每一句都已经在本轮上下文里吗。
+
+    逐句判定而不是整串判定：ReAct 回合里用户问题与最终结论之间隔着工具调用与
+    工具结果，整条记忆的拼接串不会作为连续子串出现在历史里，于是「复读自己」的
+    过滤在最有价值的回合（带工具的那种）恰好失效 —— 实测就是这么漏的。
+
+    短于 `_ECHO_MIN_CHARS` 的句子不参与判定：短串到处都能子串命中，会误杀。
+    一句都没剩下时判「不是复读」：宁可多注入一条，也不吞掉真结论。
+    """
+    segments = [normalize(line) for line in text.splitlines()]
+    meaningful = [seg for seg in segments if len(seg) >= _ECHO_MIN_CHARS]
+    if not meaningful:
+        return False
+    return all(seg in blob for seg in meaningful)
+
+
 def _drop_echoes(hits: list[Any], blob: str) -> list[Any]:
     """剔掉已经在本轮上下文里的命中（`blob` 传原文即可，内部自己归一化）。
 
     长期层为保住可检索性存的是「用户原话 + 结论」，而上一轮这段话本来就在历史
     里：原样注入等于让模型复读自己，还白占 note 预算（实测「召回块里是我上一轮
-    的开场白」就是这种形态）。历史被预算裁掉之后同一条命中会重新生效 —— 那才是
+    的开场白」就是这种形态）。历史被预算裁掉之后同一条会重新生效 —— 那才是
     长期层该起作用的时刻。
     """
     body_blob = normalize(blob)
     if not body_blob:
         return hits
-    kept: list[Any] = []
-    for hit in hits:
-        body = normalize(str(getattr(hit, "text", "")))
-        if len(body) >= _ECHO_MIN_CHARS and body in body_blob:
-            continue
-        kept.append(hit)
-    return kept
+    return [hit for hit in hits if not _already_said(str(getattr(hit, "text", "")), body_blob)]
 
 
 def _retrieve_outcome(

@@ -73,7 +73,43 @@ export interface Breakdown {
     cache_hit_rate: number | null;
     cache_recorded: boolean;
   };
-  failures: { reason: string; count: number }[];
+  // kind：run = 整轮失败；tool/model/permission = 逐次调用的失败
+  failures: { reason: string; count: number; kind: string; name: string }[];
+}
+
+/** 一组耗时样本的均值 / 分位；samples 是真正有记录的条数。 */
+export interface TimingBlock {
+  avg: number | null;
+  p95: number | null;
+  samples: number;
+}
+
+/** 一个模型的用量、耗时与成本（cost 为 null = 没配单价，不计入总额）。 */
+export interface ModelUsage {
+  name: string;
+  calls: number;
+  errors: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_input_tokens: number;
+  avg_ms: number | null;
+  ttft_samples: number;
+  avg_ttft_ms: number | null;
+  cost: number | null;
+  priced: boolean;
+}
+
+/** 成本 / 性能看板（GET /api/metrics/cost）。 */
+export interface CostMetrics {
+  currency: string;
+  unit_tokens: number;
+  priced_models: number;
+  unpriced_models: number;
+  total_cost: number | null;
+  models: ModelUsage[];
+  ttft: TimingBlock;
+  model_ms: TimingBlock;
+  tool_ms: TimingBlock;
 }
 
 export interface Summary {

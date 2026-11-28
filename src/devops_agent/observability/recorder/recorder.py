@@ -9,16 +9,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from devops_agent.observability import repository as repo
-from devops_agent.observability.models import InputStageRecord, RunRecord, SpanRecord
+from devops_agent.observability.models import InputStageRecord, RunRecord
 from devops_agent.observability.recorder.audit import WebAccessLog
 from devops_agent.observability.recorder.input_stage import input_stage_record
 from devops_agent.observability.recorder.memory import MEMORY_SPAN_NAMES, memory_span
+from devops_agent.observability.recorder.sink import SpanSink
 from devops_agent.observability.recorder.timing import (
-    _elapsed_ms,
     _iso_to_epoch_ms,
-    _pending_t0,
     _work_ms,
-    span_duration,
     utc_now,
 )
 from devops_agent.observability.recorder.usage import _token_delta
@@ -28,7 +26,7 @@ from devops_agent.observability.recorder.usage import _token_delta
 MAX_SPAN_TEXT = 8_000
 
 
-class RunRecorder:
+class RunRecorder(SpanSink):
     """一次运行的事件记录器：START 建 run，过程中的事件落 span，END 回填汇总。"""
 
     def __init__(
@@ -156,6 +154,7 @@ class RunRecorder:
         "TOOL_RESULT_TEXT_DELTA": "_on_tool_result_delta",
         "TOOL_RESULT_END": "_on_tool_end",
         "TEXT_BLOCK_DELTA": "_on_text_delta",
+        "THINKING_BLOCK_DELTA": "_on_thinking_delta",
         "EXCEED_MAX_ITERS": "_on_exceed_iters",
         "REPLY_END": "_on_reply_end",
         "INPUT_PARSE_STAGE": "_on_input_stage",
@@ -171,21 +170,6 @@ class RunRecorder:
         if handler_name is None:
             return  # REPLY_START 与所有 delta 类事件无需落库动作
         getattr(self, handler_name)(event)
-
-    def _rel_ms(self, t_ns: int) -> int:
-        """单调时钟 → 相对 run 起点的毫秒偏移。"""
-        return self._offset_base_ms + max(0, (t_ns - self._t0) // 1_000_000)
-
-    def _span_offset(self, pending: dict[str, object]) -> int:
-        """起点偏移：与耗时同一口径——有事件时间戳就用它，缺失才退回单调时钟。
-
-        两个时钟混用会让「起点偏移」和「耗时」落在两条时间轴上，
-        span 并集（work_ms）就再也对不上。
-        """
-        start_at = str(pending.get("start", "") or "")
-        if pending.get("has_time") and start_at:
-            return _elapsed_ms(self._started_at, start_at)
-        return self._rel_ms(_pending_t0(pending))
 
     def _on_model_start(self, event: dict[str, object]) -> None:
         raw_at = str(event.get("created_at", "") or "")
@@ -220,16 +204,6 @@ class RunRecorder:
             cache_input_tokens=cache_read,
             cache_creation_input_tokens=cache_write,
         )
-
-    def _pop_model(self, reply: str) -> dict[str, object] | None:
-        """按 FIFO 取该 reply 最早一个未闭合的模型起点。"""
-        queue = self._model_pending.get(reply)
-        if not queue:
-            return None
-        pending = queue.popleft()
-        if not queue:
-            self._model_pending.pop(reply, None)
-        return pending
 
     def _on_tool_start(self, event: dict[str, object]) -> None:
         key = str(event.get("tool_call_id", ""))
@@ -275,10 +249,18 @@ class RunRecorder:
             time.perf_counter_ns(),
             0,
             status="ok" if ok else "error",
+            # 失败原因必须逐条落库：只写 status=error 的话，事后只看得到一个红点，
+            # 「Command failed / Permission denied」这些现场信息全丢了
+            error=None if ok else str(event.get("error") or "") or None,
         )
 
     def _on_text_delta(self, event: dict[str, object]) -> None:
+        self._mark_first_token(event)
         self._final_text += str(event.get("delta", ""))
+
+    def _on_thinking_delta(self, event: dict[str, object]) -> None:
+        """思考增量只用于计算首 token 延迟，正文不并入最终输出。"""
+        self._mark_first_token(event)
 
     def _on_exceed_iters(self, event: dict[str, object]) -> None:
         self._finished_reason = "exceed_max_iters"
@@ -317,85 +299,6 @@ class RunRecorder:
         self._seq += 1
         with repo.connect(self._db_path) as conn:
             repo.add_span(conn, span)
-
-    def _close_span(
-        self,
-        key: str,
-        end_at: str,
-        end_ns: int,
-        tokens: int,
-        *,
-        name: str | None = None,
-        status: str = "ok",
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        cache_input_tokens: int = 0,
-        cache_creation_input_tokens: int = 0,
-    ) -> None:
-        """把 pending 中的工具起点配对成一条 span 落库；无起点则忽略。"""
-        pending = self._pending.pop(key, None)
-        if pending is None:
-            return
-        self._write_span(
-            pending,
-            end_at,
-            end_ns,
-            tokens,
-            name=name,
-            status=status,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_input_tokens=cache_input_tokens,
-            cache_creation_input_tokens=cache_creation_input_tokens,
-        )
-
-    def _write_span(
-        self,
-        pending: dict[str, object],
-        end_at: str,
-        end_ns: int,
-        tokens: int,
-        *,
-        name: str | None = None,
-        status: str = "ok",
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        cache_input_tokens: int = 0,
-        cache_creation_input_tokens: int = 0,
-    ) -> None:
-        """落一条 span：偏移/耗时走单调时钟，工具挂到最近一次模型调用下。"""
-        # 1. run 尚未建立时不落库（事件可能早于 start 到达）
-        if self._run_id is None:
-            return
-        # 2. 偏移与耗时同一口径：有事件时间戳优先，缺失才退回单调时钟
-        start_at = str(pending.get("start", ""))
-        is_tool = str(pending.get("type", "model")) == "tool"
-        # 3. seq 全局单调递增，泳道与列表共用同一顺序
-        self._seq += 1
-        span = SpanRecord(
-            id=None,
-            run_id=self._run_id,
-            type=str(pending.get("type", "model")),
-            name=name or str(pending.get("name", "step")),
-            start_offset_ms=self._span_offset(pending),
-            duration_ms=span_duration(pending, start_at, end_at, end_ns),
-            input=str(pending.get("input", "")),
-            output=str(pending.get("output", "")),
-            tokens=tokens,
-            status=status,
-            error=None,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_input_tokens=cache_input_tokens,
-            cache_creation_input_tokens=cache_creation_input_tokens,
-            seq=self._seq,
-            parent_id=self._last_model_span_id if is_tool else None,
-        )
-        with repo.connect(self._db_path) as conn:
-            span_id = repo.add_span(conn, span)
-        # 4. 只有模型 span 更新「最近模型」，工具 span 已按它挂好 parent_id
-        if not is_tool:
-            self._last_model_span_id = span_id
 
     def _finish_terminal_fields(self, status: str | None, error: str | None) -> tuple[str, str]:
         """终态与失败原因：显式 status 优先，否则按结束原因推断；原因缺失时兜底一句。"""

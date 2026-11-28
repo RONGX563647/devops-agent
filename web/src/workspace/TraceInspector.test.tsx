@@ -192,5 +192,43 @@ describe('TraceInspector', () => {
     fireEvent.click(screen.getByRole('tab', { name: '改动' }));
     expect(screen.getByText(/requestAnimationFrame/)).toBeTruthy();
   });
+
+  it('点调用一级节点：右侧给失败率与失败原因分类，可跳到具体那一步', () => {
+    const failed: TraceStep = {
+      ...STEP,
+      id: 'tool:fail',
+      status: 'error',
+      result: 'Command failed: npm test\n退出码 1',
+      resultSummary: 'Command failed: npm test',
+    };
+    const group = {
+      key: 'tool:Bash',
+      type: 'tool' as const,
+      name: 'Bash',
+      calls: [
+        { step: STEP, turnIndex: 1 },
+        { step: failed, turnIndex: 2 },
+      ],
+      total: 5_400,
+      failed: 1,
+      slowest: STEP,
+    };
+    const onSelectStep = vi.fn();
+    wrap(
+      <TraceInspector
+        step={null}
+        turn={null}
+        group={group}
+        totalMs={60_000}
+        onSelectStep={onSelectStep}
+      />,
+    );
+    expect(screen.getAllByText(/工具调用组/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/失败率 50%/)).toBeTruthy();
+    // 原因按报错首行归并，不把整段返回原文塞进统计
+    expect(screen.getByText('Command failed: npm test')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '查看' }));
+    expect(onSelectStep).toHaveBeenCalledWith(failed);
+  });
 });
 

@@ -10,6 +10,7 @@ import type {
   Breakdown,
   ConfigDomain,
   ConfigIndex,
+  CostMetrics,
   Health,
   HealthMetrics,
   InputStage,
@@ -125,6 +126,11 @@ export function fetchMetricsHealth(limit = 200): Promise<HealthMetrics> {
 
 export function fetchBreakdown(): Promise<Breakdown> {
   return getJson<Breakdown>('/api/metrics/breakdown');
+}
+
+/** 成本 / 性能：按模型分组的 token、耗时、首 token 与成本。 */
+export function fetchCostMetrics(limit = 500): Promise<CostMetrics> {
+  return getJson<CostMetrics>(`/api/metrics/cost?limit=${limit}`);
 }
 
 export function fetchSummary(): Promise<Summary> {

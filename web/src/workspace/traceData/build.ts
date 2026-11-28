@@ -364,26 +364,60 @@ function uniqueSpans(spans: TraceSpan[]): TraceSpan[] {
   });
 }
 
-/** 泳道只画真实占用：模型一支、工具一支，空隙就是空隙，不补「等待」块。
+/** 把「空档」从时间轴上剪掉：t → 落在 t 之前的所有占用长度之和。
  *
- * 空闲多久改由泳道右端的占用率说明（占窗口百分之多少），
- * 这样既不会让一大片灰块盖住真正的耗时，也还能看出哪一支在吃时间。
+ * 轮次之间用户读消息/走开的空闲可以长达几十分钟，画进泳道会把真正干活的
+ * 那几十秒压成一根针。这里按占用区间的并集做分段线性映射，轮与轮首尾相接，
+ * 空闲不占横轴——横轴长度等于实测耗时（union），与顶部「实测」同一口径。
+ */
+function squashIntervals(spans: TraceSpan[]): (t: number) => number {
+  const merged: Array<[number, number]> = [];
+  for (const span of [...spans].sort((a, b) => a.start - b.start)) {
+    const last = merged[merged.length - 1];
+    if (last && span.start <= last[1]) {
+      last[1] = Math.max(last[1], span.end);
+      continue;
+    }
+    merged.push([span.start, span.end]);
+  }
+  return (t: number): number => {
+    let acc = 0;
+    for (const [start, end] of merged) {
+      if (t <= start) break;
+      acc += Math.min(t, end) - start;
+    }
+    return acc;
+  };
+}
+
+/** 泳道只画真实占用：模型一支、工具一支、记忆一支，空闲不补任何块。
+ *
+ * 空闲区间会被剪掉（见 squashIntervals），所以横轴是「干了多久」而不是
+ * 「从几点到几点」；块与块之间的贴合就是真实的连续工作。
  */
 export function buildLanes(turns: TraceTurn[]): TraceLanes {
   const model: TraceSpan[] = [];
   const tool: TraceSpan[] = [];
   const memory: TraceSpan[] = [];
+  const raw: TraceSpan[] = [];
   for (const turn of turns) {
     for (const span of turn.spans) {
+      raw.push(span);
       if (span.lane === 'model') model.push(span);
       else if (span.lane === 'memory') memory.push(span);
       else tool.push(span);
     }
   }
+  const squash = squashIntervals(raw);
+  /** 压缩后仍保证宽度 ≥1ms：0 宽的时间点会被画丢，点选也就点不到。 */
+  const squeeze = (span: TraceSpan): TraceSpan => {
+    const start = squash(span.start);
+    return { ...span, start, end: Math.max(start + 1, squash(span.end)) };
+  };
   return {
     // 思考发生在模型调用内部，合并成一段；工具之间的重叠保留原样，免得把红色的失败块吞进前一段
-    model: uniqueSpans(mergeSpans(model.sort((a, b) => a.start - b.start))),
-    tool: uniqueSpans(tool.sort((a, b) => a.start - b.start)),
-    memory: uniqueSpans(memory.sort((a, b) => a.start - b.start)),
+    model: uniqueSpans(mergeSpans(model.map(squeeze).sort((a, b) => a.start - b.start))),
+    tool: uniqueSpans(tool.map(squeeze).sort((a, b) => a.start - b.start)),
+    memory: uniqueSpans(memory.map(squeeze).sort((a, b) => a.start - b.start)),
   };
 }

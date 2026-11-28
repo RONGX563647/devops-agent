@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-import { useState } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage, ProcessEntry } from '../types';
@@ -84,9 +83,7 @@ function renderList(overrides: Partial<React.ComponentProps<typeof TraceList>> =
     context: null,
     // 空对象 = 全部展开；「只展开最后一轮」是上层（TraceTab）的默认策略
     collapsed: {} as Record<string, boolean>,
-    visibleTurns: 5 as number | null,
     onToggleTurn: vi.fn(),
-    onLoadMore: vi.fn(),
     onSelectStep: vi.fn(),
     onSelectTurn: vi.fn(),
     ...overrides,
@@ -141,7 +138,7 @@ describe('TraceList', () => {
     expect(screen.getByText(/^\+ new\(\);$/)).toBeTruthy();
   });
 
-  it('轮次很多时先只渲染最近 5 轮，可放开显示全部', () => {
+  it('默认渲染全部轮次：不再按「最近 5 轮」截断', () => {
     const many = conversation(
       Array.from({ length: 7 }, (_, i) => ({
         question: `问题 ${i + 1}`,
@@ -149,47 +146,26 @@ describe('TraceList', () => {
         steps: [tool({ id: `t${i}`, toolName: 'Bash', at: `2026-11-23T10:0${i}:01.000Z` })],
       })),
     );
-    const turns = turnsFromMessages(many);
-
-    /** 最小受控壳：按钮只负责把「最近 5 轮」放开成全部，验证回调确实被接上了。 */
-    function Harness() {
-      const [visible, setVisible] = useState<number | null>(5);
-      return (
-        <TraceList
-          turns={turns}
-          mode="turn"
-          query=""
-          activeStepId={null}
-          activeTurnId={null}
-          context={null}
-          collapsed={{}}
-          visibleTurns={visible}
-          onToggleTurn={vi.fn()}
-          onLoadMore={() => setVisible(null)}
-          onSelectStep={vi.fn()}
-          onSelectTurn={vi.fn()}
-        />
-      );
-    }
-
-    render(<Harness />);
-    expect(screen.getByText(/加载更早的 2 轮/)).toBeTruthy();
-    fireEvent.click(screen.getByText(/加载更早的 2 轮/));
+    renderList({ turns: turnsFromMessages(many) });
+    // 首轮和末轮都在：截断交给折叠，不再藏历史
     expect(screen.getAllByText(/问题 1/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/问题 7/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/加载更早/)).toBeNull();
   });
 
-  it('每一步默认展开原文，点整行收起', () => {
+  it('步骤详情默认收起：行里给摘要，点开才铺原文', () => {
     const { container } = renderList();
-    const details = container.querySelectorAll('.trace-detail');
-    expect(details.length).toBeGreaterThan(0);
-    expect(container.textContent).toContain('"command": "ls -la"');
+    // 一级节点（步骤行）默认可见，详情不展开
+    expect(container.querySelectorAll('.trace-detail').length).toBe(0);
+    expect(container.textContent).toContain('command: ls -la');
+    expect(container.textContent).not.toContain('"command": "ls -la"');
 
-    // 点整行：收起这一步的原文
     fireEvent.click(screen.getByText(/command: ls -la/));
-    expect(container.querySelectorAll('.trace-detail').length).toBe(details.length - 1);
+    expect(container.querySelectorAll('.trace-detail').length).toBe(1);
+    expect(container.textContent).toContain('"command": "ls -la"');
   });
 
-  it('点整行同时选中并收起', () => {
+  it('点整行同时选中并展开', () => {
     const { props } = renderList();
     fireEvent.click(screen.getByText(/command: ls -la/));
     expect(props.onSelectStep).toHaveBeenCalledTimes(1);
@@ -381,6 +357,57 @@ describe('TraceList', () => {
     expect(container.querySelector('.ctx-comp-bar')).toBeTruthy();
     expect(container.querySelector('.ctx-tool code')?.textContent).toBe('Bash');
     expect(container.textContent).toContain('900 字');
+  });
+
+  it('记忆模式单独成一条轨：检索与压缩各一行，点一行回传选中', () => {
+    const memoryTurns = turnsFromMessages(
+      conversation([
+        {
+          question: '上次失败的是哪一版？',
+          at: '2026-11-23T10:00:00.000Z',
+          steps: [
+            {
+              id: 'memory:retrieve',
+              kind: 'memory',
+              label: '记忆检索 · 中期',
+              detail: '命中 2 条 · 注入 480 字',
+              state: 'success',
+              at: '2026-11-23T10:00:00.500Z',
+              endedAt: '2026-11-23T10:00:00.520Z',
+            },
+            {
+              id: 'memory:compress',
+              kind: 'memory',
+              label: '记忆压缩 · 短期→中期',
+              detail: '压缩 12 轮为 1 段',
+              state: 'success',
+              at: '2026-11-23T10:00:00.600Z',
+              endedAt: '2026-11-23T10:00:02.600Z',
+            },
+            tool({ id: 't1', toolName: 'Bash', at: '2026-11-23T10:00:03.000Z' }),
+          ],
+        },
+      ]),
+    );
+    const onSelectStep = vi.fn();
+    renderList({ turns: memoryTurns, mode: 'memory', onSelectStep });
+    expect(screen.getByText(/记忆轨迹/)).toBeTruthy();
+    expect(screen.getByText(/记忆检索 · 中期/)).toBeTruthy();
+    // 工具不在记忆轨里
+    expect(screen.queryByText('Bash')).toBeNull();
+    fireEvent.click(screen.getByText(/记忆压缩 · 短期→中期/));
+    expect(onSelectStep).toHaveBeenCalledWith(expect.objectContaining({ kind: 'memory' }));
+  });
+
+  it('点调用一级节点回传整组统计，展开后仍能选中单次调用', () => {
+    const onSelectGroup = vi.fn();
+    const { container } = renderList({ turns: MODEL_TURNS, mode: 'call', onSelectGroup });
+    const heads = Array.from(container.querySelectorAll('.trace-call-head'));
+    fireEvent.click(heads[1]);
+    expect(onSelectGroup).toHaveBeenCalledTimes(1);
+    const group = onSelectGroup.mock.calls[0][0] as { name: string; calls: unknown[] };
+    expect(group.name).toBe('Bash');
+    expect(group.calls).toHaveLength(1);
   });
 
   it('上下文构成只用回传的精确值：命中缓存 + 本次计算，不倒推历史', () => {

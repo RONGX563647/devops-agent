@@ -18,6 +18,8 @@ from pydantic import BaseModel, field_validator
 from devops_agent.config import HealthPolicy, load_health
 from devops_agent.observability import health as health_mod
 from devops_agent.observability import repository as repo
+from devops_agent.observability.cost import cost_payload
+from devops_agent.observability.failures import failure_clusters
 from devops_agent.observability.models import (
     EvalDimension,
     EvalScoreRecord,
@@ -80,6 +82,8 @@ class SpanOut(BaseModel):
     # run 内单调序号与父 span：泳道与列表共用，工具可追溯到发起它的模型调用
     seq: int = 0
     parent_id: int | None = None
+    # 首 token 延迟：0 = 不是模型调用 / 流式没开 / 老记录未记录
+    ttft_ms: int = 0
 
 
 class InputStageOut(BaseModel):
@@ -255,18 +259,6 @@ def metrics_health(limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, 
     }
 
 
-def _failure_clusters(runs: list[RunRecord], top: int = 8) -> list[dict[str, object]]:
-    """把失败原因聚类：同一个报错反复出现才值得先修。"""
-    counter: Counter[str] = Counter()
-    for run in runs:
-        if run.status == "success":
-            continue
-        reason = (run.error or "").strip().splitlines()
-        key = reason[0][:120] if reason else "(未记录失败原因)"
-        counter[key] += 1
-    return [{"reason": text, "count": count} for text, count in counter.most_common(top)]
-
-
 def _rate(part: int, whole: int) -> float | None:
     """安全比率：分母为 0 返回 None，别把「没有数据」说成 0%。"""
     return round(part / whole, 4) if whole else None
@@ -334,6 +326,7 @@ def metrics_breakdown() -> dict[str, object]:
         repo.init_db(conn)
         stats = repo.span_stats(conn)
         runs = repo.summary_rows(conn)
+        failed_spans = repo.error_spans(conn)
     return {
         "version": health_mod.SCORING_VERSION,
         "outcome": _outcome_block(runs),
@@ -341,8 +334,14 @@ def metrics_breakdown() -> dict[str, object]:
         "permission": _permission_block(stats.get("permission", {})),
         "model": _model_block(stats.get("model", {})),
         "tokens": _token_block(runs),
-        "failures": _failure_clusters(runs),
+        "failures": failure_clusters(runs, failed_spans),
     }
+
+
+@router.get("/metrics/cost")
+def metrics_cost(limit: int = Query(default=500, ge=10, le=2000)) -> dict[str, object]:
+    """成本 / 性能：按模型统计 token 与耗时，按配置单价换算成本（见 cost 模块）。"""
+    return cost_payload(limit)
 
 
 @router.get("/metrics/summary")
@@ -475,6 +474,7 @@ def _span_out(span: SpanRecord) -> SpanOut:
         cache_creation_input_tokens=span.cache_creation_input_tokens,
         seq=span.seq,
         parent_id=span.parent_id,
+        ttft_ms=span.ttft_ms,
     )
 
 

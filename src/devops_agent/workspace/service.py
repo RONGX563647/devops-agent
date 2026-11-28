@@ -389,12 +389,22 @@ class WorkspaceService:
 
     # --- 目录浏览与记忆 -----------------------------------------------
     def browse(self, path: str = "") -> dict[str, Any]:
-        """列出白名单内的子目录，供「选择本地目录」使用。"""
+        """列出白名单内的子目录，供「选择本地目录」使用。
+
+        一并给出 `parent` 与 `roots`：选择器要能展示「上一级」（到白名单根为止）
+        和可一键跳转的白名单根，否则界面只能让用户手敲绝对路径。
+        """
         self._require_enabled()
         if not self.policy.allow_local_import:
             raise errors.WorkspaceError(errors.LOCAL_DISABLED, "部署未开启本地目录导入")
-        base, items = paths.browse_children(path, self.policy.allowed_local_roots)
-        return {"root": str(base), "items": items}
+        roots = self.policy.allowed_local_roots
+        base, items = paths.browse_children(path, roots)
+        return {
+            "root": str(base),
+            "items": items,
+            "parent": paths.parent_within(base, roots),
+            "roots": paths.real_roots(roots),
+        }
 
     def memory_items(
         self, workspace_id: str, *, limit: int = 50, offset: int = 0

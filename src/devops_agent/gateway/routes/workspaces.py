@@ -123,6 +123,16 @@ def browse_directories(request: Request, path: str = "") -> dict[str, Any]:
         raise _fail(exc) from None
 
 
+@router.get(_BASE + "/control")
+def workspace_control(request: Request) -> dict[str, Any]:
+    """能力自述：开关、白名单根、git 是否可用、配额。
+
+    必须声明在 `/{workspace_id}` 之前，否则 `control` 会被当成工作区 id 解析。
+    前端据此把不可用的来源直接禁用，而不是让用户填完表单才收到 400。
+    """
+    return _service(request).control()
+
+
 @router.get(_BASE + "/{workspace_id}")
 def get_workspace(workspace_id: str, request: Request) -> dict[str, Any]:
     """工作区详情：仓库元信息、绑定会话数、长期记忆条数。"""

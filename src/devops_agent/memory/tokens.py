@@ -114,6 +114,28 @@ def message_text(msg: Any) -> str:
     return "\n".join(parts)
 
 
+def message_prose(msg: Any) -> str:
+    """只取消息的正文块：工具入参与工具结果不算「说过的话」。
+
+    与 `message_text` 的差别不是口味问题：后者为 token 估算服务，把 `tool_call`
+    的 input 与 `tool_result` 的 output 一并拍平，对计数是对的；但拿它当记忆正文
+    就成了机器噪音 —— 这些行没有句读，却因为带路径/命令在抽取式摘要里拿到最高
+    优先级，最后写进长期层的是一串 `{"head_limit": 40, ...}`（线上库实测）。
+    """
+    content = getattr(msg, "content", "")
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for block in content if isinstance(content, list) else []:
+        if isinstance(block, str):
+            parts.append(block)
+            continue
+        value = getattr(block, "text", None)
+        if isinstance(value, str):
+            parts.append(value)
+    return "\n".join(parts)
+
+
 def build(
     *,
     family: str = "generic",

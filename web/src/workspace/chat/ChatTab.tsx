@@ -20,7 +20,8 @@ import type {
   PermissionKey,
 } from '../../types';
 import { attachMeta } from './attachments';
-import { GearIcon, GitHubIcon, GlobeIcon, PaperclipIcon, SendIcon, SparkIcon } from './icons';
+import { ChatEmptyState } from './EmptyState';
+import { GearIcon, GitHubIcon, GlobeIcon, PaperclipIcon, SendIcon } from './icons';
 import { AssistantMessage } from './Message';
 import { ModelPicker } from './ModelPicker';
 import { newId } from '../id';
@@ -40,6 +41,8 @@ interface Props {
   session: string;
   /** 草稿会话要落进的工作区；已有会话传 null，归属以服务端绑定为准。 */
   workspace?: string | null;
+  /** 还没有选工作区的草稿：会话必须挂在某个工作区下，先让用户去左栏选一个。 */
+  needsWorkspace?: boolean;
   /** 首次发送时通知外层把「新会话」落到 URL 上。 */
   onFirstSend?: () => void;
   onOpenTrace?: () => void;
@@ -58,15 +61,13 @@ export function shouldStickToBottom(
   return scrollHeight - scrollTop - clientHeight < threshold;
 }
 
-/** 空状态的示例问题：点一下直接发起会话。 */
-const SAMPLES = [
-  '这个仓库的 CI 流程是怎么跑的？',
-  '解释一下 deployment 阶段的失败原因',
-  '帮我给流水线加一个 lint 关卡',
-  '最近失败最多的阶段是哪个？',
-];
-
-export function ChatTab({ session, workspace = null, onFirstSend, onOpenTrace }: Props) {
+export function ChatTab({
+  session,
+  workspace = null,
+  needsWorkspace = false,
+  onFirstSend,
+  onOpenTrace,
+}: Props) {
   const view = useSession(session);
   // 运行时模式：Echo 兜底意味着没配模型凭据，回复只是把输入回显一遍。
   // 不显式说出来，用户只会看到「模型答非所问」然后反复重试。
@@ -159,6 +160,8 @@ export function ChatTab({ session, workspace = null, onFirstSend, onOpenTrace }:
   /** 发起一轮：首次发送时把草稿会话 id 落到 URL，再交给 store 后台执行。 */
   function run(text: string, attachments: Attachment[] = []) {
     const value = text.trim();
+    // 没有工作区就没有归属，这一轮发出去只会变成「未归属会话」。
+    if (needsWorkspace) return;
     // 只挂附件、不写字也是合法的一轮：这时候问题就是「看看这个文件」
     if ((!value && attachments.length === 0) || view.running || view.awaiting) return;
     onFirstSend?.();
@@ -264,7 +267,10 @@ export function ChatTab({ session, workspace = null, onFirstSend, onOpenTrace }:
   const readyCount = files.filter((item) => item.status === 'ok').length;
   // 挂起等确认时不让发下一轮：同一会话同时只能有一条未结束的 run
   const canSend =
-    (Boolean(input.trim()) || readyCount > 0) && !view.running && !view.awaiting;
+    !needsWorkspace &&
+    (Boolean(input.trim()) || readyCount > 0) &&
+    !view.running &&
+    !view.awaiting;
 
   return (
     <div className="chat-wrap">
@@ -312,26 +318,7 @@ export function ChatTab({ session, workspace = null, onFirstSend, onOpenTrace }:
             );
           })}
           {empty && !view.loading && (
-            <div className="chat-empty">
-              <span className="chat-empty-icon">
-                <SparkIcon />
-              </span>
-              <h2 className="chat-empty-title">开始一次会话</h2>
-              <p className="chat-empty-hint">
-                描述现象，Agent 会读代码、跑流水线、翻日志。每一步都以一行记录留在回答上方，
-                点开就能看它到底调用了什么、拿回了什么。
-              </p>
-              <div className="chat-samples">
-                {SAMPLES.map((q) => (
-                  <button key={q} className="chat-sample" onClick={() => run(q)}>
-                    <span>{q}</span>
-                    <span className="chat-sample-arrow" aria-hidden="true">
-                      →
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
+            <ChatEmptyState needsWorkspace={needsWorkspace} onAsk={run} />
           )}
         </div>
       </div>
@@ -413,7 +400,8 @@ export function ChatTab({ session, workspace = null, onFirstSend, onOpenTrace }:
                 submit();
               }
             }}
-            placeholder="给 DevOps Agent 发消息…"
+            placeholder={needsWorkspace ? '先在左栏选择一个工作区…' : '给 DevOps Agent 发消息…'}
+            disabled={needsWorkspace}
             rows={1}
           />
           <div className="composer-bar">

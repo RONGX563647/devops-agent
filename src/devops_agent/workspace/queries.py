@@ -52,6 +52,8 @@ def session_item(row: dict[str, Any]) -> dict[str, Any]:
         "failed_count": int(row.get("failed_count") or 0),
         "bound_at": str(row.get("bound_at") or ""),
         "bound_by": str(row.get("bound_by") or ""),
+        # 空串表示未归档：省掉前端把 null / "" 分两种情况处理
+        "archived_at": str(row.get("archived_at") or ""),
     }
 
 

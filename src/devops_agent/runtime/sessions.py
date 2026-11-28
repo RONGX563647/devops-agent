@@ -63,6 +63,9 @@ class SessionEntry:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # 该会话的模型参数覆盖（DB 里那份的镜像）：改部署默认时要拿它重算
     model_overrides: dict[str, Any] = field(default_factory=dict)
+    # 绑定工作区（SPEC-0021）：id 决定长期记忆作用域，ref 保存 root_path 供重建
+    workspace_id: str = ""
+    workspace_ref: Any | None = None
     # 部署默认变了但这个会话正在跑：先挂起，run 结束后再热替换。
     # 直接广播会打断正在进行的流，只影响新会话又等于「改了但没生效」。
     pending_model: bool = False
@@ -117,10 +120,29 @@ class SessionRegistry:
             logger.warning("读取会话参数覆盖失败: %s", session_id, exc_info=True)
             return {}
 
-    def _build(self, session_id: str, profile: Any, web_search: bool | None) -> SessionEntry:
+    def _build(
+        self,
+        session_id: str,
+        profile: Any,
+        web_search: bool | None,
+        workspace: Any | None = None,
+    ) -> SessionEntry:
         state_json = self._load_state(session_id)
         overrides = self._load_model_config(session_id)
-        runtime = self._factory(session_id, profile, state_json, web_search, model_config=overrides)
+        if workspace is None:
+            # 未绑定工作区：保持旧工厂签名，Echo / 测试替身无需感知新参数
+            runtime = self._factory(
+                session_id, profile, state_json, web_search, model_config=overrides
+            )
+        else:
+            runtime = self._factory(
+                session_id,
+                profile,
+                state_json,
+                web_search,
+                model_config=overrides,
+                workspace=workspace,
+            )
         entry = SessionEntry(
             session_id=session_id,
             runtime=runtime,
@@ -130,36 +152,62 @@ class SessionRegistry:
             web_search=_effective_search(runtime, web_search),
             last_used=_now().timestamp(),
             model_overrides=overrides,
+            workspace_id=str(getattr(workspace, "id", "") or "") if workspace is not None else "",
+            workspace_ref=workspace,
         )
         return entry
 
     # --- 对外 ---------------------------------------------------------
     def acquire(
-        self, session_id: str, profile: Any, web_search: bool | None = None
+        self,
+        session_id: str,
+        profile: Any,
+        web_search: bool | None = None,
+        *,
+        workspace: Any | None = None,
     ) -> SessionEntry:
-        """取得会话实例：命中复用；档位或联网开关变了重建；未命中从 DB 快照重建。
+        """取得会话实例：命中复用；档位/联网开关/工作区变了重建；未命中从 DB 快照重建。
 
         web_search=None 表示「不关心」：确认/续跑沿用现有实例的配置，
         否则前端没带这个字段就会把挂起中的会话重建掉。
+        `workspace=None` 表示「不改归属」：有活跃实例时沿用它的工作区，
+        没有实例时回落到旧路径（DEVOPS_AGENT_WORKDIR）。
         """
         entry = self._entries.get(session_id)
         key = str(getattr(profile, "key", ""))
-        if (
-            entry is not None
-            and entry.profile == key
-            and (web_search is None or entry.web_search == web_search)
-        ):
+        requested_id = str(getattr(workspace, "id", "") or "") if workspace is not None else None
+        if entry is not None and self._reusable(entry, key, web_search, requested_id):
             entry.last_used = _now().timestamp()
             self._entries.move_to_end(session_id)
             return entry
+        target = workspace if workspace is not None else self._existing_ref(entry)
         if entry is not None:
-            # 切换档位/开关：先把旧状态存下来，再用新配置重建同一个会话
+            # 切换档位/开关/工作区：先把旧状态存下来，再用新配置重建同一个会话
             self.save(session_id)
             self._entries.pop(session_id, None)
-        fresh = self._build(session_id, profile, web_search)
+        fresh = self._build(session_id, profile, web_search, target)
         self._entries[session_id] = fresh
         self._evict()
         return fresh
+
+    @staticmethod
+    def _reusable(
+        entry: SessionEntry,
+        key: str,
+        web_search: bool | None,
+        requested_id: str | None,
+    ) -> bool:
+        """实例能否直接复用：档位一致、工作区未被改投、联网开关未变。"""
+        if entry.profile != key:
+            return False
+        if requested_id is not None and entry.workspace_id != requested_id:
+            return False
+        return web_search is None or entry.web_search == web_search
+
+    @staticmethod
+    def _existing_ref(entry: SessionEntry | None) -> Any | None:
+        """未显式给工作区时沿用现有实例的归属；没有实例才回落到旧路径。"""
+        return entry.workspace_ref if entry is not None else None
 
     def peek(self, session_id: str) -> SessionEntry | None:
         """取当前实例但不重建、不碰档位：切档端点专用。
@@ -178,6 +226,8 @@ class SessionRegistry:
         session_id: str,
         profile: Any,
         web_search: bool | None = None,
+        *,
+        workspace: Any | None = None,
     ) -> tuple[SessionEntry, bool]:
         """会话中切档：能热替换就原地改，返回 (entry, applied)。
 
@@ -187,11 +237,16 @@ class SessionRegistry:
         """
         entry = self.peek(session_id)
         if entry is None:
-            return self.acquire(session_id, profile, web_search), False
+            return self.acquire(session_id, profile, web_search, workspace=workspace), False
         apply_profile = getattr(entry.runtime, "apply_profile", None)
         if not callable(apply_profile):
             self._entries.pop(session_id, None)
-            return self.acquire(session_id, profile, web_search), False
+            return self.acquire(
+                session_id,
+                profile,
+                web_search,
+                workspace=workspace if workspace is not None else entry.workspace_ref,
+            ), False
         apply_profile(profile, web_search=web_search)
         entry.profile = str(getattr(profile, "key", ""))
         if web_search is not None:

@@ -25,7 +25,7 @@ from devops_agent.config import load_memory, load_model
 from devops_agent.governance.model import PermissionProfile
 from devops_agent.governance.presets import UnknownProfile, default_profile, resolve
 from devops_agent.memory.budget import compute_budget
-from devops_agent.memory.long_term import resolve_scope_id
+from devops_agent.memory.scope import resolve_scope_id
 from devops_agent.memory.tokens import estimate_tokens
 from devops_agent.observability import repository as repo
 from devops_agent.runtime.profile_note import policy_note

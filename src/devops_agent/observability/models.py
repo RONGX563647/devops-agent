@@ -81,6 +81,8 @@ class RunRecord:
     # 本轮网络获取的决策与结果（JSON）：net 是否授予检索、prefetch 缺口、降级原因。
     # 空串 = 老记录/未记录；读取方要显示「未记录」，不能当成「没联网」。
     web_access: str = ""
+    # 本轮所属工作区（SPEC-0021）。空串 = 老记录或未绑定，不能当成某个默认工作区。
+    workspace_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -37,6 +37,7 @@ import { getJson, sendJson } from './http';
 export { ApiError } from './http';
 export * from './openjudge';
 export * from './memory';
+export * from './workspaces';
 
 export interface RunQuery {
   domain?: string;

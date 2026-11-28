@@ -1,6 +1,6 @@
 /** 会话工作台：左侧会话栏 + 单行顶栏（会话标题、运行统计、视图 tab）。 */
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { SessionSidebar, useSessionList } from './SessionSidebar';
 import { Dashboard } from '../pages/Dashboard';
 import { Quality } from '../pages/Quality';
@@ -90,6 +90,9 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
             {sessions.length} 个会话 · {totalRuns} 次运行
             {failedRuns ? ` · ${failedRuns} 次失败` : ''}
           </span>
+          <Link className="workspace-chip" to="/workspaces">
+            工作区
+          </Link>
           <nav className="workspace-tabs" role="tablist" aria-label="会话视图">
             {TABS.map((t) => (
               <button

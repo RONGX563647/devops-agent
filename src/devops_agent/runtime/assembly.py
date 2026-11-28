@@ -208,15 +208,23 @@ def _build_search_tool(parts: RuntimeParts) -> RuntimeParts:
 
 
 def _build_middlewares(
-    parts: RuntimeParts, session_id: str = "", memory_policy: Any | None = None
+    parts: RuntimeParts,
+    session_id: str = "",
+    memory_policy: Any | None = None,
+    workspace_id: str = "",
 ) -> RuntimeParts:
     """建工具中间件、档位说明、压缩 sink 与记忆运行时（随会话快照重建）。
 
     `memory_policy` 是评测变体的入口：省略时读全局 `load_memory()`，
     这样线上行为不变，只有评测传入 off/short/full 等变体。
+    `workspace_id` 非空时长期记忆切到工作区作用域（SPEC-0021 §7）。
     """
     policy = memory_policy if memory_policy is not None else load_memory()
-    memory = MemoryRuntime(session_id, policy) if session_id and policy.enabled else None
+    memory = (
+        MemoryRuntime(session_id, policy, workspace_id=workspace_id or None)
+        if session_id and policy.enabled
+        else None
+    )
     return replace(
         parts,
         note_mw=ProfileNoteMiddleware(parts.profile, web_search=parts.web_search),
@@ -295,6 +303,7 @@ def build_agentscope_runtime(
     session_id: str = "",
     memory_policy: Any | None = None,
     execution: ExecutionTarget | None = None,
+    workspace_id: str = "",
 ) -> AgentScopeRuntime:
     """装配真实运行时（env 提供模型凭据）。
 
@@ -315,7 +324,7 @@ def build_agentscope_runtime(
     # 2) 联网工具：只有 tool 模式且后端可用才建，预算实例要交给运行时持有
     parts = _build_search_tool(parts)
     # 3) 建中间件、压缩 sink 与记忆运行时（无 session_id 时不装配记忆）
-    parts = _build_middlewares(parts, session_id, memory_policy)
+    parts = _build_middlewares(parts, session_id, memory_policy, workspace_id)
     # 4) 建 Agent：工具按档位装配，模型参数与上下文窗口同源
     parts = _build_agent(parts)
     # 5) 包成运行时：中间件、sink 与当前参数交给运行时持有
@@ -338,16 +347,23 @@ def session_runtime_factory(base: object) -> Callable[..., Any]:
         state_json: str | None,
         web_search: bool | None = None,
         model_config: dict[str, Any] | None = None,
+        workspace: Any | None = None,
     ) -> Any:
         if not isinstance(base, AgentScopeRuntime):
             return base
         state = _restore_state(session_id, state_json)
+        # 工作区（SPEC-0021）：root_path 作为本会话执行目录，id 决定长期记忆作用域。
+        # 未绑定（None）时 workdir 传 None，回落到 DEVOPS_AGENT_WORKDIR —— 旧行为不变。
+        workdir = getattr(workspace, "root_path", None) if workspace is not None else None
+        workspace_id = str(getattr(workspace, "id", "") or "") if workspace is not None else ""
         return build_agentscope_runtime(
             profile=profile,
             state=state,
+            workdir=workdir,
             web_search=web_search,
             params=effective_params(session=model_config or {}),
             session_id=session_id,
+            workspace_id=workspace_id,
             # 会话重建必须复用启动期的执行面，否则切档/换会话会退回宿主。
             execution=getattr(base, "execution", None),
         )

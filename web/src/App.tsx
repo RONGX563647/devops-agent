@@ -6,6 +6,7 @@ import { Dashboard } from './pages/Dashboard';
 import { Quality } from './pages/Quality';
 import { RunDetail } from './pages/RunDetail';
 import { Runs } from './pages/Runs';
+import { Workspaces } from './pages/Workspaces';
 import { Workspace } from './workspace/Workspace';
 
 const queryClient = new QueryClient({
@@ -19,6 +20,7 @@ export default function App() {
         <ErrorBoundary>
           <Routes>
             <Route path="/" element={<Workspace />} />
+            <Route path="/workspaces" element={<Workspaces />} />
             <Route path="/runs" element={<Runs />} />
             <Route path="/runs/:id" element={<RunDetail />} />
             <Route path="/quality" element={<Quality />} />

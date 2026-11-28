@@ -20,7 +20,7 @@ from typing import Any
 
 from devops_agent.memory.bm25 import BM25Index, Doc, Scored
 from devops_agent.memory.summarize import normalize, similar
-from devops_agent.memory_policy import LongTermPolicy, MemoryPolicy
+from devops_agent.memory_policy import LongTermPolicy
 from devops_agent.observability import repository as repo
 
 _WORDS = re.compile(r"[a-zA-Z0-9_]{2,}")
@@ -38,19 +38,6 @@ class Hit:
 
     def as_dict(self) -> dict[str, Any]:
         return {"id": self.id, "text": self.text, "score": self.score, "kind": self.kind}
-
-
-def resolve_scope_id(policy: MemoryPolicy, session_id: str, scope: str | None = None) -> str:
-    """解析长期记忆的 scope_id：`user` 档才用 user_id，其余一律回落会话键。
-
-    运行时、管理接口与上下文工具必须共用这一条规则。旧的管理接口两个分支
-    写得一模一样（都返回 `policy.user_id or ...`），`scope=session` 时读到的
-    其实是用户分区，按会话看到的条目数与运行时召回对不上。
-    """
-    effective = scope or policy.long_term.scope
-    if effective == "user" and policy.user_id:
-        return policy.user_id
-    return f"session:{session_id}"
 
 
 def _tokens(text: str) -> set[str]:
@@ -79,9 +66,18 @@ def score(query: str, text: str) -> float:
 class LocalLongTerm:
     """会话级 SQLite 长期记忆（兜底实现）。"""
 
-    def __init__(self, policy: LongTermPolicy, scope_id: str, db_path: Path | None) -> None:
+    def __init__(
+        self,
+        policy: LongTermPolicy,
+        scope_id: str,
+        db_path: Path | None,
+        scope: str | None = None,
+    ) -> None:
         self._policy = policy
         self._scope_id = scope_id
+        # 绑定工作区的会话由装配层显式传 `scope="workspace"`：检索边界由
+        # scope + scope_id 一起决定，策略里的默认值只是未绑定时的回落
+        self._scope = scope or policy.scope
         self._db_path = db_path
         #: BM25 索引 + 失效键 `(条数, 最大 id)`；写入路径还会主动置空，
         #: 避免「合并改了正文但签名没变」导致的脏索引
@@ -95,7 +91,7 @@ class LocalLongTerm:
     def _rows(self, conn: Any) -> list[dict[str, Any]]:
         return repo.list_long_term(
             conn,
-            scope=self._policy.scope,
+            scope=self._scope,
             scope_id=self._scope_id,
             all_entries=True,
             max_entries=self._policy.max_entries,
@@ -167,7 +163,7 @@ class LocalLongTerm:
             else:
                 result = repo.save_long_term(
                     conn,
-                    scope=self._policy.scope,
+                    scope=self._scope,
                     scope_id=self._scope_id,
                     kind=kind,
                     text=text,
@@ -221,7 +217,12 @@ class BackendChoice:
     reason: str = ""
 
 
-def build_long_term(policy: LongTermPolicy, scope_id: str, db_path: Path | None) -> BackendChoice:
+def build_long_term(
+    policy: LongTermPolicy,
+    scope_id: str,
+    db_path: Path | None,
+    scope: str | None = None,
+) -> BackendChoice:
     """按配置选后端；请求未接入的后端时降级为 local 并给出原因。
 
     当前只有 local 可在无额外依赖时工作。`auto` 解析到 local；
@@ -233,7 +234,7 @@ def build_long_term(policy: LongTermPolicy, scope_id: str, db_path: Path | None)
         return BackendChoice(OffLongTerm("长期记忆未启用"), requested, "off", "长期记忆未启用")
     if requested == "off":
         return BackendChoice(OffLongTerm("长期记忆已关闭"), requested, "off", "长期记忆已关闭")
-    local = LocalLongTerm(policy, scope_id, db_path)
+    local = LocalLongTerm(policy, scope_id, db_path, scope)
     if requested in _IMPLEMENTED or requested == "auto":
         return BackendChoice(local, requested, "local")
     return BackendChoice(local, requested, "local", f"{requested} 未接入，已降级为 local")

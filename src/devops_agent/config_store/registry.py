@@ -112,6 +112,14 @@ DOMAINS: tuple[DomainSpec, ...] = (
         hot="restart",
         note="执行模式、是否允许回落、空闲回收与 Docker 参数；启动期固定，改完需重启进程。",
     ),
+    DomainSpec(
+        key="workspace",
+        title="工作区",
+        section="workspaces",
+        model="WorkspacePolicy",
+        hot="restart",
+        note="本地目录白名单与受管克隆根；装配期固定，改完需重启进程。",
+    ),
 )
 
 BY_KEY: dict[str, DomainSpec] = {spec.key: spec for spec in DOMAINS}
@@ -125,7 +133,7 @@ ENV_OVERLAY: dict[str, tuple[tuple[str, str, str, tuple[str, ...]], ...]] = {
         ("enabled", "DEVOPS_AGENT_MEMORY_ENABLED", "bool", ()),
         ("user_id", "DEVOPS_AGENT_MEMORY_USER_ID", "str", ()),
         ("long_term.backend", "DEVOPS_AGENT_MEMORY_BACKEND", "str", ENV_BACKENDS),
-        ("long_term.scope", "DEVOPS_AGENT_MEMORY_SCOPE", "str", ("session", "user")),
+        ("long_term.scope", "DEVOPS_AGENT_MEMORY_SCOPE", "str", ("session", "user", "workspace")),
     ),
     "sandbox": (
         ("mode", "DEVOPS_AGENT_SANDBOX_MODE", "str", ("local", "docker", "opensandbox", "auto")),
@@ -133,6 +141,13 @@ ENV_OVERLAY: dict[str, tuple[tuple[str, str, str, tuple[str, ...]], ...]] = {
         ("opensandbox.domain", "DEVOPS_AGENT_SANDBOX_OSB_DOMAIN", "str", ()),
         ("opensandbox.image", "DEVOPS_AGENT_SANDBOX_OSB_IMAGE", "str", ()),
         ("opensandbox.protocol", "DEVOPS_AGENT_SANDBOX_OSB_PROTOCOL", "str", ("http", "https")),
+    ),
+    "workspace": (
+        ("enabled", "DEVOPS_AGENT_WORKSPACES_ENABLED", "bool", ()),
+        ("root", "DEVOPS_AGENT_WORKSPACE_ROOT", "str", ()),
+        ("allow_local_import", "DEVOPS_AGENT_WORKSPACE_ALLOW_LOCAL", "bool", ()),
+        ("allowed_local_roots", "DEVOPS_AGENT_WORKSPACE_LOCAL_ROOTS", "list", ()),
+        ("allow_git_import", "DEVOPS_AGENT_WORKSPACE_ALLOW_GIT", "bool", ()),
     ),
 }
 
@@ -147,6 +162,7 @@ MODELS: dict[str, type[BaseModel]] = {
     "RuntimePolicy": config_schema.RuntimePolicy,
     "ModelSettings": config_schema.ModelSettings,
     "SandboxPolicy": config_schema.SandboxPolicy,
+    "WorkspacePolicy": config_schema.WorkspacePolicy,
 }
 
 
@@ -224,6 +240,18 @@ def _walk_bounds(model: type[BaseModel], prefix: str, out: dict[str, dict[str, A
             out[key] = bounds
 
 
+def _coerce_env(kind: str, raw: str, allowed: tuple[str, ...]) -> Any:
+    """把环境变量原文转成该字段类型；None 表示「视为未设置」。"""
+    if kind == "bool":
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    if kind == "list":
+        items = [part.strip() for part in raw.split(",") if part.strip()]
+        return items or None
+    if not allowed or raw in allowed:
+        return raw
+    return None
+
+
 def env_overlay(domain: str) -> dict[str, Any]:
     """读该域的环境变量覆盖；空串与白名单外的值都视为未设置（旧语义）。"""
     import os
@@ -233,10 +261,9 @@ def env_overlay(domain: str) -> dict[str, Any]:
         raw = os.environ.get(name)
         if raw is None or raw == "":
             continue
-        if kind == "bool":
-            values[key] = raw.strip().lower() in ("1", "true", "yes", "on")
-        elif not allowed or raw in allowed:
-            values[key] = raw
+        value = _coerce_env(kind, raw, allowed)
+        if value is not None:
+            values[key] = value
     return values
 
 

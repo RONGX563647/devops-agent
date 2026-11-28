@@ -36,6 +36,7 @@ from devops_agent.config_schema import RuntimePolicy as RuntimePolicy
 from devops_agent.config_schema import SandboxDockerPolicy as SandboxDockerPolicy
 from devops_agent.config_schema import SandboxPolicy as SandboxPolicy
 from devops_agent.config_schema import TokenizerSettings as TokenizerSettings
+from devops_agent.config_schema import WorkspacePolicy as WorkspacePolicy
 from devops_agent.config_store import store
 from devops_agent.memory_policy import MemoryPolicy as MemoryPolicy
 
@@ -117,6 +118,16 @@ def load_memory() -> MemoryPolicy:
     return MemoryPolicy.model_validate(store.effective("memory"))
 
 
+@cache
+def load_workspace() -> WorkspacePolicy:
+    """工作区策略：代码默认 ← config.db 覆盖 ← 环境变量。
+
+    与 gateway 域同样在装配期固定（根目录与白名单启动期就定），改完需重启；
+    缓存让「每轮都读一次策略」不产生额外 IO。
+    """
+    return WorkspacePolicy.model_validate(store.effective("workspace"))
+
+
 def clear_cache() -> None:
     """测试中切换配置目录 / 库路径后调用。"""
     load_policy.cache_clear()
@@ -124,4 +135,5 @@ def clear_cache() -> None:
     load_model.cache_clear()
     load_gateway.cache_clear()
     load_sandbox.cache_clear()
+    load_workspace.cache_clear()
     store.invalidate()

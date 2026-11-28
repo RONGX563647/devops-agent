@@ -2,7 +2,7 @@
 
 from devops_agent.config import clear_cache, load_memory
 from devops_agent.memory.budget import compute_budget
-from devops_agent.memory.long_term import resolve_scope_id
+from devops_agent.memory.scope import resolve_scope_id
 from devops_agent.memory_policy import LongTermPolicy, MemoryPolicy
 
 

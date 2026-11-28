@@ -25,8 +25,9 @@ def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
            (session_id, domain, status, input, output, started_at, ended_at,
             duration_ms, model, total_tokens, health_score,
             input_tokens, output_tokens, request_id, permission,
-            cache_input_tokens, cache_creation_input_tokens, work_ms, wall_ms, model_params)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            cache_input_tokens, cache_creation_input_tokens, work_ms, wall_ms, model_params,
+            workspace_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run.session_id,
             run.domain,
@@ -48,6 +49,7 @@ def create_run(conn: sqlite3.Connection, run: RunRecord) -> int:
             run.work_ms,
             run.wall_ms,
             run.model_params,
+            run.workspace_id,
         ),
     )
     assert cur.lastrowid is not None  # INSERT 成功时 sqlite3 保证有 lastrowid
@@ -132,6 +134,7 @@ def _run_filters(
     status: str | None,
     since: str | None,
     until: str | None,
+    workspace_id: str | None = None,
 ) -> tuple[str, list[object]]:
     """构造 runs 筛选 WHERE 子句与参数（参数化，防注入）。"""
     clauses: list[str] = []
@@ -148,6 +151,9 @@ def _run_filters(
     if until:
         clauses.append("started_at<=?")
         params.append(until)
+    if workspace_id:
+        clauses.append("workspace_id=?")
+        params.append(workspace_id)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params
 
@@ -159,11 +165,12 @@ def query_runs(
     status: str | None = None,
     since: str | None = None,
     until: str | None = None,
+    workspace_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[RunRecord]:
     """按条件筛选运行记录，倒序分页。"""
-    where, params = _run_filters(domain, status, since, until)
+    where, params = _run_filters(domain, status, since, until, workspace_id)
     rows = conn.execute(
         "SELECT * FROM runs" + where + " ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?",
         (*params, limit, offset),
@@ -178,9 +185,10 @@ def count_runs(
     status: str | None = None,
     since: str | None = None,
     until: str | None = None,
+    workspace_id: str | None = None,
 ) -> int:
     """按条件统计运行记录数（配合 query_runs 做分页）。"""
-    where, params = _run_filters(domain, status, since, until)
+    where, params = _run_filters(domain, status, since, until, workspace_id)
     row = conn.execute("SELECT COUNT(*) AS n FROM runs" + where, params).fetchone()
     return int(row["n"])
 
@@ -191,7 +199,7 @@ def summary_rows(conn: sqlite3.Connection) -> list[RunRecord]:
         """SELECT id, session_id, domain, status, started_at, ended_at, duration_ms,
                   model, total_tokens, health_score, input_tokens, output_tokens, request_id,
                   cache_input_tokens, cache_creation_input_tokens, input, output, permission,
-                  work_ms, wall_ms, error, model_params, web_access
+                  work_ms, wall_ms, error, model_params, web_access, workspace_id
            FROM runs"""
     ).fetchall()
     return [_run_from_row(row) for row in rows]

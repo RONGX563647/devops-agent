@@ -1,0 +1,15 @@
+# 工作区（SPEC-0021）—— 一工作区一代码库。
+# 默认全关：enabled=false 时 /api/workspaces 返回 404，运行链路完全走旧路径。
+workspaces:
+  enabled: false
+  # 受管克隆根；留空表示仓库根下的 workspace/workspaces（已 gitignore）
+  root: ""
+  # 本地目录导入是高风险入口：必须同时配置白名单，否则本地创建被拒
+  allow_local_import: false
+  allowed_local_roots: []
+  allow_git_import: true
+  git_clone_timeout_sec: 120
+  max_workspaces: 10
+  # 删除受管克隆时要求工作区干净；脏目录先出 patch 或 409
+  require_clean_on_delete: true
+  default_profile: workspace

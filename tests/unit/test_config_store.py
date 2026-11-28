@@ -171,11 +171,21 @@ def test_loader_is_hot_after_patch(conf: Path) -> None:
 
 def test_index_lists_every_domain(conf: Path) -> None:
     index = {item["domain"]: item for item in cs.index()}
-    assert set(index) == {"health", "input", "memory", "gateway", "policy", "model", "sandbox"}
+    assert set(index) == {
+        "health",
+        "input",
+        "memory",
+        "gateway",
+        "policy",
+        "model",
+        "sandbox",
+        "workspace",
+    }
     assert index["policy"]["writable"] is False
     assert index["model"]["managed_by"] == "model_settings"
     assert index["gateway"]["hot"] == "restart"
     assert index["sandbox"]["hot"] == "restart"
+    assert index["workspace"]["hot"] == "restart"
 
 
 def test_bounds_expose_constraints(conf: Path) -> None:

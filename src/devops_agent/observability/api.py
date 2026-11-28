@@ -56,6 +56,8 @@ class RunOut(BaseModel):
     model_params: str = ""
     # 本轮网络获取决策（JSON）：net 是否授予、预抓取缺口、走了哪条通路；空串 = 未记录
     web_access: str = ""
+    # 本轮所属工作区（SPEC-0021）；空串 = 未绑定或老记录
+    workspace_id: str = ""
 
 
 class SpanOut(BaseModel):
@@ -128,22 +130,22 @@ def list_runs(
     status: str | None = None,
     since: str | None = None,
     until: str | None = None,
+    workspace_id: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> RunListOut:
-    """运行列表：按域/状态/时间窗筛选，分页倒序。"""
+    """运行列表：按域/状态/时间窗/工作区筛选，分页倒序。"""
+    filters = {
+        "domain": domain,
+        "status": status,
+        "since": since,
+        "until": until,
+        "workspace_id": workspace_id,
+    }
     with repo.connect() as conn:
         repo.init_db(conn)
-        rows = repo.query_runs(
-            conn,
-            domain=domain,
-            status=status,
-            since=since,
-            until=until,
-            limit=limit,
-            offset=offset,
-        )
-        total = repo.count_runs(conn, domain=domain, status=status, since=since, until=until)
+        rows = repo.query_runs(conn, limit=limit, offset=offset, **filters)
+        total = repo.count_runs(conn, **filters)
     return RunListOut(
         items=[_run_out(r) for r in rows],
         total=total,
@@ -448,6 +450,7 @@ def _run_out(run: RunRecord) -> RunOut:
         wall_ms=run.wall_ms,
         model_params=run.model_params,
         web_access=run.web_access,
+        workspace_id=run.workspace_id,
     )
 
 

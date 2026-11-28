@@ -27,6 +27,9 @@ class RunRequest(BaseModel):
     # 显式 true/false = 这一轮就按它来。默认值不能写 False ——
     # 那样「没带字段」会被当成「关」，环境变量就永远不生效。
     web_search: bool | None = None
+    # 工作区（SPEC-0021）：省略 = 用会话已绑定值；未绑定且省略 = 旧路径。
+    # 可选字段保证旧前端不传也不会 422。
+    workspace_id: str | None = None
 
 
 class ConfirmItem(BaseModel):

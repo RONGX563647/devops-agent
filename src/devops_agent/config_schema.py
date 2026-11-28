@@ -456,6 +456,28 @@ class InputPolicy(BaseModel):
     wrap_untrusted: bool = True
 
 
+# --- 工作区（workspaces.yaml 的 workspaces 段）---------------------------
+
+
+class WorkspacePolicy(BaseModel):
+    """工作区域的部署策略（SPEC-0021 §11）。
+
+    默认全关：`enabled=False` 时新路由 404、运行链路完全走旧的 `DEVOPS_AGENT_WORKDIR`。
+    本地导入另有 `allow_local_import` 一道闸：无容器隔离时它等于把宿主目录交给工具。
+    """
+
+    enabled: bool = False
+    root: str = ""  # 受管克隆根；空串 = 仓库根的 workspace/workspaces（已 gitignore）
+    allow_local_import: bool = False  # 高风险入口，默认关闭
+    # 本地目录白名单：为空时本地导入整体不可用（不是「默认允许所有」）
+    allowed_local_roots: list[str] = Field(default_factory=list)
+    allow_git_import: bool = True
+    git_clone_timeout_sec: int = Field(default=120, ge=10, le=900)
+    max_workspaces: int = Field(default=10, ge=1, le=200)
+    require_clean_on_delete: bool = True
+    default_profile: str = "workspace"
+
+
 __all__ = [
     "ConfirmPolicy",
     "GatewayPolicy",
@@ -473,4 +495,5 @@ __all__ = [
     "SandboxDockerPolicy",
     "SandboxOpensandboxPolicy",
     "SandboxPolicy",
+    "WorkspacePolicy",
 ]

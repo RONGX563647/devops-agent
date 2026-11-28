@@ -25,7 +25,8 @@ from devops_agent.memory.calibration import drift
 from devops_agent.memory.candidate import is_candidate
 from devops_agent.memory.context import build_note, clip
 from devops_agent.memory.episodic import EpisodicMemory
-from devops_agent.memory.long_term import Hit, build_long_term, resolve_scope_id
+from devops_agent.memory.long_term import Hit, build_long_term
+from devops_agent.memory.scope import effective_scope, resolve_scope_id
 from devops_agent.memory.short_term import TrimReport, trim_context_for_snapshot
 from devops_agent.memory.sink import MemorySink
 from devops_agent.memory.snapshot import stamp_snapshot
@@ -121,6 +122,11 @@ class MemoryRuntime:
     policy: Any
     sink: MemorySink = field(default_factory=MemorySink)
     db_path: Path | None = None
+    # 绑定的工作区（SPEC-0021）：长期记忆按工作区共享，短期/中期仍按会话隔离
+    workspace_id: str | None = None
+    # 解析后的作用域与存储键（只读投影，供状态接口与排障）
+    scope: str = field(init=False, default="")
+    scope_id: str = field(init=False, default="")
     episodic: EpisodicMemory = field(init=False)
     long_term: Any = field(init=False)
     backend_name: str = field(init=False, default="off")
@@ -129,8 +135,11 @@ class MemoryRuntime:
 
     def __post_init__(self) -> None:
         self.episodic = EpisodicMemory(self.policy.episodic, self.db_path)
-        scope_id = resolve_scope_id(self.policy, self.session_id)
-        choice = build_long_term(self.policy.long_term, scope_id, self.db_path)
+        scope = effective_scope(self.policy, self.workspace_id)
+        scope_id = resolve_scope_id(self.policy, self.session_id, self.workspace_id)
+        choice = build_long_term(self.policy.long_term, scope_id, self.db_path, scope)
+        self.scope = scope
+        self.scope_id = scope_id
         self.long_term = choice.backend
         # backend_name 是「实际生效」的那个：事件与 /health 都拿它，避免把请求值当结果
         self.backend_name = choice.effective

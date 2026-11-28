@@ -11,8 +11,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from devops_agent.config import load_memory
 from devops_agent.memory.context import clip
-from devops_agent.memory.long_term import resolve_scope_id
 from devops_agent.memory.runtime import memory_status
+from devops_agent.memory.scope import resolve_scope_id
 from devops_agent.observability import repository as repo
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
@@ -22,9 +22,14 @@ def _db() -> Any:
     return repo.connect()
 
 
-def _scope_id(scope: str, session_id: str) -> str:
-    """管理接口的 scope_id 与运行时同源：session 档只看会话键，user 档才用 user_id。"""
-    return resolve_scope_id(load_memory(), session_id, scope)
+def _scope_id(scope: str, session_id: str, workspace_id: str = "") -> str:
+    """按 scope 真正分派，规则与运行时同源（`memory.scope.resolve_scope_id`）。
+
+    - session：永远 `session:<id>`；
+    - user：配置了 user_id 才共享，否则退回会话；
+    - workspace：固定 `workspace:<id>`，跨工作区不可见。
+    """
+    return resolve_scope_id(load_memory(), session_id, workspace_id, scope=scope)
 
 
 @router.get("/status")
@@ -59,14 +64,21 @@ def _preview(card: dict[str, Any] | None, limit: int) -> dict[str, Any] | None:
 
 @router.get("/long-term")
 def get_long_term(
-    scope: str = Query(default="session", pattern="^(session|user)$"),
+    scope: str = Query(default="session", pattern="^(session|user|workspace)$"),
     session_id: str = "",
+    workspace_id: str = "",
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    """长期记忆列表（分页、预览）；默认会话作用域。"""
+    """长期记忆列表（分页、预览）；默认会话作用域。
+
+    `scope=workspace` 时必须带 `workspace_id`：不猜「当前唯一的工作区」，
+    否则一次参数遗漏就会读出别的代码库的记忆。
+    """
+    if scope == "workspace" and not workspace_id.strip():
+        raise HTTPException(status_code=400, detail="workspace_id_required")
     policy = load_memory()
-    scope_id = _scope_id(scope, session_id)
+    scope_id = _scope_id(scope, session_id, workspace_id)
     preview = policy.trace.hit_preview_chars
     with repo.connect() as conn:
         repo.init_db(conn)

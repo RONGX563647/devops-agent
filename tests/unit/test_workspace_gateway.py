@@ -92,6 +92,33 @@ def test_browse_and_memory_endpoints(tmp_path: Path) -> None:
     assert memory.json()["scope"] == "workspace"
 
 
+def test_control_and_browse_navigation(tmp_path: Path) -> None:
+    """能力自述与目录导航：白名单根、上级目录、根处不再上溯。
+
+    `control` 必须走独立路由而不是落到 `/{workspace_id}`，
+    `parent` 由后端判定，到白名单根就返回 null —— 否则界面会给出必然 400 的「上一级」。
+    """
+    root = tmp_path / "root"
+    child = root / "child"
+    child.mkdir(parents=True)
+    client, _ = _client(tmp_path)
+
+    control = client.get("/api/workspaces/control")
+    assert control.status_code == 200
+    body = control.json()
+    assert body["enabled"] is True
+    assert body["allowed_local_roots"] == [str(tmp_path.resolve())]
+    assert body["allow_git_import"] is True
+    assert body["max_workspaces"] >= 1
+
+    inside = client.get("/api/workspaces/browse", params={"path": str(child)}).json()
+    assert inside["parent"] == str(root.resolve())
+    assert inside["roots"] == [str(tmp_path.resolve())]
+
+    at_root = client.get("/api/workspaces/browse", params={"path": str(tmp_path)}).json()
+    assert at_root["parent"] is None
+
+
 def test_git_source_requires_kind(tmp_path: Path) -> None:
     """判别联合：缺 kind 直接 422，不猜来源。"""
     client, _ = _client(tmp_path)

@@ -100,6 +100,28 @@ def browse_children(
     return base, items
 
 
+def real_roots(allowed_roots: Sequence[str]) -> list[str]:
+    """白名单根的 realpath 列表（跳过空串）；界面用它做「一键跳转」的起点。"""
+    return [str(root) for root in _real_roots(allowed_roots)]
+
+
+def parent_within(base: Path, allowed_roots: Sequence[str]) -> str | None:
+    """`base` 的上级目录，仅当它仍在白名单内时给出。
+
+    「上一级」由后端判定而不是前端拼路径：白名单根的父目录必须返回 None，
+    否则界面会给出一个点了必然 400 的按钮。
+    """
+    roots = _real_roots(allowed_roots)
+    parent = base.parent
+    if parent == base:  # 盘符根 / 文件系统根，没有上级
+        return None
+    try:
+        real = parent.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    return str(real) if _within(real, roots) else None
+
+
 def default_managed_root() -> Path:
     """受管克隆根：仓库根的 `workspace/workspaces`（已 gitignore）。"""
     return Path(__file__).resolve().parents[3] / "workspace" / "workspaces"
@@ -120,5 +142,7 @@ __all__ = [
     "browse_children",
     "default_managed_root",
     "managed_root",
+    "parent_within",
+    "real_roots",
     "resolve_local_root",
 ]

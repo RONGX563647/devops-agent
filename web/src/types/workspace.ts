@@ -45,6 +45,10 @@ export interface BrowseItem {
 export interface BrowseResult {
   root: string;
   items: BrowseItem[];
+  /** 上一个可进入的目录；已到白名单根时为 null（由后端判定，前端不拼路径）。 */
+  parent?: string | null;
+  /** 白名单根的 realpath，用于「一键跳转」。 */
+  roots?: string[];
 }
 
 export interface LocalWorkspaceSource {
@@ -58,6 +62,25 @@ export interface GitWorkspaceSource {
   branch?: string;
   credential_ref?: string;
   depth?: number;
+}
+
+/** 固定 workspace scope 的长期记忆条目；只取展示需要的字段。 */
+export interface WorkspaceMemoryItem {
+  id: number;
+  kind: string;
+  text: string;
+  hits: number;
+  created_at: string;
+}
+
+export interface WorkspaceMemoryPage {
+  workspace_id: string;
+  scope: string;
+  scope_id: string;
+  items: WorkspaceMemoryItem[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface CreateWorkspaceRequest {

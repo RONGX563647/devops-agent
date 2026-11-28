@@ -99,6 +99,8 @@ export interface WorkspaceSessionItem {
   failed_count: number;
   bound_at: string;
   bound_by: string;
+  /** 非空表示已归档：前端据此置灰并在「显示已归档」时渲染。 */
+  archived_at?: string;
 }
 
 export interface WorkspaceSessionPage {

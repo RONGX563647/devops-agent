@@ -9,6 +9,10 @@ export interface SessionItem {
   failedCount: number;
   /** 本地缓存里的用户消息数（后端还没有运行记录时用来显示计数）。 */
   messageCount?: number;
+  /** 已归档会话：置灰展示，从默认视图收起。 */
+  archived?: boolean;
+  /** 还没发出第一轮的草稿，只存在于界面。 */
+  draft?: boolean;
 }
 
 export type SessionGroup = '今天' | '昨天' | '更早';

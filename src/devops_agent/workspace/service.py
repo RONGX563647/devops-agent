@@ -318,16 +318,48 @@ class WorkspaceService:
         return sessions.resolve(self, session_id, requested_id)
 
     def sessions_for(
-        self, workspace_id: str, *, limit: int = 50, offset: int = 0
+        self,
+        workspace_id: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        include_archived: bool = False,
     ) -> dict[str, Any]:
         """某工作区下的会话（左栏展开与详情页共用）。"""
         self._require_enabled()
-        return sessions.for_workspace(self, workspace_id, limit=limit, offset=offset)
+        return sessions.for_workspace(
+            self,
+            workspace_id,
+            limit=limit,
+            offset=offset,
+            include_archived=include_archived,
+        )
 
-    def session_board(self, *, limit_per_workspace: int = 5) -> dict[str, Any]:
+    def session_board(
+        self, *, limit_per_workspace: int = 5, include_archived: bool = False
+    ) -> dict[str, Any]:
         """左栏分组视图：工作区底下挂最近会话 + 未归属会话。"""
         self._require_enabled()
-        return sessions.board(self, limit_per_workspace=limit_per_workspace)
+        return sessions.board(
+            self,
+            limit_per_workspace=limit_per_workspace,
+            include_archived=include_archived,
+        )
+
+    def session_detail(self, session_id: str) -> dict[str, Any]:
+        """单条会话（含改名后的标题），给会话页顶栏用。"""
+        self._require_enabled()
+        return sessions.detail(self, session_id)
+
+    def rename_session(self, session_id: str, title: str) -> dict[str, Any]:
+        """改会话标题：只覆盖展示标题，原始输入不动。"""
+        self._require_enabled()
+        return sessions.rename(self, session_id, title)
+
+    def archive_session(self, session_id: str, *, archived: bool = True) -> dict[str, Any]:
+        """归档 / 恢复会话：runs 与归属都保留，只是从默认视图收起。"""
+        self._require_enabled()
+        return sessions.archive(self, session_id, archived=archived)
 
     # --- 目录浏览与记忆 -----------------------------------------------
     def browse(self, path: str = "") -> dict[str, Any]:

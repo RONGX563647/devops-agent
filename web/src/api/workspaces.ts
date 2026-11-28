@@ -7,6 +7,7 @@ import type {
   WorkspaceList,
   WorkspaceMemoryPage,
   WorkspaceSessionBoard,
+  WorkspaceSessionItem,
   WorkspaceSessionPage,
   WorkspaceStatus,
   WorkspaceSummary,
@@ -40,8 +41,39 @@ export function createWorkspace(req: CreateWorkspaceRequest): Promise<WorkspaceS
 }
 
 /** 左栏分组：一次拿全量工作区与各自最近会话，避免按工作区数量发 N 个请求。 */
-export function fetchSessionBoard(limitPerWorkspace = 5): Promise<WorkspaceSessionBoard> {
-  return getJson<WorkspaceSessionBoard>(`/api/workspaces/sessions?limit=${limitPerWorkspace}`);
+export function fetchSessionBoard(
+  limitPerWorkspace = 5,
+  includeArchived = false,
+): Promise<WorkspaceSessionBoard> {
+  const archived = includeArchived ? '&include_archived=true' : '';
+  return getJson<WorkspaceSessionBoard>(
+    `/api/workspaces/sessions?limit=${limitPerWorkspace}${archived}`,
+  );
+}
+
+/** 单条会话：改名 / 归档后刷新顶栏标题用，不必重取整块分组。 */
+export function fetchWorkspaceSession(id: string): Promise<WorkspaceSessionItem> {
+  return getJson<WorkspaceSessionItem>(`/api/workspaces/sessions/${encodeURIComponent(id)}`);
+}
+
+/** 会话改名 / 归档；只传要改的字段。 */
+export function updateSession(
+  id: string,
+  patch: { title?: string; archived?: boolean },
+): Promise<{ session_id: string }> {
+  return sendJson<{ session_id: string }>(
+    `/api/workspaces/sessions/${encodeURIComponent(id)}`,
+    'PATCH',
+    patch,
+  );
+}
+
+/** 工作区改名 / 改默认档位。 */
+export function updateWorkspace(
+  id: string,
+  patch: { name?: string; default_profile?: string },
+): Promise<WorkspaceSummary> {
+  return sendJson<WorkspaceSummary>(`/api/workspaces/${encodeURIComponent(id)}`, 'PATCH', patch);
 }
 
 /** 按工作区列会话（详情页与「展开更多」共用），最近运行优先。 */

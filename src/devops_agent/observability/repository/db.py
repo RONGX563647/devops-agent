@@ -237,7 +237,11 @@ CREATE TABLE IF NOT EXISTS workspace_sessions (
     session_id   TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     bound_at     TEXT NOT NULL,
-    bound_by     TEXT NOT NULL DEFAULT ''
+    bound_by     TEXT NOT NULL DEFAULT '',
+    -- 用户改名后的标题：空串表示沿用「最早一条输入」，不复制一份标题进来
+    title        TEXT NOT NULL DEFAULT '',
+    -- 归档时间：会话不删，只是从默认视图里收起来
+    archived_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_workspace_sessions_ws ON workspace_sessions(workspace_id);
 """
@@ -282,6 +286,13 @@ _RUN_COLUMNS: tuple[tuple[str, str], ...] = (
 _SESSION_COLUMNS: tuple[tuple[str, str], ...] = (
     ("model_config", "TEXT NOT NULL DEFAULT ''"),
     ("workspace_id", "TEXT NOT NULL DEFAULT ''"),
+)
+
+# workspace_sessions 上后加的列：改名与归档都挂在绑定行上，
+# 因为「会话」本身没有独立记录（唯一真相是 runs 的 session_id）。
+_WORKSPACE_SESSION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("title", "TEXT NOT NULL DEFAULT ''"),
+    ("archived_at", "TEXT"),
 )
 
 # session_memories 上后加的列：仅审计（中期仍按 session_id 隔离，不跨会话读）。
@@ -342,6 +353,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _ensure_span_types(conn)
     _ensure_columns(conn, "session_states", _SESSION_COLUMNS)
     _ensure_columns(conn, "session_memories", _MEMORY_COLUMNS)
+    _ensure_columns(conn, "workspace_sessions", _WORKSPACE_SESSION_COLUMNS)
 
     _ensure_columns(conn, "long_term_memories", _LONG_TERM_COLUMNS)
     # 索引在建表语句之后、补列之前都建不了：老库没有 norm_text。

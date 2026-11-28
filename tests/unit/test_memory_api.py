@@ -46,8 +46,8 @@ def test_long_term_api_lists_and_deletes(tmp_path, monkeypatch) -> None:  # type
     import asyncio
 
     client = _client(tmp_path, monkeypatch)
-    store, _ = build_long_term(LongTermPolicy(backend="local"), "session:s1", tmp_path / "obs.db")
-    entry = asyncio.run(store.write("用户更喜欢 pytest"))
+    store = build_long_term(LongTermPolicy(backend="local"), "session:s1", tmp_path / "obs.db")
+    entry = asyncio.run(store.backend.write("用户更喜欢 pytest"))
     body = client.get("/api/memory/long-term?session_id=s1").json()
     assert body["total"] == 1
     assert body["items"][0]["text"] == "用户更喜欢 pytest"

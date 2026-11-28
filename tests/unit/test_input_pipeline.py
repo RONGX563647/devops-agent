@@ -245,8 +245,8 @@ def test_detect_reports_truncation(tmp_path: Path) -> None:
     assert "另有 2 条超出上限未登记" in detect.detail
 
 
-def test_input_policy_matches_checked_in_yaml() -> None:
-    """input.yaml 与 InputPolicy 的默认值必须一致：两边各写一份，靠这条对账防漂移。"""
+def test_input_policy_loads_after_deployment_yaml_removed() -> None:
+    """input 基线已删：缺文件即全回落 InputPolicy 默认，抓取行为不变。"""
     assert load_input() == InputPolicy()
 
 

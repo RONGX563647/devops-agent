@@ -1,3 +1,5 @@
+import type { ConfigHealth } from './config';
+
 /** 健康分、全局指标与运行时自述：与后端 Pydantic 响应对齐的前端类型。 */
 
 /** 一条扣分项：回答「这 8 分扣在哪」。 */
@@ -126,6 +128,8 @@ export interface Health {
   status: string;
   runtime?: RuntimeStatus;
   tools?: Record<string, { available: boolean; binary: string }>;
+  /** 配置库读写状态（读降级、写拒绝）；`mode` 可能是 invalid（环境变量拼错）。 */
+  config?: ConfigHealth;
 }
 
 /**

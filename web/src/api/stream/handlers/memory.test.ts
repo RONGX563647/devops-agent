@@ -50,7 +50,7 @@ describe('MEMORY_HANDLERS', () => {
       deduped: false,
       memory: {},
     });
-    const second = MEMORY_HANDLERS.MEMORY_WRITE_END(first, {
+    const second = MEMORY_HANDLERS.MEMORY_WRITE_END({ ...first, eventCount: 1 }, {
       type: 'MEMORY_WRITE_END',
       layer: 'episodic',
       state: 'error',
@@ -62,5 +62,7 @@ describe('MEMORY_HANDLERS', () => {
     expect(second.steps[1].state).toBe('error');
     expect(second.steps[1].label).toBe('记忆写入 · 中期');
     expect(second.steps[0].detail).toBe('新增 1 / 去重 0');
+    // id 只承诺单轮内唯一：两条同类事件不能靠 id 相同被 upsert 合并掉
+    expect(second.steps[0].id).not.toBe(second.steps[1].id);
   });
 });

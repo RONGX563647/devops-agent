@@ -5,9 +5,9 @@
  * 重点覆盖 SPEC-0008 里前端要修的那几条：F1 单一阈值线、F2 批次分页、
  * F3 门禁下钻不分类型、F6 时间本地化、F7 五赛道固定五行、F9 批次身份。
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createCaseFromBatch,
@@ -272,12 +272,18 @@ function rowOf(id: number, caseId: string) {
   };
 }
 
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname + location.search}</output>;
+}
+
 function renderQuality(initial = '/?view=overview') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[initial]}>
         <Quality />
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -377,6 +383,33 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('质量页视图路由', () => {
+  it('工作台 ?tab=quality 下切换视图保留 tab 与会话，并清掉旧 focus', async () => {
+    renderQuality('/?tab=quality&session=sess-7&focus=scoreflow');
+
+    const nav = screen.getByRole('navigation', { name: '质量视图' });
+    const batches = within(nav).getByRole('link', { name: /^批次/ });
+    expect(batches.getAttribute('href')).toBe('/?tab=quality&session=sess-7&view=batches');
+
+    fireEvent.click(batches);
+
+    await waitFor(() => {
+      const loc = screen.getByTestId('location').textContent ?? '';
+      expect(loc).toContain('tab=quality');
+      expect(loc).toContain('session=sess-7');
+      expect(loc).toContain('view=batches');
+      expect(loc).not.toContain('focus=');
+    });
+  });
+
+  it('独立 /quality 路由下切换视图不会引入多余参数', () => {
+    renderQuality('/quality');
+
+    const nav = screen.getByRole('navigation', { name: '质量视图' });
+    expect(within(nav).getByRole('link', { name: /^记忆/ }).getAttribute('href')).toBe(
+      '/quality?view=memory',
+    );
+  });
+
   it('四个视图由 URL 决定，选中态用 aria-current 而不是 tab 角色', async () => {
     renderQuality('/?view=overview');
 

@@ -40,7 +40,7 @@ from .model import Reference, Stage, _elapsed_ms, _stage
 from .sanitize import Material, capabilities, screen, to_text
 
 # 下面三个常量是「默认值」，与 InputPolicy 的字段默认值一致；
-# 运行期一律读 config/input.yaml（load_input）。保留常量是为了导出面与对账测试。
+# 运行期一律读 load_input()。保留常量是为了导出面与对账测试。
 MAX_FILE_BYTES: Final = 256 * 1024
 FETCH_TIMEOUT_SECONDS: Final = 5.0
 FETCH_MAX_BYTES: Final = 512 * 1024

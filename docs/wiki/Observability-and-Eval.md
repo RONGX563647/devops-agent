@@ -46,7 +46,7 @@ observability/api.py + openjudge/api.py ──► React（/runs、/dashboard、/
 
 ## 3. 健康分（`observability/health.py`，口径 `v2`）
 
-四维加权，权重来自 [config/health.yaml](../../config/health.yaml)：
+四维加权，权重来自 `HealthPolicy`（`config.py` 的字段默认，配置面板「健康分口径」可覆盖）：
 
 | 维度 | 权重 | 怎么算 |
 |---|---|---|

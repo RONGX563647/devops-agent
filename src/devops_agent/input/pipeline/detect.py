@@ -17,7 +17,7 @@ from devops_agent.config import load_input
 
 from .model import KIND_LABELS, Reference, Stage, _elapsed_ms, _stage
 
-# 默认上限，与 InputPolicy.max_references 一致；运行期一律读 config/input.yaml。
+# 默认上限，与 InputPolicy.max_references 一致；运行期一律读 load_input()。
 # 保留常量是为了导出面（pipeline.__init__ 再导出）与对账测试。
 MAX_REFERENCES: Final = 5
 
@@ -108,7 +108,7 @@ def _detect(text: str, root: Path | None) -> tuple[list[Reference], Stage]:
 
     summary, detail = _ref_summary(refs)
     if dropped:
-        note = f"另有 {dropped} 条超出上限未登记（max_references={limit}，见 config/input.yaml）"
+        note = f"另有 {dropped} 条超出上限未登记（max_references={limit}，见「输入管线」设置）"
         detail = f"{detail}\n{note}".strip()
     return refs, _stage(
         "detect",

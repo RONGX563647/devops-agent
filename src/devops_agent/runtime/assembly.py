@@ -19,11 +19,13 @@ from agentscope.state import AgentState
 from agentscope.tool import Toolkit, ToolMiddlewareBase
 
 from devops_agent.config import load_memory, load_model
+from devops_agent.executor.target import ExecutionTarget
 from devops_agent.governance.compile import compile_context
 from devops_agent.governance.model import PermissionProfile
 from devops_agent.governance.presets import default_profile
 from devops_agent.memory.observer import MemoryMiddleware
 from devops_agent.memory.runtime import MemoryRuntime
+from devops_agent.memory.snapshot import record_restore_failure
 from devops_agent.model_settings import ModelParams, effective_params
 from devops_agent.runtime.chat_model import build_chat_model, build_context_config
 from devops_agent.runtime.compression import CompressionMiddleware, CompressionSink
@@ -32,7 +34,7 @@ from devops_agent.runtime.prompt import build_system_prompt, resolve_workdir
 from devops_agent.runtime.scope_runtime import PROFILE_KEY, AgentScopeRuntime
 from devops_agent.search_mode import search_mode
 from devops_agent.secrets.middleware import build_secret_middleware
-from devops_agent.tools.catalog import build_toolkit_for
+from devops_agent.tools.catalog import BackendFactory, build_toolkit_for
 from devops_agent.tools.names import SEARCH_TOOL_NAME
 from devops_agent.tools.web_search import WebSearchTool, build_backend
 
@@ -75,7 +77,7 @@ def build_agent(
 def _state_for(
     profile: PermissionProfile,
     state: AgentState | None,
-    workdir: Path | None = None,
+    workdir: str | Path | None = None,
 ) -> AgentState:
     """准备跨轮状态：没有就新建；有但档位变了就重建权限上下文。
 
@@ -88,6 +90,10 @@ def _state_for(
 
     老快照没有这个键：视为档位不同，重建一次。只换 `permission_context`，
     `context`（对话历史）不动，用户无感。
+
+    `workdir` 收字符串而不是 `Path`：docker 模式的工具路径是容器里的
+    `/workspace`，Windows 上 `str(Path("/workspace"))` 会变成 `\\workspace`
+    （丢掉前导斜杠、还带上「当前盘符」的语义），权限层就再也认不出它是容器路径。
     """
     if state is None:
         fresh = AgentState(permission_context=compile_context(profile=profile, workdir=workdir))
@@ -113,6 +119,13 @@ class RuntimeParts:
     web_search: bool
     system_prompt: str
     state: AgentState
+    # 工具路径与 shell：local 模式等于宿主路径/平台 shell；docker 模式为
+    # /workspace 与 /bin/sh。工具与提示词都只认这一层。
+    tool_workdir: str = ""
+    shell: str | None = None
+    # docker / opensandbox 注入共享 backend；local 模式为 None（沿用 _WorkdirBackend）
+    backend_factory: BackendFactory | None = None
+    execution: ExecutionTarget | None = None
     note_mw: ProfileNoteMiddleware | None = None
     # 联网检索工具实例：预算要跨轮 reset，所以必须由运行时与 toolkit 共用同一个对象。
     search_tool: WebSearchTool | None = None
@@ -123,6 +136,18 @@ class RuntimeParts:
     agent: Agent | None = None
 
 
+def _execution_paths(
+    workdir: str | os.PathLike[str] | None,
+    execution: ExecutionTarget | None,
+) -> tuple[Path, str, str | None, BackendFactory | None]:
+    """解析宿主目录、工具路径、shell 与 backend 工厂（执行面优先）。"""
+    if execution is None:
+        base = resolve_workdir(workdir)
+        return base, str(base), None, None
+    backend = execution.backend_factory if execution.uses_shared_backend else None
+    return execution.host_workdir, execution.tool_workdir, execution.shell, backend
+
+
 def _resolve_runtime_inputs(
     system_prompt: str | None,
     workdir: str | os.PathLike[str] | None,
@@ -130,6 +155,7 @@ def _resolve_runtime_inputs(
     state: AgentState | None,
     web_search: bool | None,
     params: ModelParams | None,
+    execution: ExecutionTarget | None = None,
 ) -> RuntimeParts:
     """解析装配输入：系统提示、工作目录、档位、跨轮状态、参数与联网开关。
 
@@ -137,9 +163,12 @@ def _resolve_runtime_inputs(
     档位说明必须同源，否则会出现「请求里带了检索结果、提示词却说没联网」。
     优先级：请求里的逐轮开关 > 档位声明 `net` > 部署默认 env。
     `params` 省略时按「会话覆盖 > 部署默认 > yaml > env」解析。
+
+    `execution` 非空时以它为准：提示词、工具 cwd、权限目录都使用
+    `tool_workdir`（docker 为 `/workspace`），宿主路径只留在审计与挂载层。
     """
     resolved = profile if profile is not None else default_profile()
-    base = resolve_workdir(workdir)
+    base, tool_workdir, shell, backend_factory = _execution_paths(workdir, execution)
     if web_search is not None:
         effective_search = web_search
     elif resolved.net is not None:
@@ -151,8 +180,16 @@ def _resolve_runtime_inputs(
         workdir=base,
         params=params if params is not None else effective_params(),
         web_search=effective_search,
-        system_prompt=system_prompt if system_prompt is not None else build_system_prompt(base),
-        state=_state_for(resolved, state, base),
+        system_prompt=(
+            system_prompt
+            if system_prompt is not None
+            else build_system_prompt(tool_workdir, shell=shell)
+        ),
+        state=_state_for(resolved, state, tool_workdir),
+        tool_workdir=tool_workdir,
+        shell=shell,
+        backend_factory=backend_factory,
+        execution=execution,
     )
 
 
@@ -170,9 +207,15 @@ def _build_search_tool(parts: RuntimeParts) -> RuntimeParts:
     return replace(parts, search_tool=WebSearchTool(backend))
 
 
-def _build_middlewares(parts: RuntimeParts, session_id: str = "") -> RuntimeParts:
-    """建工具中间件、档位说明、压缩 sink 与记忆运行时（随会话快照重建）。"""
-    policy = load_memory()
+def _build_middlewares(
+    parts: RuntimeParts, session_id: str = "", memory_policy: Any | None = None
+) -> RuntimeParts:
+    """建工具中间件、档位说明、压缩 sink 与记忆运行时（随会话快照重建）。
+
+    `memory_policy` 是评测变体的入口：省略时读全局 `load_memory()`，
+    这样线上行为不变，只有评测传入 off/short/full 等变体。
+    """
+    policy = memory_policy if memory_policy is not None else load_memory()
     memory = MemoryRuntime(session_id, policy) if session_id and policy.enabled else None
     return replace(
         parts,
@@ -207,6 +250,8 @@ def _build_agent(parts: RuntimeParts) -> RuntimeParts:
             middlewares=parts.toolkit_mws,
             scope=parts.profile.scope,
             extra=extra,
+            backend_factory=parts.backend_factory,
+            tool_cwd=parts.tool_workdir or None,
         ),
         middlewares=[
             note_mw,
@@ -236,6 +281,7 @@ def _wrap_runtime(parts: RuntimeParts) -> AgentScopeRuntime:
         web_search=parts.web_search,
         search_tool=parts.search_tool,
         params=parts.params,
+        execution=parts.execution,
     )
 
 
@@ -247,6 +293,8 @@ def build_agentscope_runtime(
     web_search: bool | None = None,
     params: ModelParams | None = None,
     session_id: str = "",
+    memory_policy: Any | None = None,
+    execution: ExecutionTarget | None = None,
 ) -> AgentScopeRuntime:
     """装配真实运行时（env 提供模型凭据）。
 
@@ -260,12 +308,14 @@ def build_agentscope_runtime(
       `context_config` 与 `context_size` 必须与之一致，否则会出现
       「窗口是新的、压缩阈值还是旧的」。
     """
-    # 1) 解析输入：提示词、目录、档位、跨轮状态、参数与本轮联网开关
-    parts = _resolve_runtime_inputs(system_prompt, workdir, profile, state, web_search, params)
+    # 1) 解析输入：提示词、目录、档位、跨轮状态、参数、联网开关与执行目标
+    parts = _resolve_runtime_inputs(
+        system_prompt, workdir, profile, state, web_search, params, execution
+    )
     # 2) 联网工具：只有 tool 模式且后端可用才建，预算实例要交给运行时持有
     parts = _build_search_tool(parts)
     # 3) 建中间件、压缩 sink 与记忆运行时（无 session_id 时不装配记忆）
-    parts = _build_middlewares(parts, session_id)
+    parts = _build_middlewares(parts, session_id, memory_policy)
     # 4) 建 Agent：工具按档位装配，模型参数与上下文窗口同源
     parts = _build_agent(parts)
     # 5) 包成运行时：中间件、sink 与当前参数交给运行时持有
@@ -291,13 +341,31 @@ def session_runtime_factory(base: object) -> Callable[..., Any]:
     ) -> Any:
         if not isinstance(base, AgentScopeRuntime):
             return base
-        state = AgentState.model_validate_json(state_json) if state_json else None
+        state = _restore_state(session_id, state_json)
         return build_agentscope_runtime(
             profile=profile,
             state=state,
             web_search=web_search,
             params=effective_params(session=model_config or {}),
             session_id=session_id,
+            # 会话重建必须复用启动期的执行面，否则切档/换会话会退回宿主。
+            execution=getattr(base, "execution", None),
         )
 
     return make
+
+
+def _restore_state(session_id: str, state_json: str | None) -> AgentState | None:
+    """解析会话快照；坏快照退回新会话，但必须留痕。
+
+    直接抛会让整个会话建不起来（用户看到 500）；静默吞掉则会「历史莫名清空」，
+    排障时连一句日志都没有。折中是记 warning + 计数，`/health` 能看到
+    `memory.restores.failed` 在涨（SPEC-0013 §18.2 M5）。
+    """
+    if not state_json:
+        return None
+    try:
+        return AgentState.model_validate_json(state_json)
+    except Exception as exc:  # noqa: BLE001 - 坏快照只能按新会话处理
+        record_restore_failure(session_id, exc)
+        return None

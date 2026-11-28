@@ -54,7 +54,7 @@ def test_counter_unavailable_is_explicit_policy(policy: str, expected: Ending) -
 
 
 def test_run_limits_follow_deployment_policy() -> None:
-    """限额来自 gateway.yaml：改配置即改行为，不需要 monkeypatch 模块常量。"""
+    """限额来自部署策略：改配置即改行为，不需要 monkeypatch 模块常量。"""
     policy = GatewayStreamPolicy(
         ask_limit=1,
         park_ttl_seconds=90,

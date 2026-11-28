@@ -12,7 +12,12 @@ from dataclasses import asdict, dataclass
 
 @dataclass(frozen=True, slots=True)
 class Budget:
-    """一次装配的预算分配（单位 token）。"""
+    """一次装配的预算分配（单位 token）。
+
+    闭合等式（SPEC-0016 §5.1）：`fixed + output_reserve + history_limit +
+    note_limit == threshold`。`headroom` 不再是「保险」，而是历史的显式额度 ——
+    它必须被算进 `history_limit`，否则等式右端永远差一块，压缩就会比预算晚触发。
+    """
 
     window: int
     threshold: int
@@ -24,8 +29,38 @@ class Budget:
     long_term: int
     headroom: int
 
+    @property
+    def history_limit(self) -> int:
+        """短期裁剪的硬上限：短期份额 + 余量（余量吸收本轮新增工具结果的波动）。"""
+        return self.short_term + self.headroom
+
+    @property
+    def note_limit(self) -> int:
+        """注入面的额度：中期 + 长期。"""
+        return self.episodic + self.long_term
+
+    @property
+    def overshoot(self) -> int:
+        """闭合等式的差额（正数 = 超了）。整数取整会带来个位数负值，属正常。"""
+        return (
+            self.fixed + self.output_reserve + self.history_limit + self.note_limit
+        ) - self.threshold
+
+    @property
+    def ok(self) -> bool:
+        """2% 以内视为闭合：给「四项各自取整」留余量，不把舍入当配置错误。"""
+        return self.overshoot <= max(4, int(self.threshold * 0.02))
+
     def as_dict(self) -> dict[str, int]:
-        return asdict(self)
+        data = asdict(self)
+        data.update(
+            {
+                "history_limit": self.history_limit,
+                "note_limit": self.note_limit,
+                "overshoot": self.overshoot,
+            }
+        )
+        return data
 
 
 def _share(total: int, ratio: float) -> int:
@@ -45,17 +80,22 @@ def compute_budget(
     headroom_ratio: float,
     episodic_enabled: bool = True,
     long_term_enabled: bool = True,
+    estimate_margin_ratio: float = 0.0,
 ) -> Budget:
     """按「窗口 − 固定前缀 − 输出预留」推导历史面额度，再按比例分账。
 
     1) 阈值与窗口同源：threshold = trigger_ratio × window；
     2) 输出预留优先取 max_tokens，否则用 reserve_ratio × window；
-    3) 未启用的层把份额并给短期，不重新定义比例。
+    3) 固定前缀按 `estimate_margin_ratio` 上浮：估算低估时先吃安全垫，
+       而不是吃模型窗口（估算器误差不会因此把请求顶到边界）；
+    4) 未启用的层把份额并给短期，不重新定义比例。
+
+    `estimate_margin_ratio` 默认 0：保持纯函数的历史口径，调用方按策略传值。
     """
     window = max(0, int(context_size))
     threshold = _share(window, trigger_ratio)
     output = max(0, int(max_tokens)) if max_tokens else _share(window, reserve_ratio)
-    fixed = max(0, int(prefix_tokens))
+    fixed = max(0, int(prefix_tokens * (1.0 + max(0.0, estimate_margin_ratio))))
     history_max = max(0, threshold - fixed - output)
 
     short = short_term_ratio

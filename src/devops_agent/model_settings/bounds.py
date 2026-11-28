@@ -9,9 +9,12 @@ from typing import Any
 REASONING_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh")
 
 # 可编辑项：面板里能改的全部字段，顺序即面板顺序。
+# `provider` 排最前：先选网关才能选模型；`context_auto` 紧跟窗口，因为它是窗口的解释。
 EDITABLE: tuple[str, ...] = (
+    "provider",
     "model",
     "context_size",
+    "context_auto",
     "temperature",
     "max_tokens",
     "top_p",
@@ -30,10 +33,24 @@ EDITABLE: tuple[str, ...] = (
 # 完全隐藏会让人以为系统没有这个参数，进而去改代码。
 READONLY: dict[str, str] = {
     "api_key": "环境变量 DEVOPS_AGENT_API_KEY（重启生效）；凭据不经 HTTP 往返",
-    "base_url": "环境变量 DEVOPS_AGENT_BASE_URL（重启生效）",
+    "base_url": "注册表 config/providers.yaml（多网关），或匿名 provider 的 DEVOPS_AGENT_BASE_URL",
+    "providers_file": (
+        "config/providers.yaml（网关清单与 key 变量名；新增或改端口需重启，改 id 之外的项重启生效）"
+    ),
     "stream": "固定 true：关闭会让前端从逐字渲染退化为一次性出现",
     "judge_model": "环境变量 DEVOPS_AGENT_JUDGE_MODEL（重启生效）；属于评测侧配置",
 }
+
+#: 能力卡 schema 能二次约束的采样字段。调度参数（max_iters/重试/比例）不在其中：
+#: 它们与模型能力无关，仍只由 `BOUNDS` 管（SPEC-0018 §6.7）。
+SCHEMA_FIELDS: tuple[str, ...] = (
+    "max_tokens",
+    "temperature",
+    "top_p",
+    "reasoning_effort",
+    "thinking_enable",
+    "parallel_tool_calls",
+)
 
 
 class InvalidConfig(ValueError):
@@ -58,10 +75,15 @@ class Bound:
 
 
 BOUNDS: dict[str, Bound] = {
-    # 模型名不设白名单：当前没有 provider 的模型列表接口。写错要等下一次调用才失败，
-    # 面板上因此给了「测试连接」的显式动作。
+    # 网关 id 不设 enum：BOUNDS 是模块常量，写死 id 列表会在 providers.yaml
+    # 加载后失效。合法性由 validate 在运行期用注册表检查（未知 id → 400）。
+    "provider": Bound("str", nullable=True),
+    # 模型名不设白名单：网关的 /models 常不全，手填是合法用法。写错由
+    # `matched_by=none` 的软校验提示，不再等下一次调用才失败。
     "model": Bound("str", nullable=False),
     "context_size": Bound("int", min=8192, max=2_000_000, step=1024),
+    # 解析后必是布尔（None 由 resolve 定默认），所以不允许为空
+    "context_auto": Bound("bool", nullable=False),
     # 上限 2 是供应商侧的真实边界，不是我们收紧
     "temperature": Bound("float", min=0, max=2, step=0.1, nullable=True),
     "max_tokens": Bound("int", min=1, nullable=True),
@@ -159,14 +181,58 @@ def _warnings(values: dict[str, Any]) -> list[str]:
     effort = values.get("reasoning_effort")
     if values.get("thinking_enable") is False and effort not in (None, "none"):
         hints.append("thinking_enable=false 会覆盖推理强度，后者实际不生效")
+    if values.get("context_auto") is False and values.get("provider"):
+        # 只在多网关模式下提示：匿名 provider 没有能力卡可查，说了也没法改
+        hints.append("窗口按手填值，未跟随模型能力；可开启「按模型重置」让窗口跟随")
     return hints
 
 
-def validate(values: dict[str, Any]) -> list[str]:
-    """校验一份完整参数集，返回警告列表；越界抛 `InvalidConfig`。"""
+def _limit(raw: Any) -> float | None:
+    """取一个数值型约束；`true` 与 `"5"` 都当「没写」，不拿它们去比较。"""
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return float(raw)
+    return None
+
+
+def _check_schema_value(field: str, constraint: dict[str, Any], value: Any) -> None:
+    """按模型卡的 JSON Schema 做二次约束（只收紧，不放宽）。"""
+    maximum = _limit(constraint.get("maximum"))
+    if maximum is not None and value > maximum:
+        raise InvalidConfig(field, f"该模型上限为 {int(maximum)}")
+    minimum = _limit(constraint.get("minimum"))
+    if minimum is not None and value < minimum:
+        raise InvalidConfig(field, f"该模型下限为 {int(minimum)}")
+    choices = constraint.get("enum")
+    if isinstance(choices, list) and choices and value not in choices:
+        raise InvalidConfig(field, f"该模型可选值：{', '.join(str(item) for item in choices)}")
+
+
+def _check_schema(values: dict[str, Any], schema: dict[str, Any] | None) -> None:
+    """能力卡的参数 schema 与 `BOUNDS` 取交集：schema 缺项时按 BOUNDS 放行。
+
+    「schema 没写就任意填」是不允许的 —— 上一行 `_check_field` 已经把 BOUNDS
+    的硬底线跑过了，这里只可能更严。
+    """
+    properties = (schema or {}).get("properties")
+    if not isinstance(properties, dict):
+        return
+    for field in SCHEMA_FIELDS:
+        constraint = properties.get(field)
+        value = values.get(field)
+        if isinstance(constraint, dict) and value is not None:
+            _check_schema_value(field, constraint, value)
+
+
+def validate(values: dict[str, Any], *, schema: dict[str, Any] | None = None) -> list[str]:
+    """校验一份完整参数集，返回警告列表；越界抛 `InvalidConfig`。
+
+    `schema` 是当前模型的能力卡参数 schema（可省）：给了就做二次约束，
+    不给只走 `BOUNDS` —— 两者是交集，不是替代。
+    """
     for field in EDITABLE:
         _check_field(field, values.get(field))
     _check_cross(values)
+    _check_schema(values, schema)
     return _warnings(values)
 
 

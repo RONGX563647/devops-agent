@@ -111,6 +111,10 @@ class SpanRecord:
     seq: int = 0
     # 发起这次调用的模型 span id（工具 → 模型）：回答得了「哪个模型轮次调了它」。
     parent_id: int | None = None
+    # 首 token 延迟（毫秒）：从模型调用开始到第一个流式增量事件。
+    # 0 = 非模型 span、流式没开或老记录未记录 —— 统计时必须排除 0，
+    # 否则「没有数据」会被算成「0 毫秒，极快」。
+    ttft_ms: int = 0
 
 
 @dataclass(frozen=True, slots=True)

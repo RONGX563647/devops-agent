@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS spans (
     cache_input_tokens INTEGER NOT NULL DEFAULT 0,
     cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
     seq             INTEGER NOT NULL DEFAULT 0,
-    parent_id       INTEGER
+    parent_id       INTEGER,
+    ttft_ms         INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_spans_run ON spans(run_id);
 """
@@ -70,6 +71,7 @@ _SPAN_COPY_COLUMNS = (
     "cache_creation_input_tokens",
     "seq",
     "parent_id",
+    "ttft_ms",
 )
 
 _SCHEMA = f"""
@@ -307,6 +309,8 @@ _SPAN_COLUMNS: tuple[tuple[str, str], ...] = (
     # run 内单调序号与父 span：列表与泳道共用同一份顺序，工具能追溯到发起它的模型
     ("seq", "INTEGER NOT NULL DEFAULT 0"),
     ("parent_id", "INTEGER"),
+    # 首 token 延迟：只对模型 span 有意义，老库补列后是 0，统计时必须排除
+    ("ttft_ms", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 

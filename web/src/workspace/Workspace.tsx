@@ -81,6 +81,9 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
     const next = new URLSearchParams(params);
     if (id === null) next.delete('session');
     else next.set('session', id);
+    // 换会话就回到这条会话本身：停在「指标/成本」上，右侧还是全局看板，
+    // 用户会以为「点了没反应」。同一个会话重复点击不打断当前视图。
+    if (id !== session) next.set('tab', 'chat');
     setParams(next, { replace: true });
     // 切到别的会话后，上一条草稿选的工作区不再适用；归属交给服务端绑定。
     if (id !== null) setWorkspace(null);

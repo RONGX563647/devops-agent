@@ -73,7 +73,16 @@ from .settings import (
     save_session_model_config,
     save_setting,
 )
-from .spans import add_span, count_spans_by_type, list_spans, span_stats
+from .spans import (
+    add_span,
+    count_spans_by_type,
+    error_spans,
+    list_spans,
+    model_usage,
+    span_stats,
+    timing_samples,
+    ttft_samples,
+)
 from .workspaces import (
     bind_session,
     count_workspace_sessions,
@@ -176,6 +185,10 @@ __all__ = [
     "save_session_state",
     "save_setting",
     "span_stats",
+    "error_spans",
+    "model_usage",
+    "timing_samples",
+    "ttft_samples",
     "sqlite3",
     "summary_rows",
     "unpark_run",

@@ -430,37 +430,41 @@ describe('TraceTab', () => {
     expect(list).not.toContain('command: ls -la');
   });
 
-  it('全部折叠 / 全部展开，以及胶囊 toggle 语义', async () => {
+  it('胶囊 toggle 全部折叠/展开，且展开只到步骤行、不铺详情', async () => {
     saveMessages('s-collapse-actions', twoTurns);
     const { container } = wrap(<TraceTab session="s-collapse-actions" />);
     const list = () => container.querySelector('.trace-scroll')?.textContent ?? '';
+    const details = () => container.querySelectorAll('.trace-detail').length;
 
-    fireEvent.click(await screen.findByRole('button', { name: '全部展开' }));
-    expect(list()).toContain('command: ls -la');
+    // 默认只展开最后一轮
+    expect(list()).toContain('command: npm test');
+    expect(list()).not.toContain('command: ls -la');
 
-    fireEvent.click(screen.getByRole('button', { name: '全部折叠' }));
+    const pill = await screen.findByRole('tab', { name: '轮次' });
+    // 有展开的轮 → 再点一次全部折叠
+    fireEvent.click(pill);
     expect(list()).not.toContain('command: ls -la');
     expect(list()).not.toContain('command: npm test');
 
-    // 胶囊 toggle：全展开状态下再点「轮次」= 全部折叠，再点 = 全部展开
-    fireEvent.click(screen.getByRole('button', { name: '全部展开' }));
-    expect(list()).toContain('command: ls -la');
-    const pill = screen.getByRole('tab', { name: '轮次' });
-    fireEvent.click(pill);
-    expect(list()).not.toContain('command: ls -la');
+    // 全折叠 → 再点一次全部展开：步骤行都出来，但详情仍是收起的
     fireEvent.click(pill);
     expect(list()).toContain('command: ls -la');
+    expect(list()).toContain('command: npm test');
+    expect(details()).toBe(0);
   });
 
-  it('仅看异常只留出问题的轮次', async () => {
+  it('仅看异常只留出问题的步骤，而不是整轮都不看', async () => {
     saveMessages('s-only-errors', twoTurns);
     const { container } = wrap(<TraceTab session="s-only-errors" />);
 
     fireEvent.click(await screen.findByRole('button', { name: '仅看异常' }));
     const list = container.querySelector('.trace-scroll')?.textContent ?? '';
+    // 第一轮没有失败步骤 → 整轮不出现
     expect(list).not.toContain('第一问');
+    // 第二轮里只留失败的 npm test，同轮成功的 ls 不出现
     expect(list).toContain('第二问');
     expect(list).toContain('command: npm test');
+    expect(list).not.toContain('command: ls -la');
   });
 
   it('点第几轮，右侧就换成第几轮的概要与上下文', async () => {
@@ -486,7 +490,8 @@ describe('TraceTab', () => {
   it('折叠态写进 sessionStorage：刷新后不用重新点', async () => {
     saveMessages('s-persist', twoTurns);
     wrap(<TraceTab session="s-persist" />);
-    fireEvent.click(await screen.findByRole('button', { name: '全部折叠' }));
+    // 胶囊就是全部折叠/展开的开关：默认有展开的轮 → 点一次全部收起
+    fireEvent.click(await screen.findByRole('tab', { name: '轮次' }));
 
     const raw = sessionStorage.getItem('trace:collapsed:s-persist');
     expect(raw).toBeTruthy();

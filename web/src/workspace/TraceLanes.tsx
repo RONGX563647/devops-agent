@@ -1,7 +1,8 @@
 /** 轨迹泳道：模型 / 工具 / 记忆三条横向时间轴，块的宽度就是耗时。
  *
- * 位置与宽度都按会话时间归一化，所以同一轮里「模型想了 14 秒、工具跑了 2 秒」
- * 一眼能看出来，不用心算。只画真实占用，空隙留白——空闲多久由行尾占用率说明。
+ * 位置与宽度按「已剪掉空闲」的横轴归一化（见 buildLanes 的 squashIntervals）：
+ * 轮与轮首尾相接，某一轮想了几秒、工具跑了几秒都按真实长度画，
+ * 几十秒的空闲不会再把它压成一根针。只画真实占用，不补「等待」块。
  */
 import type { TraceLanes as Lanes, TraceSpan } from '../types';
 import { formatDuration } from './time';
@@ -119,7 +120,9 @@ export function TraceLanes({ lanes, activeStepId, onSelect }: Props) {
         <span><i data-lane="tool" />工具</span>
         <span><i data-lane="memory" />记忆</span>
         <span><i data-lane="error" />异常</span>
-        <span className="mono">总长 {formatOffset(total)}</span>
+        <span className="mono" title="轮次之间的空闲已剪掉，横轴长度等于实测耗时">
+          实测 {formatOffset(total)}（空档已合并）
+        </span>
       </div>
     </div>
   );

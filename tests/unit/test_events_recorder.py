@@ -479,3 +479,64 @@ def test_union_ms_merges_overlapping_intervals() -> None:
     assert _union_ms([(0, 100), (20, 60)]) == 100
     assert _union_ms([(0, 100), (200, 260)]) == 160
     assert _union_ms([(50, 50)]) == 0
+
+
+def test_recorder_records_ttft_and_tool_failure_reason(tmp_path: Path) -> None:
+    """首 token 延迟与工具失败原因都必须逐条落库。
+
+    以前 tool span 只有 status=error、error 恒为 NULL，看板上一片
+    「未记录失败原因」；TTFT 更是完全没记，成本/性能页只能缺一块。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    rec = RunRecorder(tmp_path / "ttft.db", model="qwen")
+    rec.start("s-ttft", "跑测试")
+    started = datetime.now(UTC)
+    at = lambda ms: (started + timedelta(milliseconds=ms)).isoformat()  # noqa: E731
+
+    rec.consume(_evt("MODEL_CALL_START", reply_id="r1", model_name="qwen", created_at=at(0)))
+    # 首个增量在 1.2s 后：这才是 TTFT，事件时间戳与 span 起点同一口径
+    rec.consume(_evt("TEXT_BLOCK_DELTA", reply_id="r1", created_at=at(1200), delta="我先看日志。"))
+    rec.consume(
+        _evt(
+            "MODEL_CALL_END",
+            reply_id="r1",
+            created_at=at(3000),
+            input_tokens=120,
+            output_tokens=40,
+        )
+    )
+    rec.consume(
+        _evt("TOOL_CALL_START", tool_call_id="t1", tool_call_name="Bash", created_at=at(3000))
+    )
+    rec.consume(
+        _evt(
+            "TOOL_RESULT_TEXT_DELTA",
+            tool_call_id="t1",
+            delta="Command failed: npm test\n退出码 1",
+        )
+    )
+    rec.consume(
+        _evt("TOOL_RESULT_END", tool_call_id="t1", state="error", created_at=at(4000))
+    )
+    rec.consume(_evt("REPLY_END", finished_reason="completed"))
+    run_id = rec.finish()
+
+    with repo.connect(tmp_path / "ttft.db") as conn:
+        spans = repo.list_spans(conn, run_id)
+    model, tool = spans[0], spans[1]
+    assert model.type == "model"
+    # start() 的起点比 recorded `started` 略早几毫秒，给一个容差
+    assert 1190 <= model.ttft_ms <= 1210
+    assert tool.type == "tool"
+    assert tool.status == "error"
+    # 原因取返回原文首行：失败聚类按首行归并，界面也只展示这一行
+    assert tool.error == "Command failed: npm test"
+
+    # 成本/性能看板读的就是这两列
+    with repo.connect(tmp_path / "ttft.db") as conn:
+        usage = repo.model_usage(conn)
+        assert usage[0]["ttft_samples"] == 1
+        assert repo.ttft_samples(conn) == [model.ttft_ms]
+        failures = repo.error_spans(conn)
+        assert failures == [{"type": "tool", "name": "Bash", "error": "Command failed: npm test"}]

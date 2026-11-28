@@ -3,13 +3,16 @@
  * 与列表并排常驻，点哪条看哪条，不需要来回展开——这是排查工具调用失败时
  * 最常用的一段路径（看参数形状 → 看返回原文 → 看计时来源）。
  *
- * 两种粒度：选中步骤看这一步；只选中轮次（点轮次标题）时看整轮概要 + 完整上下文。
+ * 三种粒度：选中步骤看这一步；只选中轮次（点轮次标题）时看整轮概要 + 完整上下文；
+ * 在「调用」视图点一级节点时看这一组的统计（失败率、原因分类、最慢调用）。
  */
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { AgentContext } from '../api/client';
 import { fetchToolSchemas } from '../api/client';
 import type { TraceStep, TraceTurn } from '../types';
+import type { CallGroup } from './traceData/calls';
+import { CallSummary } from './traceViews/CallSummary';
 import { ContextTab } from './TraceContext';
 import { stageMetric } from './StepRow';
 import { formatDateTime, formatDuration } from './time';
@@ -17,6 +20,8 @@ import { formatDateTime, formatDuration } from './time';
 interface Props {
   step: TraceStep | null;
   turn: TraceTurn | null;
+  /** 「调用」视图选中的聚合组：点一级节点时展示这组的统计。 */
+  group?: CallGroup | null;
   totalMs: number;
   /** 当前会话档位：Schema 页签要按同一档位的工具集查，否则会答「没有这个工具」。 */
   profile?: string;
@@ -24,6 +29,8 @@ interface Props {
   context?: AgentContext | null;
   /** 全部轮次：上下文页签要用它列出本轮之前的历史。 */
   turns?: TraceTurn[];
+  /** 组内点「查看」直接跳到失败/最慢的那一步。 */
+  onSelectStep?: (step: TraceStep) => void;
 }
 
 type Tab = 'summary' | 'context' | 'args' | 'result' | 'text' | 'schema' | 'timing';
@@ -334,8 +341,25 @@ function SchemaTab({ step, profile }: { step: TraceStep; profile?: string }) {
   );
 }
 
-export function TraceInspector({ step, turn, totalMs, profile, context, turns }: Props) {
+export function TraceInspector({ step, turn, group, totalMs, profile, context, turns, onSelectStep }: Props) {
   const [tab, setTab] = useState<Tab>('summary');
+
+  // 调用组优先：它是「点了一级节点」的显式意图，此时没有单步可选
+  if (group && !step) {
+    return (
+      <aside className="inspector" aria-label="调用统计">
+        <div className="inspector-head mono">
+          <span>{group.type === 'model' ? '模型调用组' : '工具调用组'}</span>
+          <span className="inspector-kind" data-kind={group.type}>
+            {group.name}
+          </span>
+        </div>
+        <div className="inspector-body" role="tabpanel">
+          <CallSummary group={group} onSelect={onSelectStep ?? (() => undefined)} />
+        </div>
+      </aside>
+    );
+  }
 
   if (!step) {
     if (!turn) {

@@ -3,7 +3,7 @@
  * 三级粒度：顶部泳道看「时间花在哪」，中间列表看「做了什么」，右侧看「具体参数」。
  * 运行记录（后端快照）仍保留为另一个视图，用于回看落库后的历史运行。
  *
- * 视图控制（折叠态、显示轮数、仅看异常）放在本层：它是会话级状态，
+ * 视图控制（折叠态、仅看异常、选中的调用组）放在本层：它是会话级状态，
  * 需要跨 tab 持久化（sessionStorage），列表只负责渲染。
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -14,10 +14,13 @@ import type { Run, TraceStep, TraceTurn } from '../types';
 import { RunTrace } from './RunTrace';
 import { useSession } from './store/state';
 import { buildLanes, turnsFromMessages } from './traceData/build';
+import { groupCalls, isErrorStep } from './traceData/calls';
 import { traceStats } from './traceData/stats';
 import { TraceInspector } from './TraceInspector';
 import { TraceLanes } from './TraceLanes';
 import { TraceList, type TraceMode } from './traceViews/TraceList';
+import { TraceToolbar } from './traceViews/TraceToolbar';
+import { TraceStatusBar } from './traceViews/TraceStatusBar';
 import { formatClock, formatDateTime, formatDuration } from './time';
 
 interface Props {
@@ -25,19 +28,6 @@ interface Props {
   /** 轨迹页内追问：发送后由外层切回对话。 */
   onAsk?: (text: string) => void;
 }
-
-const MODE_HINTS: Record<TraceMode, string> = {
-  time: '按耗时降序，最慢的排最前；模型调用也在内',
-  turn: '按轮次分组，点标题折叠整轮；再点胶囊可全部折叠/展开',
-  call: '按模型与工具聚合，点一行展开每一次调用',
-};
-
-// 轮次视图是默认入口：能一眼看到每轮装了什么上下文、跑了哪些步
-const MODES: { key: TraceMode; label: string }[] = [
-  { key: 'turn', label: '轮次' },
-  { key: 'time', label: '时长' },
-  { key: 'call', label: '调用' },
-];
 
 /** 折叠态存 sessionStorage：切 tab / 刷新回来还是同一屏，不用重新点。 */
 function collapseKey(session: string): string {
@@ -123,38 +113,14 @@ function slowestStep(turns: TraceTurn[]): { step: TraceStep; turn: TraceTurn } |
   return best;
 }
 
-function StatusBar({
-  stats,
-  running,
-}: {
-  stats: ReturnType<typeof traceStats>;
-  running: boolean;
-}) {
-  const cache = stats.cacheRate === null ? null : `${Math.round(stats.cacheRate * 100)}%`;
-  // 首枪必然冷读：单列出来，免得把「新轮次的第一枪」当成缓存失效
-  const cold =
-    stats.firstCallRate !== null &&
-    stats.cacheRate !== null &&
-    stats.firstCallRate < stats.cacheRate - 0.05
-      ? `${Math.round(stats.firstCallRate * 100)}%`
-      : null;
-  return (
-    <div className="trace-status mono">
-      <span>
-        {stats.turns} 轮 · {stats.steps} 步 · {stats.tools} 工具 · {stats.modelCalls} 模型
-      </span>
-      {stats.tokPerSec !== null && <span>{stats.tokPerSec.toFixed(1)} tok/s</span>}
-      <span>
-        {stats.tokensIn + stats.tokensOut} tok
-        {cache && ` · 缓存 ${cache}`}
-        {cold && <span className="trace-status-cold"> · 首枪 {cold}</span>}
-      </span>
-      <span className={stats.errors > 0 ? 'has-error' : ''}>异常 {stats.errors}</span>
-      <span className="trace-status-right" title="实测 = 所有步骤占用区间的并集；墙钟 = 首轮问题到末轮结束">
-        {running ? '生成中…' : `实测 ${formatDuration(stats.measuredMs)} · 墙钟 ${formatDuration(stats.wallMs)}`}
-      </span>
-    </div>
-  );
+/** 仅看异常：把每轮裁到只剩失败步骤，并丢掉没有失败的轮。
+ *
+ * 裁剪的是「步骤」而不是整轮：一轮里 40 步只挂 1 步，整轮藏掉就再也找不到那条报错。
+ */
+function onlyFailedSteps(turns: TraceTurn[]): TraceTurn[] {
+  return turns
+    .map((turn) => ({ ...turn, items: turn.items.filter(isErrorStep) }))
+    .filter((turn) => turn.items.length > 0);
 }
 
 function SessionTrace({
@@ -179,9 +145,9 @@ function SessionTrace({
   const [ask, setAsk] = useState('');
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
+  const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null);
   // 只记「用户显式改过的轮」，没记过的用默认策略（只展开最后一轮）
   const [overrides, setOverrides] = useState<Record<string, boolean>>(() => loadCollapsed(session));
-  const [visibleTurns, setVisibleTurns] = useState<number | null>(5);
   const [onlyErrors, setOnlyErrors] = useState(false);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -201,10 +167,16 @@ function SessionTrace({
   const stats = useMemo(() => traceStats(turns, lanes), [turns, lanes]);
   const initial = useMemo(() => slowestStep(turns), [turns]);
 
+  // 全部轮次默认展示：截断交给轮次折叠，不再用「显示 5 轮」藏掉历史
   const shownTurns = useMemo(
-    () => (onlyErrors ? turns.filter((turn) => turn.failed || turn.errorCount > 0) : turns),
+    () => (onlyErrors ? onlyFailedSteps(turns) : turns),
     [turns, onlyErrors],
   );
+  const groups = useMemo(() => groupCalls(shownTurns), [shownTurns]);
+  const activeGroup = selectedGroupKey
+    ? groups.find((group) => group.key === selectedGroupKey) ?? null
+    : null;
+
   /** 默认只展开最后一轮：长会话全展开等于没有折叠。 */
   const lastIndex = shownTurns[shownTurns.length - 1]?.index;
   const collapsed = useMemo(() => {
@@ -216,16 +188,17 @@ function SessionTrace({
   }, [shownTurns, overrides, lastIndex]);
 
   const flat = useMemo(() => turns.flatMap((turn) => turn.items), [turns]);
-  // 手选了轮次就不再回落到「最慢一步」：否则点哪轮，右侧都被默认步骤牵着走
+  // 手选了轮次/调用组就不再回落到「最慢一步」：否则点哪轮，右侧都被默认步骤牵着走
   const activeStepId =
-    selectedStepId ?? (selectedTurnId === null ? initial?.step.id ?? null : null);
+    selectedStepId ??
+    (selectedTurnId === null && selectedGroupKey === null ? initial?.step.id ?? null : null);
   const activeStep = flat.find((step) => step.id === activeStepId) ?? null;
   const activeTurn =
     (activeStep
       ? turns.find((turn) => turn.items.some((step) => step.id === activeStep.id))
       : null) ??
     turns.find((turn) => turn.id === selectedTurnId) ??
-    initial?.turn ??
+    (activeGroup ? null : initial?.turn) ??
     null;
 
   function toggleTurn(id: string) {
@@ -236,7 +209,11 @@ function SessionTrace({
     setOverrides(Object.fromEntries(shownTurns.map((turn) => [turn.id, value])));
   }
 
-  /** 胶囊 toggle 语义：已在「轮次」时再点一次 = 全部折叠，再点 = 全部展开。 */
+  /** 胶囊 toggle 语义：已在「轮次」时再点一次 = 全部折叠，再点 = 全部展开。
+   *
+   * 展开只展开到「轮次 + 步骤行」这一级，步骤详情（入参/返回原文）仍保持收起，
+   * 否则一次全展开等于把整段原文铺满屏幕。
+   */
   function toggleAllTurns() {
     const anyExpanded = shownTurns.some((turn) => !collapsed[turn.id]);
     setAllCollapsed(anyExpanded);
@@ -248,6 +225,25 @@ function SessionTrace({
       return;
     }
     setLayout(key);
+    if (key !== 'call') setSelectedGroupKey(null);
+  }
+
+  function selectStep(step: TraceStep) {
+    setSelectedStepId(step.id);
+    setSelectedTurnId(null);
+    setSelectedGroupKey(null);
+  }
+
+  function selectTurn(turn: TraceTurn) {
+    setSelectedTurnId(turn.id);
+    setSelectedStepId(null);
+    setSelectedGroupKey(null);
+  }
+
+  function selectGroup(key: string) {
+    setSelectedGroupKey(key);
+    setSelectedTurnId(null);
+    setSelectedStepId(null);
   }
 
   /** j/k 或上下键在步骤间移动；/ 聚焦搜索；[ ] 切轮；Enter 折叠当前轮；Esc 清手选。 */
@@ -258,10 +254,12 @@ function SessionTrace({
     if (event.key === 'j' || event.key === 'ArrowDown') {
       event.preventDefault();
       setSelectedTurnId(null);
+      setSelectedGroupKey(null);
       setSelectedStepId(flat[Math.min(flat.length - 1, index + 1)]?.id ?? null);
     } else if (event.key === 'k' || event.key === 'ArrowUp') {
       event.preventDefault();
       setSelectedTurnId(null);
+      setSelectedGroupKey(null);
       setSelectedStepId(flat[Math.max(0, index - 1)]?.id ?? null);
     } else if (event.key === '/') {
       event.preventDefault();
@@ -277,10 +275,7 @@ function SessionTrace({
         ? Math.min(shownTurns.length - 1, current + 1)
         : Math.max(0, current - 1);
       const turn = shownTurns[next];
-      if (turn) {
-        setSelectedStepId(null);
-        setSelectedTurnId(turn.id);
-      }
+      if (turn) selectTurn(turn);
     } else if (event.key === 'Enter' && !(target instanceof HTMLButtonElement) && activeTurn) {
       // 按钮上的 Enter 交给按钮自己（否则会既触发点击又折叠一次）
       event.preventDefault();
@@ -288,6 +283,7 @@ function SessionTrace({
     } else if (event.key === 'Escape') {
       setSelectedStepId(null);
       setSelectedTurnId(null);
+      setSelectedGroupKey(null);
     }
   }
 
@@ -330,65 +326,23 @@ function SessionTrace({
         </div>
       ) : (
         <>
-          <div className="trace-toolbar">
-            <div className="trace-modes" role="tablist" aria-label="轨迹维度">
-              {MODES.map((item) => (
-                <button
-                  key={item.key}
-                  role="tab"
-                  aria-selected={layout === item.key}
-                  className={layout === item.key ? 'active' : ''}
-                  title={MODE_HINTS[item.key]}
-                  onClick={() => activate(item.key)}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-            {layout === 'turn' && (
-              <div className="trace-actions" role="group" aria-label="轮次操作">
-                <button type="button" onClick={() => setAllCollapsed(true)}>
-                  全部折叠
-                </button>
-                <button type="button" onClick={() => setAllCollapsed(false)}>
-                  全部展开
-                </button>
-                <button
-                  type="button"
-                  className={onlyErrors ? 'active' : ''}
-                  aria-pressed={onlyErrors}
-                  onClick={() => setOnlyErrors((value) => !value)}
-                >
-                  仅看异常
-                </button>
-                <select
-                  aria-label="显示轮数"
-                  value={visibleTurns === null ? 'all' : String(visibleTurns)}
-                  onChange={(e) =>
-                    setVisibleTurns(e.target.value === 'all' ? null : Number(e.target.value))
-                  }
-                >
-                  <option value="5">显示 5 轮</option>
-                  <option value="10">显示 10 轮</option>
-                  <option value="all">全部轮次</option>
-                </select>
-              </div>
-            )}
-            <input
-              ref={searchRef}
-              className="session-search trace-search"
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索步骤、工具、参数…（/）"
-              aria-label="搜索轨迹"
-            />
-          </div>
+          <TraceToolbar
+            layout={layout}
+            onSelectMode={activate}
+            onlyErrors={onlyErrors}
+            onToggleOnlyErrors={() => setOnlyErrors((value) => !value)}
+            query={query}
+            onQueryChange={setQuery}
+            searchRef={searchRef}
+          />
 
           <TraceLanes
             lanes={lanes}
             activeStepId={activeStepId}
-            onSelect={(id) => setSelectedStepId(id)}
+            onSelect={(id) => {
+              const step = flat.find((item) => item.id === id);
+              if (step) selectStep(step);
+            }}
           />
 
           <div className="trace-body" tabIndex={0} role="group" aria-label="轨迹步骤">
@@ -399,35 +353,31 @@ function SessionTrace({
                 query={query}
                 activeStepId={activeStepId}
                 activeTurnId={activeTurn?.id ?? null}
+                activeGroupKey={selectedGroupKey}
                 context={context.data ?? null}
                 collapsed={collapsed}
-                visibleTurns={visibleTurns}
                 onToggleTurn={toggleTurn}
-                onLoadMore={() => setVisibleTurns(null)}
-                onSelectStep={(step) => {
-                  setSelectedStepId(step.id);
-                  setSelectedTurnId(null);
-                }}
-                onSelectTurn={(turn) => {
-                  setSelectedTurnId(turn.id);
-                  setSelectedStepId(null);
-                }}
+                onSelectStep={selectStep}
+                onSelectTurn={selectTurn}
+                onSelectGroup={(group) => selectGroup(group.key)}
               />
             </div>
-            {/* key 随步骤变：换一条时页签回到「概述」，避免误读上一条的参数；
+            {/* key 随步骤/调用组变：换一条时页签回到「概述」，避免误读上一条的参数；
                 只切轮次时不重建，停在「上下文」就能连着看几轮的装配 */}
             <TraceInspector
-              key={activeStep?.id ?? 'turn'}
+              key={activeGroup ? `group:${activeGroup.key}` : activeStep?.id ?? 'turn'}
               step={activeStep}
               turn={activeTurn}
+              group={activeGroup}
               totalMs={stats.measuredMs}
               profile={context.data?.profile}
               context={context.data ?? null}
               turns={turns}
+              onSelectStep={selectStep}
             />
           </div>
 
-          <StatusBar stats={stats} running={view.running} />
+          <TraceStatusBar stats={stats} running={view.running} />
 
           {onAsk && (
             <div className="trace-ask">

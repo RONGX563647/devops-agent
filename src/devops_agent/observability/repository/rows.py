@@ -61,6 +61,7 @@ def _span_from_row(row: sqlite3.Row) -> SpanRecord:
         cache_creation_input_tokens=row["cache_creation_input_tokens"],
         seq=row["seq"] or 0,
         parent_id=row["parent_id"],
+        ttft_ms=row["ttft_ms"] or 0,
     )
 
 

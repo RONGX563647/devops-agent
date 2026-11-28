@@ -166,8 +166,10 @@ def test_metrics_breakdown(db: Path) -> None:
     # 输入量在、缓存量为 0 → 命中率是 0%，但「有没有缓存数据」要单独说清
     assert body["tokens"]["cache_hit_rate"] == 0.0
     assert body["tokens"]["cache_recorded"] is False
-    # 失败的那次没有 error 文本，聚成一条「未记录失败原因」
-    assert body["failures"] == [{"reason": "(未记录失败原因)", "count": 1}]
+    # 失败的那次没有 error 文本，聚成一条「未记录失败原因」（kind=run 标明来源）
+    assert body["failures"] == [
+        {"reason": "(未记录失败原因)", "count": 1, "kind": "run", "name": ""}
+    ]
 
 
 def test_metrics_summary(db: Path) -> None:
@@ -219,3 +221,87 @@ def test_feedback_rejects_unknown_dimension(db: Path) -> None:
     assert bad.status_code == 422
     trends = client.get("/api/eval/trends").json()
     assert trends["count"] == 0
+
+
+def _add_span(db: Path, **overrides: object) -> int:
+    """往临时库里补一条 span：新指标的测试要能自己造样本。"""
+    base: dict[str, object] = {
+        "id": None,
+        "run_id": 1,
+        "type": "model",
+        "name": "qwen",
+        "start_offset_ms": 100,
+        "duration_ms": 2000,
+        "input": "",
+        "output": "",
+        "tokens": 0,
+        "status": "ok",
+        "error": None,
+    }
+    base.update(overrides)
+    with repo.connect(db) as conn:
+        return repo.add_span(conn, SpanRecord(**base))  # type: ignore[arg-type]
+
+
+def test_failure_clusters_include_span_errors(db: Path) -> None:
+    """工具失败也要进失败原因榜：只聚 run.error 会漏掉全部工具报错。"""
+    _add_span(
+        db,
+        type="tool",
+        name="Bash",
+        status="error",
+        error="Command failed: ls -la  2 行",
+    )
+    body = client.get("/api/metrics/breakdown").json()
+    reasons = {(item["reason"], item["kind"], item["name"]) for item in body["failures"]}
+    assert ("Command failed: ls -la  2 行", "tool", "Bash") in reasons
+
+
+def test_metrics_cost_unpriced_model_is_not_free(db: Path) -> None:
+    """没配单价 → cost 为 None、总额 None，不能按 0 元计入。"""
+    _add_span(db, input_tokens=1000, output_tokens=500, ttft_ms=800)
+    body = client.get("/api/metrics/cost").json()
+    assert body["priced_models"] == 0
+    assert body["unpriced_models"] == 1
+    assert body["total_cost"] is None
+    assert body["models"][0]["cost"] is None
+    assert body["models"][0]["priced"] is False
+    # TTFT 只有一条样本：均值给得出，p95 没有分位可言
+    assert body["ttft"] == {"avg": 800, "p95": None, "samples": 1}
+    assert body["tool_ms"]["samples"] == 0
+
+
+def test_metrics_cost_uses_configured_prices(
+    db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """按 yaml 单价算：输入/输出分别计价，按模型分开统计。"""
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / "model_prices.yaml").write_text(
+        "currency: CNY\n"
+        "unit_tokens: 1000000\n"
+        "models:\n"
+        "  qwen:\n"
+        "    input: 2.0\n"
+        "    output: 8.0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DEVOPS_AGENT_CONFIG_DIR", str(cfg))
+    # 库里原有 qwen span 的 token 分拆是 0，再补一条有分拆的，合计 1000 入 / 500 出
+    _add_span(db, input_tokens=1000, output_tokens=500, ttft_ms=800)
+
+    body = client.get("/api/metrics/cost").json()
+    qwen = body["models"][0]
+    assert qwen["calls"] == 2
+    assert qwen["input_tokens"] == 1000
+    assert qwen["output_tokens"] == 500
+    # (1000 × 2 + 500 × 8) / 1e6 = 0.006
+    assert qwen["cost"] == 0.006
+    assert body["total_cost"] == 0.006
+    assert body["currency"] == "CNY"
+    assert body["unit_tokens"] == 1_000_000
+
+
+def test_metrics_cost_rejects_bad_limit(db: Path) -> None:
+    assert client.get("/api/metrics/cost", params={"limit": 1}).status_code == 422
+    assert client.get("/api/metrics/cost", params={"limit": 5000}).status_code == 422

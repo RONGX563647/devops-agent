@@ -219,10 +219,25 @@ GET  /api/runs/{run_id}/health                     四维健康分
 GET  /api/metrics/health                           健康分总览
 GET  /api/metrics/breakdown                        维度拆解
 GET  /api/metrics/summary                          汇总（成功率 / P95 / token）
+GET  /api/metrics/cost                             成本与性能（按模型 token / TTFT / 工具耗时）
 GET  /api/metrics/timeseries                       时序
 GET  /api/eval/trends                              评测趋势
 POST /api/feedback/{run_id}                        人工评分写回 eval_scores
 ```
+
+#### 成本与性能口径（`observability/cost.py` + `pricing.py`）
+
+`/api/metrics/cost` 一次返回三块：每模型用量（调用 / 失败 / 输入 / 输出 / 缓存 / 平均耗时 / 首 token）
+、全局 TTFT、模型与工具的耗时分布（均值 + P95）。
+
+- **TTFT**：`spans.ttft_ms` 由 recorder 在模型 span 内第一次收到正文/思考增量时记下，`0` 表示
+  该条没采到（历史数据、非流式返回），统计时整体排除而不是按 0ms 计入均值。
+- **P95 需要 ≥2 条样本**，单条只给均值、P95 返回 `null` —— 一条样本没有分位，返回它本身等于
+  把均值伪装成 P95。
+- **单价**放在 `config/model_prices.yaml`（`currency` / `unit_tokens` / `models` / `default`），
+  按模型名精确匹配 → 小写匹配 → `default` 三级回落。**没配单价的模型 `cost` 返回 `null`、
+  不计入总额**：把没配价格当成免费，会让总成本系统性偏低。
+- 采集侧只落库不计算：单价属部署配置，改价不需要重跑历史数据。
 
 ### 评测（`openjudge/api.py`，prefix `/api/openjudge`）
 

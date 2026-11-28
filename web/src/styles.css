@@ -697,6 +697,18 @@ a:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 失败来源：整轮失败不标，工具/模型失败标出是谁，便于直接去那一栏排查 */
+.failure-kind {
+  max-width: 110px;
+  overflow: hidden;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .waterfall {
   display: flex;
@@ -2410,16 +2422,10 @@ a:hover {
   height: 30px;
 }
 
-/* ---- 轮次操作：全部折叠/展开、仅看异常、显示轮数 ---- */
-.trace-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.trace-actions button,
-.trace-actions select {
+/* ---- 仅看异常：与维度胶囊同高，单独一个可切换开关 ---- */
+.trace-filter {
   height: 26px;
-  padding: 0 8px;
+  padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--surface);
@@ -2427,12 +2433,11 @@ a:hover {
   font-size: var(--text-2xs);
   cursor: pointer;
 }
-.trace-actions button:hover,
-.trace-actions select:hover {
+.trace-filter:hover {
   border-color: var(--accent-ring);
   color: var(--ink);
 }
-.trace-actions button.active {
+.trace-filter.active {
   border-color: var(--accent-ring);
   background: var(--accent-faint);
   color: var(--accent-ink);
@@ -3357,6 +3362,47 @@ a:hover {
   color: var(--ink-muted);
   font-size: var(--text-2xs);
   line-height: 1.6;
+}
+/* ---- 检查面板里的分节：失败原因分类 / 最慢调用 ---- */
+.inspect-section {
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line-soft);
+}
+.inspect-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  color: var(--ink-soft);
+  font-size: var(--text-2xs);
+}
+.inspect-links {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.inspect-links li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  font-size: var(--text-2xs);
+}
+.inspect-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  font-size: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.inspect-link:hover {
+  text-decoration: underline;
 }
 .inspect-desc {
   margin-top: 0;

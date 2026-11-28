@@ -1,23 +1,17 @@
-/** 调用视图：按 model/tool 聚合，点一行展开每一次调用。 */
+/** 调用视图：按 model/tool 聚合，点一行展开每一次调用，并让右侧显示这组统计。 */
 
 import { useState } from 'react';
 import type { TraceStep, TraceTurn } from '../../types';
-import { percentile, type TraceRow } from '../traceData/stats';
+import {
+  groupCalls,
+  sortGroups,
+  type CallGroup,
+  type CallRow,
+  type CallSort,
+} from '../traceData/calls';
+import { percentile } from '../traceData/stats';
 import { formatDuration } from '../time';
 import { BADGE, matchesStep } from './Highlight';
-
-/** 调用分组：模型与工具分开聚合，避免「模型调用」盖住真正要看的工具。 */
-interface CallGroup {
-  key: string;
-  type: 'model' | 'tool';
-  name: string;
-  calls: TraceRow[];
-  total: number;
-  failed: number;
-  slowest: TraceStep;
-}
-
-type CallSort = 'total' | 'count' | 'fail';
 
 const CALL_SORTS: { key: CallSort; label: string }[] = [
   { key: 'total', label: '合计耗时' },
@@ -25,59 +19,21 @@ const CALL_SORTS: { key: CallSort; label: string }[] = [
   { key: 'fail', label: '失败率' },
 ];
 
-function groupCalls(turns: TraceTurn[]): CallGroup[] {
-  const groups = new Map<string, CallGroup>();
-  for (const turn of turns) {
-    for (const step of turn.items) {
-      if (step.synthetic) continue;
-      if (step.kind !== 'tool' && step.kind !== 'model') continue;
-      const type = step.kind;
-      const name = step.toolName || step.title || (type === 'model' ? '模型' : '工具');
-      const key = `${type}:${name}`;
-      const group = groups.get(key);
-      const row: TraceRow = { step, turnIndex: turn.index };
-      if (!group) {
-        groups.set(key, {
-          key,
-          type,
-          name,
-          calls: [row],
-          total: step.durationMs,
-          failed: step.status === 'error' ? 1 : 0,
-          slowest: step,
-        });
-        continue;
-      }
-      group.calls.push(row);
-      group.total += step.durationMs;
-      if (step.status === 'error') group.failed += 1;
-      if (step.durationMs > group.slowest.durationMs) group.slowest = step;
-    }
-  }
-  return [...groups.values()];
-}
-
-function sortGroups(groups: CallGroup[], sort: CallSort): CallGroup[] {
-  return [...groups].sort((a, b) => {
-    if (sort === 'count') return b.calls.length - a.calls.length || b.total - a.total;
-    if (sort === 'fail') {
-      const rate = (group: CallGroup) => (group.calls.length ? group.failed / group.calls.length : 0);
-      return rate(b) - rate(a) || b.total - a.total;
-    }
-    return b.total - a.total;
-  });
-}
-
 export function CallRows({
   turns,
   query,
   activeStepId,
+  activeGroupKey,
   onSelect,
+  onSelectGroup,
 }: {
   turns: TraceTurn[];
   query: string;
   activeStepId: string | null;
+  /** 右侧正在展示统计的那一组：列表保持高亮，避免「点了哪组」对不上。 */
+  activeGroupKey: string | null;
   onSelect: (step: TraceStep) => void;
+  onSelectGroup: (group: CallGroup) => void;
 }) {
   const [sort, setSort] = useState<CallSort>('total');
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -122,9 +78,14 @@ export function CallRows({
           <div className="trace-call-group" key={group.key}>
             <button
               type="button"
-              className="trace-step trace-call-head"
+              className={`trace-step trace-call-head${group.key === activeGroupKey ? ' active' : ''}`}
               aria-expanded={expanded}
-              onClick={() => setOpen((prev) => ({ ...prev, [group.key]: !expanded }))}
+              aria-current={group.key === activeGroupKey ? 'true' : undefined}
+              onClick={() => {
+                setOpen((prev) => ({ ...prev, [group.key]: !expanded }));
+                // 点一级节点同时把右侧切到这组统计：展开只是列表动作，统计才是排查入口
+                onSelectGroup(group);
+              }}
             >
               <span className="trace-badge" data-kind={group.type}>
                 {BADGE[group.type]}
@@ -139,7 +100,9 @@ export function CallRows({
                 </span>
               </span>
               {group.failed > 0 ? (
-                <span className="trace-cache trace-cache-fail">失败 {group.failed}</span>
+                <span className="trace-cache trace-cache-fail">
+                  失败 {group.failed} · {Math.round((group.failed / group.calls.length) * 100)}%
+                </span>
               ) : (
                 <span className="trace-cache-slot" aria-hidden="true" />
               )}
@@ -152,7 +115,7 @@ export function CallRows({
             </button>
             {expanded && (
               <div className="trace-call-items">
-                {group.calls.map((call) => (
+                {group.calls.map((call: CallRow) => (
                   <button
                     type="button"
                     key={call.step.id}

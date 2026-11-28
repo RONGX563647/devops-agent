@@ -53,7 +53,9 @@ describe('TraceLanes', () => {
 
   it('刻度和总长按窗口末位对齐', () => {
     render(<TraceLanes lanes={LANES} activeStepId={null} onSelect={() => {}} />);
-    expect(screen.getByText('总长 1m4s')).toBeTruthy();
+    // 横轴已经把空档剪掉，图例说明口径，避免被误读成「墙钟总长」
+    expect(screen.getByText(/实测 1m4s/)).toBeTruthy();
+    expect(screen.getByText(/空档已合并/)).toBeTruthy();
     // 0 / 16s / 32s / 48s / 1m4s
     expect(screen.getAllByText('16s').length).toBeGreaterThan(0);
   });

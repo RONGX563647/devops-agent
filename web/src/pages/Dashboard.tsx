@@ -196,14 +196,21 @@ export function Dashboard() {
         </section>
         <section className="panel">
           <h2>失败原因 Top</h2>
-          <p className="hint">同一个报错反复出现才值得先修；没有原因文本的也会单列。</p>
+          <p className="hint">
+            整轮失败与逐次调用报错一起统计；同一个报错反复出现才值得先修，没有原因文本的也会单列。
+          </p>
           {breakdown.isError && <p className="query-error">失败聚类加载失败。</p>}
           {b && b.failures.length === 0 && <p className="muted">没有失败记录。</p>}
           {b && b.failures.length > 0 && (
             <ul className="failure-list">
               {b.failures.map((item) => (
-                <li key={item.reason}>
+                <li key={`${item.kind}:${item.name}:${item.reason}`}>
                   <span className="failure-count mono">{item.count}</span>
+                  {item.kind !== 'run' && (
+                    <span className="failure-kind mono" title={`${item.kind} · ${item.name}`}>
+                      {item.name || item.kind}
+                    </span>
+                  )}
                   <span className="failure-reason">{item.reason}</span>
                 </li>
               ))}

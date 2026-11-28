@@ -274,6 +274,47 @@ describe('记忆泳道', () => {
       turns.map((turn) => turn.items[0].id),
     );
   });
+
+  it('轮次之间的空档被剪掉：两轮在横轴上首尾相接', () => {
+    const call = (id: string, at: string, endedAt: string) => ({
+      id,
+      kind: 'tool' as const,
+      label: '调用工具 · Bash',
+      detail: '',
+      state: 'success' as const,
+      toolName: 'Bash',
+      at,
+      endedAt,
+      args: '{"command":"ls"}',
+      result: 'ok',
+    });
+    const turns = turnsFromMessages([
+      user('u1', '第一问', '2026-11-23T10:00:00.000Z'),
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '',
+        at: '2026-11-23T10:00:01.000Z',
+        endedAt: '2026-11-23T10:00:03.000Z',
+        steps: [call('t1', '2026-11-23T10:00:01.000Z', '2026-11-23T10:00:03.000Z')],
+      },
+      // 用户一小时后才回话：这一段空档不该出现在泳道上
+      user('u2', '第二问', '2026-11-23T11:00:00.000Z'),
+      {
+        id: 'a2',
+        role: 'assistant',
+        text: '',
+        at: '2026-11-23T11:00:01.000Z',
+        endedAt: '2026-11-23T11:00:05.000Z',
+        steps: [call('t2', '2026-11-23T11:00:01.000Z', '2026-11-23T11:00:05.000Z')],
+      },
+    ]);
+    const lanes = buildLanes(turns);
+    expect(lanes.tool).toHaveLength(2);
+    // 第一段 2s + 第二段 4s 紧挨着：起点接在前一段的结束上
+    expect(lanes.tool[1].start - lanes.tool[0].end).toBe(0);
+    expect(lanes.tool[1].end).toBe(6_000);
+  });
 });
 
 describe('traceStats 缓存口径', () => {

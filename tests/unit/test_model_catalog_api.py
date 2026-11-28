@@ -325,3 +325,57 @@ def test_model_id_path_parameter_is_not_truncated(gateways: Path) -> None:
     assert body["provider"] == "gemini"
     assert body["model"] == "models/gemini-2.5-pro"
     assert body["capability"]["context_size"] > 0
+
+
+# --- 聚合与会话选择（SPEC-0022 §5） --------------------------------------
+
+
+def test_models_endpoint_aggregates_all_gateways(gateways: Path) -> None:
+    """会话里的选择器只发这一个请求：网关分组、默认项、逐网关状态都在里面。"""
+    body = client.get("/api/models").json()
+    assert [item["id"] for item in body["providers"]] == ["dashscope", "gemini", "nokey"]
+    assert all(item["code"] == "ok" for item in body["providers"])
+    assert any(
+        item["model"] == "qwen-flash" and item["provider"] == "dashscope" for item in body["items"]
+    )
+    assert body["default"]["provider"] == "dashscope"
+    assert body["truncated"] is False
+
+
+def test_models_endpoint_filters_by_query(gateways: Path) -> None:
+    body = client.get("/api/models?q=qwen").json()
+    assert {item["model"] for item in body["items"]} == {"qwen-flash", "qwen-plus"}
+
+
+def test_provider_only_patch_rejects_model_missing_in_new_gateway(gateways: Path) -> None:
+    """A-3：`(provider, model)` 是一个键；只换家而不换模型要被拦下并给候选。"""
+    assert (
+        client.patch("/api/model-config", json={"patch": {"model": "qwen-flash"}}).status_code
+        == 200
+    )
+    resp = client.patch("/api/model-config", json={"patch": {"provider": "gemini"}})
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail["code"] == "model_not_in_provider"
+    assert detail["model"] == "qwen-flash"
+    assert detail["available"]
+
+
+def test_preview_computes_derived_without_writing(gateways: Path) -> None:
+    """A-11：右栏的「改了会怎样」用后端口径，且预览不落盘。"""
+    target = gateways / "model.local.yaml"
+    before = target.read_bytes() if target.exists() else b""
+    body = client.post(
+        "/api/model-config/preview",
+        json={"patch": {"model_max_retries": 1, "agent_max_retries": 2}},
+    ).json()
+    assert body["derived"]["worst_case_attempts"] == 6
+    assert body["errors"] == []
+    assert (target.read_bytes() if target.exists() else b"") == before
+
+
+def test_preview_reports_field_level_error(gateways: Path) -> None:
+    """保存前就知道是哪一行越界，而不是一个笼统的 400。"""
+    body = client.post("/api/model-config/preview", json={"patch": {"temperature": 5}}).json()
+    assert [item["field"] for item in body["errors"]] == ["temperature"]
+    assert body["effective"]["temperature"] == 5

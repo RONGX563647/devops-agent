@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 #: 无任何来源可查时的兜底窗口。与 `ModelSettings.context_size` 默认值同源，
 #: 但刻意不复用那个字段：那是「用户填的」，这是「谁都没说话时的最后一个数」。
@@ -117,6 +117,21 @@ class ProviderSpec:
             return urlsplit(self.base_url).hostname or ""
         except ValueError:
             return ""
+
+    @property
+    def safe_url(self) -> str:
+        """可回显的 base_url：去掉 query 与 fragment。
+
+        编辑页需要知道完整地址（否则改端口要重敲一遍），但 URL 上可能挂着
+        `?api_key=...`，所以回显时只保留 scheme/host/path。
+        """
+        try:
+            parts = urlsplit(self.base_url)
+        except ValueError:
+            return ""
+        if not parts.scheme:
+            return ""
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
     @property
     def configured(self) -> bool:

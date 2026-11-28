@@ -8,7 +8,7 @@
  * 有代价的（可能 3s 超时、可能计费）。聚焦到这一行时才取，用户点了刷新才强制绕过缓存。
  */
 
-import type { ProviderModel } from '../../types';
+import type { ProviderModel } from '../../../types';
 import { discoveryText, modelOptionLabel } from './capability';
 
 interface Props {

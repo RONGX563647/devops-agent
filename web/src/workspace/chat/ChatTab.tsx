@@ -4,6 +4,7 @@
  */
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   deleteAttachment,
   fetchHealth,
@@ -19,12 +20,12 @@ import type {
   PermissionKey,
 } from '../../types';
 import { attachMeta } from './attachments';
-import { GitHubIcon, GlobeIcon, PaperclipIcon, SendIcon } from './icons';
-import { AssistantMessage } from './Message';
 import { ChatEmptyState } from './EmptyState';
+import { GearIcon, GitHubIcon, GlobeIcon, PaperclipIcon, SendIcon } from './icons';
+import { AssistantMessage } from './Message';
+import { ModelPicker } from './ModelPicker';
 import { newId } from '../id';
 import { extractLinks } from '../links';
-import { ModelConfigDrawer } from '../model-config/Drawer';
 import { PermissionCard } from '../PermissionCard';
 import { PermissionPicker } from '../PermissionPicker';
 import { SearchToggle } from './SearchToggle';
@@ -405,12 +406,14 @@ export function ChatTab({
           />
           <div className="composer-bar">
             <PermissionPicker current={view.permission} onChange={changePermission} />
-            <ModelConfigDrawer
+            <ModelPicker
               session={session}
               config={modelConfig.data}
-              contextTokens={view.contextTokens}
               onChanged={() => void modelConfig.refetch()}
             />
+            <Link className="mc-gear" to="/?tab=settings&section=model" aria-label="模型参数" title="模型参数：窗口、采样、重试">
+              <GearIcon />
+            </Link>
             <SearchToggle
               on={webSearch}
               running={view.running}

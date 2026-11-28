@@ -8,7 +8,7 @@
  * 内置卡），后端将来再加来源时这里显示「未知来源」而不是空白（A44）。
  */
 
-import type { ModelSource } from '../../types';
+import type { ModelSource } from '../../../types';
 import { sourceHint, sourceLabel } from './capability';
 
 export function SourceBadge({ source, pending }: { source: ModelSource; pending?: boolean }) {

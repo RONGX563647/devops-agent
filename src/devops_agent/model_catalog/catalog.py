@@ -129,6 +129,20 @@ class Catalog:
             "kinds": kinds_payload(),
         }
 
+    def known_models(self, provider_id: str) -> list[str]:
+        """该网关「已知」的模型名：缓存 / 人工清单 / 内置卡。
+
+        空列表表示**还没取过**，调用方不能据此判定模型不存在 ——
+        写路径据此拒绝会误伤「先配网关、后拉列表」的正常顺序。
+        """
+        spec = self._spec(provider_id)
+        if spec.discover == "off":
+            return list(all_card_names(spec.kind))
+        if spec.discover == "manual":
+            return [item.name for item in spec.models]
+        result = self._cache.older(spec.id, cache_key(spec))
+        return [item.id for item in result.items] if result else []
+
     def _items_for(self, spec: ProviderSpec, result: DiscoveryResult | None) -> list[DiscoveryItem]:
         """按 discover 模式给出候选清单（off = 卡里的全部名字）。"""
         if spec.discover == "off":

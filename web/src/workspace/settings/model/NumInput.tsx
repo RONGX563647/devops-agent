@@ -1,6 +1,6 @@
 /** 数字输入：清空 = 用默认（null），不是 0。 */
 
-import type { ModelBound } from '../../types';
+import type { ModelBound } from '../../../types';
 import { toNumber } from './validation';
 
 interface NumProps {

@@ -5,7 +5,7 @@
  * `EDITABLE` 与这里的 items 各补一条，未归类的字段会在「高级」组兜底。
  */
 
-import type { ModelValues } from '../../types';
+import type { ModelValues } from '../../../types';
 
 export type FieldKey = keyof ModelValues;
 

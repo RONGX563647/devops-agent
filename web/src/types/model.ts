@@ -218,3 +218,68 @@ export interface SessionModelConfig extends ModelConfig {
   applied?: boolean;
   effective_from?: string;
 }
+
+/** `GET /api/providers` 的响应里新增的内容版本：写网关时原样带回做乐观锁。 */
+export interface ProvidersPayloadVersioned extends ProvidersPayload {
+  version: string;
+}
+
+/** 网关编辑表单的一份完整配置（`GET /api/providers/{id}/draft`）。 */
+export interface ProviderDraft {
+  id: string;
+  kind: string;
+  label: string;
+  base_url: string;
+  /** 环境变量名或 `none`；服务端拼成 `env:NAME` 写盘。 */
+  api_key_ref: string;
+  discover: 'models' | 'manual' | 'off' | string;
+}
+
+/** `GET /api/models` 的一项：跨网关后的模型。 */
+export interface AggregatedModel {
+  provider: string;
+  provider_label: string;
+  model: string;
+  label: string;
+  context: number | null;
+  status: string;
+  capabilities: string[];
+  source: string;
+}
+
+/** 聚合响应里的逐网关状态：`code !== 'ok'` 时组头要说明原因。 */
+export interface AggregateProvider {
+  id: string;
+  label: string;
+  code: string;
+  total: number;
+  stale: boolean;
+  missing_key: boolean;
+}
+
+export interface ModelsAggregate {
+  items: AggregatedModel[];
+  providers: AggregateProvider[];
+  default: { provider: string; model: string };
+  truncated: boolean;
+}
+
+/** 字段级错误：预览用 200 回，前端按 `field` 高亮那一行。 */
+export interface ModelPreviewError {
+  field: string;
+  reason: string;
+}
+
+/** `POST /api/model-config/preview`：草稿的生效值 + 派生值 + 字段级错误。 */
+export interface ModelPreview extends ModelConfig {
+  errors: ModelPreviewError[];
+}
+
+/** `POST /api/providers/{id}/check`：探活结果，不写文件。 */
+export interface ProviderCheck {
+  id: string;
+  code: string;
+  http_status: number | null;
+  total: number;
+  latency_ms: number;
+}

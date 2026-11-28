@@ -35,7 +35,8 @@ READONLY: dict[str, str] = {
     "api_key": "环境变量 DEVOPS_AGENT_API_KEY（重启生效）；凭据不经 HTTP 往返",
     "base_url": "注册表 config/providers.yaml（多网关），或匿名 provider 的 DEVOPS_AGENT_BASE_URL",
     "providers_file": (
-        "config/providers.yaml（网关清单与 key 变量名；新增或改端口需重启，改 id 之外的项重启生效）"
+        "config/providers.yaml（设置 › 模型与网关 › 网关 可增删改；保存后热加载，"
+        "运行中的会话下次装配生效）"
     ),
     "stream": "固定 true：关闭会让前端从逐字渲染退化为一次性出现",
     "judge_model": "环境变量 DEVOPS_AGENT_JUDGE_MODEL（重启生效）；属于评测侧配置",

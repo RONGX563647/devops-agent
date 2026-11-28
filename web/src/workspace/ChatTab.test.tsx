@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactElement } from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   Attachment,
@@ -36,6 +37,9 @@ vi.mock('../api/client', () => ({
   fetchModelConfig: (session?: string) => fetchModelConfig(session),
   fetchSearchToolStatus: () => fetchSearchToolStatus(),
   switchSessionPermission: (...args: unknown[]) => switchPermission(...args),
+  // 模型 chip：点开才取列表，选中即提交（详见 ModelPicker.test.tsx）
+  fetchModels: () => Promise.resolve({ items: [], providers: [], default: null, truncated: false }),
+  patchSessionModelConfig: () => Promise.resolve({ overrides: {} }),
 }));
 
 /** 服务端开放的档位：不含 unrestricted，和后端默认一致。 */
@@ -124,7 +128,10 @@ const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false 
 function tab(props: Partial<Parameters<typeof ChatTab>[0]> = {}): ReactElement {
   return (
     <QueryClientProvider client={queryClient}>
-      <ChatTab session="s-1" {...props} />
+      {/* 输入栏的模型 chip 与齿轮都是链接：抽屉下线后它们指向设置页 */}
+      <MemoryRouter initialEntries={['/?tab=chat&session=s-1']}>
+        <ChatTab session="s-1" {...props} />
+      </MemoryRouter>
     </QueryClientProvider>
   );
 }
@@ -717,10 +724,16 @@ describe('运行时降级提示', () => {
 });
 
 describe('模型参数入口', () => {
-  it('输入栏有齿轮按钮，点开是模型设置面板', async () => {
+  it('输入栏有模型 chip，点开是跨网关列表（不再是浮层抽屉）', async () => {
     render(tab());
-    fireEvent.click(screen.getByRole('button', { name: '模型设置' }));
-    expect(await screen.findByRole('dialog', { name: '模型设置' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '选择模型' }));
+    expect(await screen.findByRole('dialog', { name: '选择模型' })).toBeTruthy();
+  });
+
+  it('齿轮是去设置页「模型参数」的链接，不再打开浮层', () => {
+    render(tab());
+    const gear = screen.getByRole('link', { name: '模型参数' });
+    expect(gear.getAttribute('href')).toBe('/?tab=settings&section=model');
   });
 
   it('有会话覆盖时 chat-meta 标出「参数已改」', async () => {

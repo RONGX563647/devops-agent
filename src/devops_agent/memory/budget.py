@@ -12,7 +12,12 @@ from dataclasses import asdict, dataclass
 
 @dataclass(frozen=True, slots=True)
 class Budget:
-    """一次装配的预算分配（单位 token）。"""
+    """一次装配的预算分配（单位 token）。
+
+    闭合等式（SPEC-0016 §5.1）：`fixed + output_reserve + history_limit +
+    note_limit == threshold`。`headroom` 不再是「保险」，而是历史的显式额度 ——
+    它必须被算进 `history_limit`，否则等式右端永远差一块，压缩就会比预算晚触发。
+    """
 
     window: int
     threshold: int
@@ -24,8 +29,38 @@ class Budget:
     long_term: int
     headroom: int
 
+    @property
+    def history_limit(self) -> int:
+        """短期裁剪的硬上限：短期份额 + 余量（余量吸收本轮新增工具结果的波动）。"""
+        return self.short_term + self.headroom
+
+    @property
+    def note_limit(self) -> int:
+        """注入面的额度：中期 + 长期。"""
+        return self.episodic + self.long_term
+
+    @property
+    def overshoot(self) -> int:
+        """闭合等式的差额（正数 = 超了）。整数取整会带来个位数负值，属正常。"""
+        return (
+            self.fixed + self.output_reserve + self.history_limit + self.note_limit
+        ) - self.threshold
+
+    @property
+    def ok(self) -> bool:
+        """2% 以内视为闭合：给「四项各自取整」留余量，不把舍入当配置错误。"""
+        return self.overshoot <= max(4, int(self.threshold * 0.02))
+
     def as_dict(self) -> dict[str, int]:
-        return asdict(self)
+        data = asdict(self)
+        data.update(
+            {
+                "history_limit": self.history_limit,
+                "note_limit": self.note_limit,
+                "overshoot": self.overshoot,
+            }
+        )
+        return data
 
 
 def _share(total: int, ratio: float) -> int:

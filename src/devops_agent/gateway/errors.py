@@ -37,6 +37,10 @@ class ErrorCode(StrEnum):
     # 运行时没有续跑能力（只实现了 stream 的替身）
     RUNTIME_NOT_RESUMABLE = "runtime_not_resumable"
 
+    # --- 执行面 ---------------------------------------------------------
+    # required=true 时 Docker 执行面不可用：拒绝服务，不悄悄在宿主执行
+    SANDBOX_UNAVAILABLE = "sandbox_unavailable"
+
 
 # 一条码恰好一个状态码；口径见模块 docstring
 STATUS_OF: Final[dict[ErrorCode, int]] = {
@@ -49,6 +53,7 @@ STATUS_OF: Final[dict[ErrorCode, int]] = {
     ErrorCode.EXPIRED: 409,
     ErrorCode.EMPTY_RESULTS: 400,
     ErrorCode.RUNTIME_NOT_RESUMABLE: 400,
+    ErrorCode.SANDBOX_UNAVAILABLE: 503,
 }
 
 

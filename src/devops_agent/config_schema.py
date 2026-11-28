@@ -212,7 +212,90 @@ class GatewayPolicy(BaseModel):
     sessions: GatewaySessionsPolicy = Field(default_factory=GatewaySessionsPolicy)
 
 
+# --- 沙箱执行面（sandbox 域）-------------------------------------------
+#
+# 执行面在进程启动期固定（`hot=restart`），这里只放「部署者能决定」的旋钮，
+# 不放容器实现细节：容器创建 / 镜像构建 / 文件同步全部由
+# `agentscope.workspace.DockerWorkspace` 承担。
+
+
+class SandboxDockerPolicy(BaseModel):
+    """DockerWorkspace 的构造参数（与内置签名逐项对应）。"""
+
+    # 基础镜像：必须自带 python3；生产建议用 digest 固定
+    base_image: str = Field(default="python:3.11-slim", min_length=1)
+    # 额外 Python 包装进 gateway venv（不是宿主环境）
+    extra_pip: list[str] = Field(default_factory=list)
+    # 显式透传进容器的环境变量；禁止放密钥（密钥仍走 SecretInjectionMiddleware）
+    env: dict[str, str] = Field(default_factory=dict)
+    # 容器内 gateway 端口；不映射到宿主机
+    gateway_port: int = Field(default=5600, ge=1, le=65_535)
+
+
+class SandboxOpensandboxPolicy(BaseModel):
+    """OpenSandboxWorkspace 的构造参数（与内置签名逐项对应）。
+
+    `api_key` 刻意不在此处：凭据只走环境变量（`DEVOPS_AGENT_SANDBOX_OSB_API_KEY`），
+    既不落 `config.db`，也不经 HTTP 往返，更不会出现在 `/health`。
+    """
+
+    # 预配置黄金镜像：必须已烘焙 gateway venv 与脚本（见 docker/sandbox.Dockerfile）；
+    # 生产建议用 digest 固定。空串非法。
+    image: str = Field(default="python:3.11-slim", min_length=1)
+    # 服务端地址；空串视为未配置 endpoint（required=true 时拒绝启动）
+    domain: str = ""
+    protocol: Literal["http", "https"] = "https"
+    # SDK HTTP 请求超时（秒）
+    request_timeout_seconds: float = Field(default=60.0, gt=0)
+    # 平台侧空闲保活；与 sandbox.ttl_seconds（本地缓存回收）相互独立
+    timeout_seconds: int = Field(default=1800, gt=0)
+    gateway_port: int = Field(default=5600, ge=1, le=65_535)
+    # 显式透传进沙箱的环境变量；禁止放密钥
+    env: dict[str, str] = Field(default_factory=dict)
+    # 额外 Python 包装进沙箱内 gateway venv
+    extra_pip: list[str] = Field(default_factory=list)
+    # 平台原生能力：原样透传，含义由 OpenSandbox 决定
+    resource: dict[str, str] = Field(default_factory=dict)
+    network_policy: dict[str, object] = Field(default_factory=dict)
+    entrypoint: list[str] = Field(default_factory=list)
+
+
+class SandboxPolicy(BaseModel):
+    """沙箱执行面：模式、是否允许回落、空闲回收与后端参数。
+
+    `mode` 是**请求**模式；实际生效模式由 `SandboxManager` 解析后写入
+    `ExecutionTarget.mode`。`required=True` 时任何回落都视为违约：
+    静默从容器降到宿主是安全事故，不是可用性优化。
+    """
+
+    mode: Literal["local", "docker", "opensandbox", "auto"] = "local"
+    # true：初始化失败不回落，对话端点 503；生产部署建议 true
+    required: bool = False
+    # 非聊天工作区（评测 case）空闲回收；聊天主工作区不回收
+    ttl_seconds: int = Field(default=900, gt=0)
+    docker: SandboxDockerPolicy = Field(default_factory=SandboxDockerPolicy)
+    opensandbox: SandboxOpensandboxPolicy = Field(default_factory=SandboxOpensandboxPolicy)
+
+
 # --- 模型参数（model.yaml 的 model 段）----------------------------------
+
+
+class TokenizerSettings(BaseModel):
+    """model.yaml 的 `model.tokenizer` 段：估算口径（SPEC-0016 §4.2）。
+
+    分族必须可配：同一段 JSON 在 `cl100k` 与 `o200k` 上的密度差 20% 以上，
+    一套系数打所有模型等于把误差写进预算。三项系数留 `None` 时取该族实测值，
+    只有「这台机器上的族系数确实不同」时才需要覆盖。
+    """
+
+    #: 模型族：决定三族系数；未知值按 generic（最保守）
+    family: Literal["cl100k", "o200k", "qwen", "generic"] = "generic"
+    #: estimate = L2 系数（默认，结果与是否装 tiktoken 无关）；exact = 装了就用 L1
+    precision: Literal["estimate", "exact"] = "estimate"
+    cjk_per_token: float | None = Field(default=None, gt=0, le=10)
+    letter_per_token: float | None = Field(default=None, gt=0, le=20)
+    symbol_per_token: float | None = Field(default=None, gt=0, le=10)
+    per_message_overhead: int = Field(default=4, ge=0, le=20)
 
 
 class ModelSettings(BaseModel):
@@ -225,9 +308,16 @@ class ModelSettings(BaseModel):
 
     # 空串 = 用环境变量 DEVOPS_AGENT_MODEL
     name: str = ""
+    # 选中的网关实例（providers.yaml 的 id）。空串 = 用注册表默认项
+    provider: str = ""
     # 上下文窗口：同时决定压缩阈值、圆环分母、压缩后保留量
     context_size: int = Field(default=128_000, ge=8192, le=2_000_000)
-    # 部署者有没有确认过这个窗口值；false 时前端显示「未校准」
+    # 窗口是否跟随模型能力（SPEC-0018 §6.4）。
+    # None = 谁都没表态，由注册表形态决定：匿名 provider → false，有 providers.yaml → true。
+    # 不能直接给 False：那样「配了网关却不会跟随」，与 §4.4 的默认相反。
+    context_auto: bool | None = None
+    # 部署者有没有确认过这个窗口值；false 时前端显示「未校准」。
+    # SPEC-0018 后降级为「匿名 provider + 静态窗口」这条路径上的兜底标记。
     context_calibrated: bool = False
     # 两级重试：最坏尝试 = (1 + model) × (1 + agent)
     model_max_retries: int = Field(default=3, ge=0, le=5)
@@ -245,6 +335,8 @@ class ModelSettings(BaseModel):
     trigger_ratio: float = Field(default=0.8, gt=0, le=0.9)
     reserve_ratio: float = Field(default=0.1, gt=0, lt=0.9)
     context_buffer_ratio: float = Field(default=0.2, ge=0, le=1)
+    #: token 估算口径（族系数 / 可选真编码器）；预算与裁剪都读这里
+    tokenizer: TokenizerSettings = Field(default_factory=TokenizerSettings)
 
     def max_iters_for(self, domain: str) -> int:
         """按域取 max_iters，未声明的域回退 default。"""
@@ -378,4 +470,7 @@ __all__ = [
     "RiskPolicy",
     "RulePolicy",
     "RuntimePolicy",
+    "SandboxDockerPolicy",
+    "SandboxOpensandboxPolicy",
+    "SandboxPolicy",
 ]

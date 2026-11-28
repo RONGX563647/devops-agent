@@ -10,7 +10,12 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import StreamingResponse
 
 from devops_agent.gateway.contract import REQUEST_ID_HEADER, SSE_HEADERS, SSE_MEDIA_TYPE
-from devops_agent.gateway.routes.deps import profile_or_403, registry_of, settings_of
+from devops_agent.gateway.routes.deps import (
+    profile_or_403,
+    registry_of,
+    sandbox_ready,
+    settings_of,
+)
 from devops_agent.gateway.routes.schemas import RunRequest
 from devops_agent.gateway.turn.ending import RunLimits
 from devops_agent.gateway.turn.lease import open_lease
@@ -32,6 +37,8 @@ async def run_stream(
     2) 占住会话：重建实例 / 409 会话忙 / 抢锁，三件事都在返回响应前同步完成；
     3) 交给编排层：帧流由 run.run_turn 生产，这里只负责装进响应。
     """
+    # 0) 执行面：required=true 初始化失败时 503，绝不回落宿主执行
+    sandbox_ready(request)
     # 1) 档位校验（403 在这里、不是流里）
     profile = profile_or_403(req.permission)
     settings = settings_of(request)

@@ -4916,6 +4916,33 @@ a:hover {
   background: transparent;
   border-style: dashed;
 }
+/* 能力合并的三个来源：都不是「人填的」，所以统一虚边、不用实心色块，
+   与「谁设的」那几档在视觉上分开。 */
+.mc-src.is-calibrated,
+.mc-src.is-discovered,
+.mc-src.is-card {
+  color: var(--ink-faint);
+  background: transparent;
+  border-style: dashed;
+}
+.mc-src.is-calibrated {
+  border-color: var(--ok-soft);
+}
+.mc-src.is-discovered {
+  border-color: var(--accent-soft);
+}
+/* 网关（下拉）+ 模型（可手填 + 刷新）这一对组合控件 */
+.mc-pick {
+  display: flex;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
+}
+.mc-pick-refresh {
+  flex: none;
+  padding: 0 var(--sp-2);
+  font-size: 10.5px;
+}
 .mc-derived {
   display: flex;
   gap: var(--sp-2);

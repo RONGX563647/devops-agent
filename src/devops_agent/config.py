@@ -33,6 +33,9 @@ from devops_agent.config_schema import QualityGates as QualityGates
 from devops_agent.config_schema import RiskPolicy as RiskPolicy
 from devops_agent.config_schema import RulePolicy as RulePolicy
 from devops_agent.config_schema import RuntimePolicy as RuntimePolicy
+from devops_agent.config_schema import SandboxDockerPolicy as SandboxDockerPolicy
+from devops_agent.config_schema import SandboxPolicy as SandboxPolicy
+from devops_agent.config_schema import TokenizerSettings as TokenizerSettings
 from devops_agent.config_store import store
 from devops_agent.memory_policy import MemoryPolicy as MemoryPolicy
 
@@ -95,6 +98,16 @@ def load_input() -> InputPolicy:
     return InputPolicy.model_validate(store.effective("input"))
 
 
+@cache
+def load_sandbox() -> SandboxPolicy:
+    """沙箱执行面配置：代码默认 ← config.db 覆盖 ← 环境变量。
+
+    与 `load_gateway` 一样在装配期读一次就固定（`hot=restart`）：执行模式在
+    进程生命周期内不能变，否则会出现「半进程用容器、半进程用宿主」。
+    """
+    return SandboxPolicy.model_validate(store.effective("sandbox"))
+
+
 def load_memory() -> MemoryPolicy:
     """记忆策略：代码默认 ← config.db 覆盖 ← 环境变量。
 
@@ -110,4 +123,5 @@ def clear_cache() -> None:
     load_gates.cache_clear()
     load_model.cache_clear()
     load_gateway.cache_clear()
+    load_sandbox.cache_clear()
     store.invalidate()

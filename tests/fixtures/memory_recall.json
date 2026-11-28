@@ -1,0 +1,35 @@
+{
+  "_comment": "SPEC-0016 §7 召回评测语料：20 条长期记忆片段 + 8 条 query + 相关性标注。A29 比排序质量（nDCG@5，BM25 应优于 overlap），A31 扫阈值（precision/recall）。语料按真实长期记忆形态构造：1-4 是早期写入的冗长全局说明（回合原文风格），5-20 是后来写入的具体条目；query 同时含通用词与专属词，这正是「缺 idf 与长度归一化」的 overlap 会判错、BM25 能判对的地方。",
+  "corpus": [
+    {"id": 1, "kind": "fact", "text": "部署说明：所有服务默认读取 config 目录下的配置，环境变量优先覆盖。本地起服务默认 8000 端口，超时、镜像 tag 都写在 .env 里。部署前必须跑一遍配置校验，路径要显式指定，日志级别默认 info，出问题先看日志再重试。"},
+    {"id": 2, "kind": "fact", "text": "环境约定：服务默认日志级别 info，部署时用环境变量覆盖超时和路径相关配置。配置文件按环境分目录，默认配置不要写死账号，镜像 tag 用 commit 短 hash。"},
+    {"id": 3, "kind": "decision", "text": "部署前置检查：默认配置不要直接改到生产，必须先跑配置校验脚本；路径一律用绝对路径，超时与日志级别在部署清单里显式写一遍，镜像来源只认 harbor。"},
+    {"id": 4, "kind": "fact", "text": "本地开发默认 8000 端口起服务，超时、镜像 tag、配置路径都放 .env；日志默认写到文件，部署脚本会读同一份配置，路径不对就先查 .env 有没有被覆盖。"},
+    {"id": 5, "kind": "fact", "text": "支付服务启动脚本在 scripts/start_pay.sh，入口 app.py:120，先跑迁移再起 gunicorn。"},
+    {"id": 6, "kind": "fact", "text": "数据库连接串在 config/database.yaml，生产 pool_size=20，连接超时 30 秒。"},
+    {"id": 7, "kind": "decision", "text": "CI 用 make test 跑单测，失败先看 pytest -x 的第一个错误，不要整批重跑。"},
+    {"id": 8, "kind": "decision", "text": "日志脱敏默认开启，手机号与身份证必须掩码，不许写进长期记忆。"},
+    {"id": 9, "kind": "fact", "text": "网关限流阈值默认 200 QPS，超过按 IP 分桶，配置在 gateway/limiter.py。"},
+    {"id": 10, "kind": "fact", "text": "结论：OOM 根因是 pandas 一次读全量 CSV，改成 chunksize=10000 后内存稳定在 800MB。"},
+    {"id": 11, "kind": "procedure", "text": "部署流程：1. build 镜像 2. 推 harbor 3. kubectl rollout restart deploy/api 4. 看 /healthz。"},
+    {"id": 12, "kind": "fact", "text": "k8s 探针用的是 /healthz，超时 3 秒，连续 3 次失败才摘流量。"},
+    {"id": 13, "kind": "decision", "text": "长期记忆淘汰按 last_hit_at 排序，最久未用先出，不再按创建时间。"},
+    {"id": 14, "kind": "decision", "text": "Redis 缓存键统一 svc:entity:id 三段前缀，禁止裸 id 当键。"},
+    {"id": 15, "kind": "fact", "text": "打包体积从 12MB 降到 4MB，原因是删掉了 moment 的 locale 全量引入。"},
+    {"id": 16, "kind": "decision", "text": "模型调用超时 60 秒，重试 2 次，退避 1s/3s，不要无限重试。"},
+    {"id": 17, "kind": "decision", "text": "修复方案：BM25 索引失效键从条数改成 (count, max_id)，写入后主动置空。"},
+    {"id": 18, "kind": "decision", "text": "事件字段不要叫 kind，会和 frame(kind=...) 冲突，改用 memory_kind。"},
+    {"id": 19, "kind": "procedure", "text": "抓包用 mitmproxy -p 8888，证书装到 ~/.mitmproxy 后 curl --proxy 127.0.0.1:8888。"},
+    {"id": 20, "kind": "decision", "text": "前端锁 pnpm，不许混用 npm，lockfile 不一致 CI 直接失败。"}
+  ],
+  "queries": [
+    {"query": "支付服务启动脚本在哪个路径", "relevant": [5]},
+    {"query": "数据库连接池 pool_size 和连接超时怎么配", "relevant": [6]},
+    {"query": "OOM 的根因是什么，内存怎么降下来的", "relevant": [10]},
+    {"query": "网关限流阈值 QPS 默认多少", "relevant": [9]},
+    {"query": "k8s 探针用什么路径，失败几次摘流量", "relevant": [12]},
+    {"query": "日志默认要不要脱敏，手机号能记录吗", "relevant": [8]},
+    {"query": "长期记忆淘汰按什么字段排序", "relevant": [13]},
+    {"query": "部署流程有哪些步骤，镜像推到哪里", "relevant": [11]}
+  ]
+}

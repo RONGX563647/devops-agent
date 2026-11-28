@@ -159,7 +159,8 @@ CREATE TABLE IF NOT EXISTS session_memories (
     expires_at      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_memories_session ON session_memories(session_id, is_active);
--- 长期记忆（local 兜底后端）：按 (scope, scope_id, text) 去重，TTL 由 expires_at 控制。
+-- 长期记忆（local 兜底后端）：按 (scope, scope_id, norm_text) 去重，TTL 由 expires_at 控制。
+-- 旧的 `text` 唯一索引保留：它的语义是「同一段原文不重复落库」，与归一化去重互补。
 CREATE TABLE IF NOT EXISTS long_term_memories (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     scope      TEXT NOT NULL,
@@ -167,6 +168,9 @@ CREATE TABLE IF NOT EXISTS long_term_memories (
     kind       TEXT NOT NULL DEFAULT 'fact',
     text       TEXT NOT NULL,
     score      REAL NOT NULL DEFAULT 0,
+    hits       INTEGER NOT NULL DEFAULT 0,
+    last_hit_at TEXT,
+    norm_text  TEXT,
     created_at TEXT NOT NULL,
     expires_at TEXT
 );
@@ -175,6 +179,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_long_term_unique
 CREATE INDEX IF NOT EXISTS idx_long_term_scope
     ON long_term_memories(scope, scope_id, created_at);
 """
+
+# 归一化文本的唯一索引必须建在补列之后：老库里这一列不存在，
+# 放进 _SCHEMA 会让 `CREATE INDEX` 先于 `ALTER TABLE` 执行而报错。
+_LONG_INDEX_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_long_term_norm
+    ON long_term_memories(scope, scope_id, norm_text);
+"""
+
+# 长期表后加的列（SPEC-0016 §8.4）：命中计数、最近使用时间与归一化文本。
+# 老库这三列都是 NULL/0，读取时按「未强化过」处理，不影响检索。
+_LONG_TERM_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("hits", "INTEGER NOT NULL DEFAULT 0"),
+    ("last_hit_at", "TEXT"),
+    ("norm_text", "TEXT"),
+)
 
 # spans 表必须显式包含在 _SCHEMA 里；建表语句是上面单独抽出的 _SPANS_DDL
 _SCHEMA = _SCHEMA + _SPANS_DDL
@@ -265,6 +284,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _ensure_columns(conn, "spans", _SPAN_COLUMNS)
     _ensure_span_types(conn)
     _ensure_columns(conn, "session_states", _SESSION_COLUMNS)
+    _ensure_columns(conn, "long_term_memories", _LONG_TERM_COLUMNS)
+    # 索引在建表语句之后、补列之前都建不了：老库没有 norm_text。
+    # 用 execute 而不是 executescript：后者会先隐式提交，破坏调用方的事务
+    conn.execute(_LONG_INDEX_SQL.strip().rstrip(";"))
 
 
 def _ensure_span_types(conn: sqlite3.Connection) -> None:

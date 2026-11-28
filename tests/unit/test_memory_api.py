@@ -24,6 +24,8 @@ def test_memory_api_crud_and_status(tmp_path, monkeypatch) -> None:  # type: ign
     status = client.get("/api/memory/status").json()
     assert status["short_term"] is True
     assert "backend" in status
+    # 开关与后端名只说明「打算做什么」；条数才说明「真的存下来了没有」
+    assert status["store"] == {"episodic": 0, "long_term": 0}
 
     card = EpisodicMemory(EpisodicPolicy(), tmp_path / "obs.db").save(
         "s1",
@@ -67,4 +69,6 @@ def test_health_includes_memory_and_context(tmp_path, monkeypatch) -> None:  # t
     client = _client(tmp_path, monkeypatch)
     body = client.get("/health").json()
     assert body["memory"]["backend"] in ("local", "off")
+    # 探针要能回答「表里到底有没有内容」，不只是「开关开没开」
+    assert body["memory"]["store"] == {"episodic": 0, "long_term": 0}
     assert body["context"]["snapshot_version"] >= 1

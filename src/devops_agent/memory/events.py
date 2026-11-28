@@ -27,6 +27,9 @@ REASON_NO_MEMORY = "no_memory"
 #: 有记忆但注入额度被预算压到 0：与「确实没有记忆」必须分开，否则评测会把
 #: 「预算不够」统计成「召回失败」。
 REASON_BUDGET_EXHAUSTED = "budget_exhausted"
+#: 命中的全是「已经在本轮上下文里」的内容：与「没有记忆」不同 —— 之后历史被
+#: 裁剪时同一条会重新注入，把它记成 no_memory 会让评测把正常去重算成召回失败。
+REASON_ALREADY_IN_CONTEXT = "already_in_context"
 REASON_EPISODIC_UNAVAILABLE = "episodic_unavailable"
 REASON_LONG_TERM_UNAVAILABLE = "long_term_unavailable"
 REASON_WRITE_FAILED = "write_failed"

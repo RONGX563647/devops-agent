@@ -49,6 +49,7 @@ from .memory import (
     merge_long_term,
     save_long_term,
     save_memory_version,
+    store_counts,
     touch_long_term,
 )
 from .pending import active_run_for_session, bump_asks, get_pending, park_run, unpark_run
@@ -60,6 +61,7 @@ from .runs import (
     get_run,
     list_runs,
     query_runs,
+    reap_orphan_runs,
     set_run_web_access,
     summary_rows,
 )
@@ -164,6 +166,7 @@ __all__ = [
     "os",
     "park_run",
     "query_runs",
+    "reap_orphan_runs",
     "set_run_web_access",
     "session_stat",
     "set_session_archived",
@@ -176,6 +179,7 @@ __all__ = [
     "save_session_state",
     "save_setting",
     "span_stats",
+    "store_counts",
     "sqlite3",
     "summary_rows",
     "unpark_run",

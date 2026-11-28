@@ -173,3 +173,77 @@ def test_list_reports_session_count(tmp_path: Path) -> None:
 
     items = client.get("/api/workspaces").json()["items"]
     assert items[0]["session_count"] == 1
+
+
+def test_rename_session_overrides_derived_title(tmp_path: Path) -> None:
+    """改名只覆盖展示标题：后续新输入不能把用户起的名字顶掉。"""
+    client, service = _client(tmp_path)
+    ws_id = _workspace(service, tmp_path, "alpha")
+    service.bind_session("s1", ws_id)
+    _seed_run(service, "s1", text="原始输入", started_at="2026-11-28T09:00:00+00:00")
+
+    resp = client.patch("/api/workspaces/sessions/s1", json={"title": "  我起的名字  "})
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "我起的名字"
+
+    _seed_run(service, "s1", text="后续追问", started_at="2026-11-28T10:00:00+00:00")
+    item = client.get(f"/api/workspaces/{ws_id}/sessions").json()["items"][0]
+    assert item["title"] == "我起的名字"
+    assert item["run_count"] == 2
+
+
+def test_rename_session_rejects_blank_title(tmp_path: Path) -> None:
+    """空白标题会把侧栏渲染成一行空气，直接在契约上拒掉。"""
+    client, service = _client(tmp_path)
+    ws_id = _workspace(service, tmp_path, "alpha")
+    service.bind_session("s1", ws_id)
+
+    resp = client.patch("/api/workspaces/sessions/s1", json={"title": "   "})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "workspace_source_invalid"
+
+
+def test_rename_unknown_session_404(tmp_path: Path) -> None:
+    """没有绑定行 = 没有地方存标题，按 404 返回而不是静默丢弃。"""
+    client, _ = _client(tmp_path)
+    resp = client.patch("/api/workspaces/sessions/ghost", json={"title": "x"})
+    assert resp.status_code == 404
+
+
+def test_archive_session_hides_it_until_asked(tmp_path: Path) -> None:
+    """归档会话默认不出现；显式要 include_archived 才回来，且排在在用会话之后。"""
+    client, service = _client(tmp_path)
+    ws_id = _workspace(service, tmp_path, "alpha")
+    service.bind_session("s1", ws_id)
+    service.bind_session("s2", ws_id)
+    _seed_run(service, "s1", text="要归档的", started_at="2026-11-28T10:00:00+00:00")
+    _seed_run(service, "s2", text="继续用的", started_at="2026-11-28T09:00:00+00:00")
+
+    assert client.patch("/api/workspaces/sessions/s1", json={"archived": True}).status_code == 200
+
+    body = client.get(f"/api/workspaces/{ws_id}/sessions").json()
+    assert [item["session_id"] for item in body["items"]] == ["s2"]
+    assert body["total"] == 1
+
+    board = client.get("/api/workspaces/sessions").json()
+    assert board["items"][0]["session_count"] == 1
+    assert [item["session_id"] for item in board["items"][0]["sessions"]] == ["s2"]
+
+    wide = client.get(f"/api/workspaces/{ws_id}/sessions?include_archived=true").json()
+    # 归档的 last_at 更新，但排序被压到在用的后面
+    assert [item["session_id"] for item in wide["items"]] == ["s2", "s1"]
+    assert wide["items"][1]["archived_at"] != ""
+
+
+def test_restore_archived_session(tmp_path: Path) -> None:
+    """恢复是幂等的：重复恢复不报错，会话回到默认视图。"""
+    client, service = _client(tmp_path)
+    ws_id = _workspace(service, tmp_path, "alpha")
+    service.bind_session("s1", ws_id)
+    client.patch("/api/workspaces/sessions/s1", json={"archived": True})
+
+    assert client.patch("/api/workspaces/sessions/s1", json={"archived": False}).status_code == 200
+    assert client.patch("/api/workspaces/sessions/s1", json={"archived": False}).status_code == 200
+    body = client.get(f"/api/workspaces/{ws_id}/sessions").json()
+    assert [item["session_id"] for item in body["items"]] == ["s1"]
+    assert body["items"][0]["archived_at"] == ""

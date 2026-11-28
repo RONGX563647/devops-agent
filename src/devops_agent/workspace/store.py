@@ -147,20 +147,45 @@ def list_sessions(conn: Any, workspace_id: str) -> list[WorkspaceSession]:
     return [_session(row) for row in repo.list_workspace_sessions(conn, workspace_id)]
 
 
-def count_sessions(conn: Any, workspace_id: str) -> int:
-    return repo.count_workspace_sessions(conn, workspace_id)
+def count_sessions(conn: Any, workspace_id: str, *, include_archived: bool = False) -> int:
+    return repo.count_workspace_sessions(conn, workspace_id, include_archived=include_archived)
+
+
+def get_session(conn: Any, session_id: str) -> dict[str, Any] | None:
+    """会话的绑定行（含改名后的 title 与归档时间）；没有归属返回 None。"""
+    return repo.get_workspace_session(conn, session_id)
 
 
 def session_stats(
-    conn: Any, workspace_id: str, *, limit: int = 50, offset: int = 0
+    conn: Any,
+    workspace_id: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    include_archived: bool = False,
 ) -> list[dict[str, Any]]:
     """工作区下会话的运行聚合（标题 / 最近时间 / 次数），供左栏与详情页共用。"""
-    return repo.list_workspace_session_stats(conn, workspace_id, limit=limit, offset=offset)
+    return repo.list_workspace_session_stats(
+        conn, workspace_id, limit=limit, offset=offset, include_archived=include_archived
+    )
+
+
+def session_stat(conn: Any, session_id: str) -> dict[str, Any] | None:
+    """单条会话的聚合（含改名后的标题与归档时间）。"""
+    return repo.session_stat(conn, session_id)
 
 
 def unbound_session_stats(conn: Any, *, limit: int = 50) -> list[dict[str, Any]]:
-    """尚未归属任何工作区的会话聚合。"""
+    """尚未归属任何工作区的会话聚合（没有绑定行，也就没有改名与归档）。"""
     return repo.list_unbound_session_stats(conn, limit=limit)
+
+
+def rename_session(conn: Any, session_id: str, title: str) -> bool:
+    return repo.set_session_title(conn, session_id, title)
+
+
+def archive_session(conn: Any, session_id: str, archived_at: str | None) -> bool:
+    return repo.set_session_archived(conn, session_id, archived_at)
 
 
 def set_session_workspace(conn: Any, session_id: str, workspace_id: str) -> None:
@@ -192,14 +217,18 @@ __all__ = [
     "delete",
     "delete_long_term",
     "find_active_by_name",
+    "archive_session",
     "find_active_by_root",
     "get_repository",
+    "get_session",
     "get_session_binding",
     "get_workspace",
     "insert",
     "list_long_term",
     "list_sessions",
     "list_workspaces",
+    "rename_session",
+    "session_stat",
     "session_stats",
     "set_session_workspace",
     "unbound_session_stats",

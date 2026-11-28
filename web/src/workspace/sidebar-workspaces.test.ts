@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkspaceSessionBoard } from '../types';
-import { buildWorkspaceGroups, unboundSessions } from './sidebar-workspaces';
+import { buildWorkspaceGroups, filterGroups, injectDraft, unboundSessions } from './sidebar-workspaces';
 import type { SessionItem } from './sidebar-utils';
 
 const long = '一二三四五六七八九十一二三四五六七八九十超出部分';
@@ -44,7 +44,7 @@ describe('buildWorkspaceGroups', () => {
             session_count: 0,
             sessions: [],
           },
-        ] as WorkspaceSessionBoard['items'],
+        ] as unknown as WorkspaceSessionBoard['items'],
       }),
     );
     expect(groups.map((group) => group.id)).toEqual(['ws_a', 'ws_b']);
@@ -89,7 +89,7 @@ describe('unboundSessions', () => {
             },
           ],
         },
-      ] as WorkspaceSessionBoard['items'],
+      ] as unknown as WorkspaceSessionBoard['items'],
       unbound: [
         {
           session_id: 'loose',
@@ -130,5 +130,106 @@ describe('unboundSessions', () => {
     expect(item.runCount).toBe(3);
     expect(item.messageCount).toBe(5);
     expect(item.lastAt).toBe('2026-11-28T10:00:00+00:00');
+  });
+});
+
+describe('injectDraft', () => {
+  const groups = buildWorkspaceGroups(
+    board({
+      items: [
+        {
+          id: 'ws_a',
+          name: 'webpanel',
+          root_path: '/code/webpanel',
+          status: 'active',
+          session_count: 0,
+          sessions: [],
+        },
+      ] as unknown as WorkspaceSessionBoard['items'],
+    }),
+  );
+
+  it('草稿挂到所属工作区顶部，不计入服务端条数', () => {
+    const merged = injectDraft(groups, { id: 'draft-1', workspaceId: 'ws_a', title: '新会话' });
+    expect(merged[0].sessions[0]).toMatchObject({ id: 'draft-1', draft: true, title: '新会话' });
+    expect(merged[0].count).toBe(0);
+  });
+
+  it('服务端已经有这条会话时不重复插入', () => {
+    const existing = injectDraft(groups, { id: 'd1', workspaceId: 'ws_a', title: '新会话' });
+    const again = injectDraft(existing, { id: 'd1', workspaceId: 'ws_a', title: '新会话' });
+    expect(again[0].sessions).toHaveLength(1);
+  });
+
+  it('工作区不存在时草稿不出现（不凭空造分组）', () => {
+    const merged = injectDraft(groups, { id: 'd1', workspaceId: 'ws_missing', title: '新会话' });
+    expect(merged).toHaveLength(1);
+    expect(merged[0].sessions).toEqual([]);
+  });
+});
+
+describe('filterGroups', () => {
+  const groups = buildWorkspaceGroups(
+    board({
+      items: [
+        {
+          id: 'ws_a',
+          name: 'webpanel',
+          root_path: '/code/webpanel',
+          status: 'active',
+          session_count: 2,
+          sessions: [
+            {
+              session_id: 's1',
+              title: '修 CI 流水线',
+              last_at: '2026-11-28T10:00:00+00:00',
+              run_count: 1,
+              failed_count: 0,
+              bound_at: '',
+              bound_by: '',
+            },
+            {
+              session_id: 's2',
+              title: '已经归档的会话',
+              last_at: '2026-11-27T10:00:00+00:00',
+              run_count: 1,
+              failed_count: 0,
+              bound_at: '',
+              bound_by: '',
+              archived_at: '2026-11-27T11:00:00+00:00',
+            },
+          ],
+        },
+        {
+          id: 'ws_old',
+          name: 'old',
+          root_path: '/code/old',
+          status: 'archived',
+          session_count: 1,
+          sessions: [],
+        },
+      ] as unknown as WorkspaceSessionBoard['items'],
+    }),
+  );
+
+  it('默认隐藏归档工作区与归档会话', () => {
+    const visible = filterGroups(groups);
+    expect(visible.map((group) => group.id)).toEqual(['ws_a']);
+    expect(visible[0].sessions.map((item) => item.id)).toEqual(['s1']);
+  });
+
+  it('打开「显示已归档」后两者都回来', () => {
+    const visible = filterGroups(groups, { showArchived: true });
+    expect(visible.map((group) => group.id)).toEqual(['ws_a', 'ws_old']);
+    expect(visible[0].sessions.map((item) => item.id)).toEqual(['s1', 's2']);
+  });
+
+  it('搜索命中工作区名时保留它全部会话', () => {
+    const visible = filterGroups(groups, { query: 'web' });
+    expect(visible[0].sessions.map((item) => item.id)).toEqual(['s1']);
+  });
+
+  it('一条都不匹配的工作区被收起', () => {
+    expect(filterGroups(groups, { query: '不存在' })).toEqual([]);
   });
 });

@@ -204,16 +204,31 @@ def list_workspace_sessions(conn: sqlite3.Connection, workspace_id: str) -> list
     ]
 
 
-def count_workspace_sessions(conn: sqlite3.Connection, workspace_id: str) -> int:
-    """统计归属某工作区的会话数。"""
-    row = conn.execute(
-        "SELECT COUNT(*) AS n FROM workspace_sessions WHERE workspace_id=?", (workspace_id,)
-    ).fetchone()
+def count_workspace_sessions(
+    conn: sqlite3.Connection, workspace_id: str, *, include_archived: bool = False
+) -> int:
+    """统计归属某工作区的会话数；默认不把归档会话算进「在用的会话」。"""
+    sql = "SELECT COUNT(*) AS n FROM workspace_sessions WHERE workspace_id=?"
+    params: list[Any] = [workspace_id]
+    if not include_archived:
+        sql += " AND archived_at IS NULL"
+    row = conn.execute(sql, params).fetchone()
     return int(row["n"])
 
 
 # 左栏只显示一行标题，把整段输入搬进列表纯属浪费带宽：统一在 SQL 里截断。
 _TITLE_CHARS = 80
+
+# 标题口径：用户改过名就用改后的（绑定行上的 title），否则取该会话最早一条输入。
+# 取最新会让一句「继续」把会话主题覆盖成「继续」；改名后则不能被后续输入覆盖。
+_TITLE_SQL = """COALESCE(
+               NULLIF({alias}.title, ''),
+               (SELECT substr(t.input, 1, {chars})
+                  FROM runs AS t
+                 WHERE t.session_id = {source}
+                 ORDER BY t.started_at ASC, t.id ASC
+                 LIMIT 1),
+               '')"""
 
 # 「会话 + 运行聚合」是同一条 SQL 的两种口径（限定工作区 / 未归属），
 # 只有 WHERE 与分组来源不同，所以共用这段 SELECT 与 ORDER BY。
@@ -221,14 +236,11 @@ _SESSION_STATS_SQL = """
     SELECT {source} AS session_id,
            {bound_at} AS bound_at,
            {bound_by} AS bound_by,
+           {archived_at} AS archived_at,
            COUNT(r.id) AS run_count,
            COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) AS failed_count,
            MAX(r.started_at) AS last_run_at,
-           (SELECT substr(t.input, 1, {chars})
-              FROM runs AS t
-             WHERE t.session_id = {source}
-             ORDER BY t.started_at ASC, t.id ASC
-             LIMIT 1) AS title
+           {title} AS title
       FROM {frm}
       {where}
      GROUP BY {source}
@@ -242,6 +254,7 @@ def _session_rows(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
             "bound_at": str(row["bound_at"] or ""),
             "bound_by": str(row["bound_by"] or ""),
             "title": str(row["title"] or ""),
+            "archived_at": str(row["archived_at"] or ""),
             "run_count": int(row["run_count"] or 0),
             "failed_count": int(row["failed_count"] or 0),
             "last_run_at": str(row["last_run_at"] or ""),
@@ -256,22 +269,27 @@ def list_workspace_session_stats(
     *,
     limit: int = 50,
     offset: int = 0,
+    include_archived: bool = False,
 ) -> list[dict[str, Any]]:
     """某工作区下的会话及其运行聚合；标题取最早一条输入，时间取最近一次运行。
 
     绑定表是归属的唯一真相，所以从左表出发：刚绑定还没跑过的会话也要出现
-    （`run_count=0`，排序回落到 `bound_at`）。
+    （`run_count=0`，排序回落到 `bound_at`）。归档会话默认不返回，但可以显式要，
+    排序时压在同组末尾——它们的「最近运行」再新也不该盖过在用的会话。
     """
     sql = (
         _SESSION_STATS_SQL.format(
             source="ws.session_id",
             bound_at="ws.bound_at",
             bound_by="ws.bound_by",
-            chars=_TITLE_CHARS,
+            archived_at="ws.archived_at",
+            title=_TITLE_SQL.format(alias="ws", source="ws.session_id", chars=_TITLE_CHARS),
             frm="workspace_sessions ws LEFT JOIN runs r ON r.session_id = ws.session_id",
-            where="WHERE ws.workspace_id = ?",
+            where="WHERE ws.workspace_id = ?"
+            + ("" if include_archived else " AND ws.archived_at IS NULL"),
         )
-        + " ORDER BY COALESCE(MAX(r.started_at), ws.bound_at) DESC, ws.session_id DESC"
+        + " ORDER BY (ws.archived_at IS NOT NULL),"
+        " COALESCE(MAX(r.started_at), ws.bound_at) DESC, ws.session_id DESC"
         " LIMIT ? OFFSET ?"
     )
     rows = conn.execute(sql, (workspace_id, limit, offset)).fetchall()
@@ -281,17 +299,22 @@ def list_workspace_session_stats(
 def list_unbound_session_stats(
     conn: sqlite3.Connection, *, limit: int = 50
 ) -> list[dict[str, Any]]:
-    """还没归属任何工作区的会话（老会话保持可见，不因新模型上线而消失）。"""
+    """还没归属任何工作区的会话（老会话保持可见，不因新模型上线而消失）。
+
+    没有绑定行就没有改名与归档：这里保持只读，排在与 `list_workspace_session_stats`
+    相同的口径上，前端不必为两类会话写两套渲染。
+    """
     sql = (
         _SESSION_STATS_SQL.format(
             source="r.session_id",
             bound_at="NULL",
             bound_by="NULL",
-            chars=_TITLE_CHARS,
-            frm="runs r",
+            archived_at="NULL",
+            title=_TITLE_SQL.format(alias="ws", source="r.session_id", chars=_TITLE_CHARS),
+            frm="runs r LEFT JOIN workspace_sessions ws ON ws.session_id = r.session_id",
             where=(
-                "WHERE NOT EXISTS (SELECT 1 FROM workspace_sessions ws"
-                " WHERE ws.session_id = r.session_id)"
+                "WHERE NOT EXISTS (SELECT 1 FROM workspace_sessions ws2"
+                " WHERE ws2.session_id = r.session_id)"
             ),
         )
         + " ORDER BY COALESCE(MAX(r.started_at), '') DESC, r.session_id DESC"
@@ -299,6 +322,57 @@ def list_unbound_session_stats(
     )
     rows = conn.execute(sql, (limit,)).fetchall()
     return _session_rows(rows)
+
+
+def session_stat(conn: sqlite3.Connection, session_id: str) -> dict[str, Any] | None:
+    """单条会话的运行聚合（标题 / 最近时间 / 次数），给「改完名立刻刷新标题」用。"""
+    sql = _SESSION_STATS_SQL.format(
+        source="ws.session_id",
+        bound_at="ws.bound_at",
+        bound_by="ws.bound_by",
+        archived_at="ws.archived_at",
+        title=_TITLE_SQL.format(alias="ws", source="ws.session_id", chars=_TITLE_CHARS),
+        frm="workspace_sessions ws LEFT JOIN runs r ON r.session_id = ws.session_id",
+        where="WHERE ws.session_id = ?",
+    )
+    row = conn.execute(sql, (session_id,)).fetchone()
+    return _session_rows([row])[0] if row is not None else None
+
+
+def get_workspace_session(conn: sqlite3.Connection, session_id: str) -> dict[str, Any] | None:
+    """取一条会话的绑定行（改名 / 归档前确认它确实归属某个工作区）。"""
+    row = conn.execute(
+        "SELECT * FROM workspace_sessions WHERE session_id=?", (session_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "session_id": str(row["session_id"]),
+        "workspace_id": str(row["workspace_id"]),
+        "bound_at": str(row["bound_at"]),
+        "bound_by": str(row["bound_by"]),
+        "title": str(row["title"] or ""),
+        "archived_at": str(row["archived_at"] or ""),
+    }
+
+
+def set_session_title(conn: sqlite3.Connection, session_id: str, title: str) -> bool:
+    """改会话标题；空串表示恢复「最早一条输入」的默认口径。"""
+    cur = conn.execute(
+        "UPDATE workspace_sessions SET title=? WHERE session_id=?", (title, session_id)
+    )
+    return cur.rowcount > 0
+
+
+def set_session_archived(
+    conn: sqlite3.Connection, session_id: str, archived_at: str | None
+) -> bool:
+    """归档 / 恢复一条会话：只动归档时间，不删绑定也不删 run。"""
+    cur = conn.execute(
+        "UPDATE workspace_sessions SET archived_at=? WHERE session_id=?",
+        (archived_at, session_id),
+    )
+    return cur.rowcount > 0
 
 
 def set_session_workspace(conn: sqlite3.Connection, session_id: str, workspace_id: str) -> None:
@@ -319,11 +393,15 @@ __all__ = [
     "get_repository",
     "get_session_binding",
     "get_workspace",
+    "get_workspace_session",
     "insert_workspace",
     "list_unbound_session_stats",
     "list_workspace_session_stats",
     "list_workspace_sessions",
     "list_workspaces",
+    "session_stat",
+    "set_session_archived",
+    "set_session_title",
     "set_session_workspace",
     "update_workspace",
 ]

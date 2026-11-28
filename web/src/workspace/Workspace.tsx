@@ -1,7 +1,10 @@
 /** 会话工作台：左侧会话栏 + 单行顶栏（会话标题、运行统计、视图 tab）。 */
 import { useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
-import { SessionSidebar, useSessionList } from './SessionSidebar';
+import { fetchWorkspaceSession } from '../api/client';
+import { SessionSidebar } from './SessionSidebar';
+import { useSessionList } from './sidebar-sessions';
 import { Dashboard } from '../pages/Dashboard';
 import { Quality } from '../pages/Quality';
 import { Cost } from '../pages/Cost';
@@ -49,8 +52,17 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
   const sessionId = session ?? draftId;
 
   const sessions = useSessionList();
+  const queryClient = useQueryClient();
+  // 顶栏标题以服务端为准：改名只写进绑定行，runs 聚合里仍是原始输入。
+  const detail = useQuery({
+    queryKey: ['session', session],
+    queryFn: () => fetchWorkspaceSession(session as string),
+    enabled: Boolean(session),
+    retry: 0,
+    staleTime: 30_000,
+  });
   const current = session ? sessions.find((item) => item.id === session) : undefined;
-  const title = session ? (current?.title ?? session) : '新会话';
+  const title = session ? (detail.data?.title || current?.title || session) : '新会话';
   const totalRuns = sessions.reduce((sum, item) => sum + item.runCount, 0);
   const failedRuns = sessions.reduce((sum, item) => sum + item.failedCount, 0);
 
@@ -74,12 +86,6 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
     if (id !== null) setWorkspace(null);
   }
 
-  /** 新会话 = 换一个草稿 id 并清空选中；即使当前已经在「新会话」也生效。 */
-  function startNewSession() {
-    setDraftId(newId('sess'));
-    switchSession(null);
-  }
-
   /** 在某个工作区里新开会话：草稿记住它，首轮请求带上 workspace_id 由后端落绑定。 */
   function startNewInWorkspace(workspaceId: string) {
     setDraftId(newId('sess'));
@@ -90,15 +96,16 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
   /** 首次发送：把草稿 id 写回 URL，让刷新/深链能回到同一会话。 */
   function handleFirstSend() {
     if (!session) switchSession(draftId);
+    // 后端刚落下归属，立刻重取分组：新会话要在工作区底下出现，而不是等 15s 轮询。
+    void queryClient.invalidateQueries({ queryKey: ['workspace-sessions'] });
   }
 
   return (
     <div className="workspace">
       <SessionSidebar
         selected={session}
-        workspace={workspace}
+        draft={!session && workspace ? { id: draftId, workspaceId: workspace, title: '新会话' } : null}
         onSelect={switchSession}
-        onNew={startNewSession}
         onNewInWorkspace={startNewInWorkspace}
       />
       <div className="workspace-main">
@@ -131,6 +138,7 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
               key={sessionId}
               session={sessionId}
               workspace={session ? null : workspace}
+              needsWorkspace={!session && !workspace}
               onFirstSend={handleFirstSend}
               onOpenTrace={() => switchTab('trace')}
             />

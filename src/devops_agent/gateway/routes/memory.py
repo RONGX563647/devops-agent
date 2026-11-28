@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from devops_agent.config import load_memory
 from devops_agent.memory.context import clip
+from devops_agent.memory.long_term import resolve_scope_id
 from devops_agent.memory.runtime import memory_status
 from devops_agent.observability import repository as repo
 
@@ -22,10 +23,8 @@ def _db() -> Any:
 
 
 def _scope_id(scope: str, session_id: str) -> str:
-    policy = load_memory()
-    if scope == "user":
-        return policy.user_id or f"session:{session_id}"
-    return policy.user_id or f"session:{session_id}"
+    """管理接口的 scope_id 与运行时同源：session 档只看会话键，user 档才用 user_id。"""
+    return resolve_scope_id(load_memory(), session_id, scope)
 
 
 @router.get("/status")

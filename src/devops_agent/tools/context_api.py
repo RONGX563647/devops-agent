@@ -25,6 +25,7 @@ from devops_agent.config import load_memory, load_model
 from devops_agent.governance.model import PermissionProfile
 from devops_agent.governance.presets import UnknownProfile, default_profile, resolve
 from devops_agent.memory.budget import compute_budget
+from devops_agent.memory.long_term import resolve_scope_id
 from devops_agent.memory.tokens import estimate_tokens
 from devops_agent.observability import repository as repo
 from devops_agent.runtime.profile_note import policy_note
@@ -111,7 +112,7 @@ def _session_facts(session: str | None) -> dict[str, Any]:
             repo.init_db(conn)
             saved = repo.load_session_state(conn, session)
             active = repo.active_memory(conn, session)
-            scope_id = policy.user_id or f"session:{session}"
+            scope_id = resolve_scope_id(policy, session)
             memory["long_term_entries"] = repo.count_long_term(
                 conn, policy.long_term.scope, scope_id
             )

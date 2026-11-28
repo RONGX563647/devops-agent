@@ -21,6 +21,23 @@ MEMORY_SPAN_NAMES = {
 _MAX_TEXT = 20_000
 
 
+def _detail(event: dict[str, object]) -> dict[str, Any]:
+    """事件明细统一在 `memory` 子对象里；顶层字段只是旧帧的兼容回退。"""
+    raw = event.get("memory")
+    detail: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+    detail["state"] = str(event.get("state", "ok") or "ok")
+    reason = str(event.get("reason", "") or "")
+    if reason:
+        detail["reason"] = reason
+    return detail
+
+
+def _nested(detail: dict[str, Any], event: dict[str, object], key: str) -> Any:
+    """先读明细，再回落顶层：只读一处会让老帧和新帧各自为政。"""
+    value = detail.get(key)
+    return value if value not in (None, "") else event.get(key)
+
+
 def memory_span(
     event: dict[str, object], *, run_id: int, seq: int, start_offset_ms: int
 ) -> SpanRecord | None:
@@ -28,22 +45,17 @@ def memory_span(
     name = MEMORY_SPAN_NAMES.get(str(event.get("type", "")))
     if name is None:
         return None
-    state = str(event.get("state", "ok") or "ok")
-    status = "error" if state == "error" else "ok"
-    reason = str(event.get("reason", "") or "")
-    raw = event.get("memory")
-    detail: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
-    detail["state"] = state
-    if reason:
-        detail["reason"] = reason
+    detail = _detail(event)
+    status = "error" if detail["state"] == "error" else "ok"
+    reason = str(detail.get("reason", ""))
     return SpanRecord(
         id=None,
         run_id=run_id,
         type="memory",
         name=name,
         start_offset_ms=start_offset_ms,
-        duration_ms=_as_int(event.get("latency_ms", 0)),
-        input=str(event.get("query", "") or reason)[:_MAX_TEXT],
+        duration_ms=_as_int(_nested(detail, event, "latency_ms") or 0),
+        input=str(_nested(detail, event, "query") or reason)[:_MAX_TEXT],
         output=json.dumps(detail, ensure_ascii=False)[:_MAX_TEXT],
         tokens=0,
         status=status,

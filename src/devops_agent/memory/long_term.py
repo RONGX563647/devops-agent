@@ -20,7 +20,7 @@ from typing import Any
 
 from devops_agent.memory.bm25 import BM25Index, Doc, Scored
 from devops_agent.memory.summarize import normalize, similar
-from devops_agent.memory_policy import LongTermPolicy
+from devops_agent.memory_policy import LongTermPolicy, MemoryPolicy
 from devops_agent.observability import repository as repo
 
 _WORDS = re.compile(r"[a-zA-Z0-9_]{2,}")
@@ -38,6 +38,19 @@ class Hit:
 
     def as_dict(self) -> dict[str, Any]:
         return {"id": self.id, "text": self.text, "score": self.score, "kind": self.kind}
+
+
+def resolve_scope_id(policy: MemoryPolicy, session_id: str, scope: str | None = None) -> str:
+    """解析长期记忆的 scope_id：`user` 档才用 user_id，其余一律回落会话键。
+
+    运行时、管理接口与上下文工具必须共用这一条规则。旧的管理接口两个分支
+    写得一模一样（都返回 `policy.user_id or ...`），`scope=session` 时读到的
+    其实是用户分区，按会话看到的条目数与运行时召回对不上。
+    """
+    effective = scope or policy.long_term.scope
+    if effective == "user" and policy.user_id:
+        return policy.user_id
+    return f"session:{session_id}"
 
 
 def _tokens(text: str) -> set[str]:

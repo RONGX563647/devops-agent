@@ -285,7 +285,13 @@ class MemoryMiddleware(MiddlewareBase):
     async def _assemble(
         self, agent: Agent, messages: list[Msg], turn: str, budget: Any
     ) -> tuple[str, dict[str, Any]]:
-        """召回三层内容并决定这一轮是否真的注入（版本未变则跳过）。"""
+        """召回三层内容并装配 note。
+
+        注入内容不写回历史，所以「版本没变」不等于「模型还记得」：每轮都要重新
+        注入。此前按 `(episodic_version, long_term_hash)` 跨轮去重，第二轮起记忆卡
+        就从请求里消失，模型只看到「我记得过」这件事发生过。
+        去重只保留同一轮内多次模型调用复用（`_note_cache`）。
+        """
         query = _last_user_text(messages)
         self._runtime.sink.emit(
             events.frame(
@@ -298,18 +304,14 @@ class MemoryMiddleware(MiddlewareBase):
         result = await self._runtime.recall(query)
         card, hits = result.card, result.hits
         marker = self._runtime.marker(card, hits, turn)
-        unchanged = self._unchanged(agent, marker, turn)
-        note = (
-            ""
-            if unchanged
-            else self._runtime.note(card, hits, note_max_chars=self._runtime.note_limit(budget))
-        )
-        self._remember(agent, marker)
+        note = self._runtime.note(card, hits, note_max_chars=self._runtime.note_limit(budget))
         # 降级优先于 hit/miss：后端挂了却显示「没命中」，等于把故障伪装成正常
         if result.degraded:
             state, reason = "error", result.reason
-        elif unchanged:
-            state, reason = "skipped", events.REASON_UNCHANGED
+        elif not note and (card or hits):
+            # 有内容但一个字符都没塞进去：额度被预算压到 0。报 miss 会让
+            # 「记忆没被注入」看起来像「没有记忆」，评测与排障都判断错方向。
+            state, reason = "skipped", events.REASON_BUDGET_EXHAUSTED
         else:
             state, reason = ("hit" if note else "miss"), ("" if note else events.REASON_NO_MEMORY)
         meta = {
@@ -334,26 +336,6 @@ class MemoryMiddleware(MiddlewareBase):
             )
         )
         return note, meta
-
-    @staticmethod
-    def _unchanged(agent: Agent, marker: dict[str, Any], turn: str) -> bool:
-        """同一版本、同一批命中且不是同一轮：视为已经注入过，不再重复。"""
-        middle = getattr(agent.state, "middle_context", {}) or {}
-        previous = middle.get("memory") or {}
-        # 老快照只有 reply_id：读不到 turn_key 时回落到它，避免升级后重复注入一轮
-        previous_turn = str(previous.get("turn_key", previous.get("reply_id", "")) or "")
-        return (
-            previous.get("episodic_version") == marker["episodic_version"]
-            and previous.get("long_term_hash") == marker["long_term_hash"]
-            and previous_turn != turn
-        )
-
-    @staticmethod
-    def _remember(agent: Agent, marker: dict[str, Any]) -> None:
-        """把版本/命中标记写回 middle_context；只存短标记，不存 note 全文。"""
-        middle = getattr(agent.state, "middle_context", {}) or {}
-        middle["memory"] = marker
-        agent.state.middle_context = middle
 
     @staticmethod
     def _payload(

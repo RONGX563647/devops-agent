@@ -2,6 +2,8 @@
 
 from devops_agent.config import clear_cache, load_memory
 from devops_agent.memory.budget import compute_budget
+from devops_agent.memory.long_term import resolve_scope_id
+from devops_agent.memory_policy import LongTermPolicy, MemoryPolicy
 
 
 def _budget(**overrides: object):
@@ -49,6 +51,15 @@ def test_disabled_layers_move_share_to_short_term() -> None:
     assert budget.episodic == 0
     assert budget.long_term == 0
     assert budget.short_term == int(81600 * 0.9)
+
+
+def test_resolve_scope_id_switches_on_scope_and_user() -> None:
+    session = MemoryPolicy(user_id="u1", long_term=LongTermPolicy(scope="session"))
+    user = MemoryPolicy(user_id="u1", long_term=LongTermPolicy(scope="user"))
+    user_without_id = MemoryPolicy(user_id="", long_term=LongTermPolicy(scope="user"))
+    assert resolve_scope_id(session, "s1") == "session:s1"
+    assert resolve_scope_id(user, "s1") == "u1"
+    assert resolve_scope_id(user_without_id, "s1") == "session:s1"
 
 
 def test_load_memory_reads_yaml_and_env_override(monkeypatch) -> None:  # type: ignore[no-untyped-def]

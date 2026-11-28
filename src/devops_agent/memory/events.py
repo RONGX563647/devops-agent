@@ -24,7 +24,9 @@ CONTEXT_ESTIMATE_DELTA = "CONTEXT_ESTIMATE_DELTA"
 # `reason` 是枚举而不是自由文本：前端按它做过滤与提示，异常细节另有字段。
 # 降级（error）与「确实没有」（miss）必须可区分，否则故障永远看起来像正常空结果。
 REASON_NO_MEMORY = "no_memory"
-REASON_UNCHANGED = "unchanged"
+#: 有记忆但注入额度被预算压到 0：与「确实没有记忆」必须分开，否则评测会把
+#: 「预算不够」统计成「召回失败」。
+REASON_BUDGET_EXHAUSTED = "budget_exhausted"
 REASON_EPISODIC_UNAVAILABLE = "episodic_unavailable"
 REASON_LONG_TERM_UNAVAILABLE = "long_term_unavailable"
 REASON_WRITE_FAILED = "write_failed"

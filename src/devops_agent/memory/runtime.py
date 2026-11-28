@@ -25,9 +25,10 @@ from devops_agent.memory.calibration import drift
 from devops_agent.memory.candidate import is_candidate
 from devops_agent.memory.context import build_note, clip
 from devops_agent.memory.episodic import EpisodicMemory
-from devops_agent.memory.long_term import Hit, build_long_term
+from devops_agent.memory.long_term import Hit, build_long_term, resolve_scope_id
 from devops_agent.memory.short_term import TrimReport, trim_context_for_snapshot
 from devops_agent.memory.sink import MemorySink
+from devops_agent.memory.snapshot import stamp_snapshot
 from devops_agent.memory.summarize import kind_of, summarize
 from devops_agent.memory.tokens import count_prefix
 from devops_agent.memory.tokens import default as tokenizer
@@ -40,6 +41,20 @@ _MAX_WRITE_CHARS = 1000
 def _hit_hash(hits: list[Hit]) -> str:
     body = ",".join(str(hit.id) for hit in hits)
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:8]
+
+
+def _summary_chars(summary: object) -> int:
+    """摘要可能是字符串或文本块列表；只算字符数，用于从快照预算里扣掉。"""
+    if isinstance(summary, str):
+        return len(summary)
+    if not isinstance(summary, list):
+        return 0
+    total = 0
+    for block in summary:
+        text = getattr(block, "text", "")
+        if isinstance(text, str):
+            total += len(text)
+    return total
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,13 +129,29 @@ class MemoryRuntime:
 
     def __post_init__(self) -> None:
         self.episodic = EpisodicMemory(self.policy.episodic, self.db_path)
-        scope_id = self.policy.user_id or f"session:{self.session_id}"
+        scope_id = resolve_scope_id(self.policy, self.session_id)
         choice = build_long_term(self.policy.long_term, scope_id, self.db_path)
         self.long_term = choice.backend
         # backend_name 是「实际生效」的那个：事件与 /health 都拿它，避免把请求值当结果
         self.backend_name = choice.effective
         self.backend_requested = choice.requested
         self.backend_reason = choice.reason or str(getattr(choice.backend, "reason", ""))
+        self._purge_expired()
+
+    def _purge_expired(self) -> None:
+        """会话创建时清一次过期条目。
+
+        `delete_expired` 此前只有导出、没有调用方：过期条目只能等写入时碰巧覆盖，
+        库会无限增长，而且被 TTL 判死的旧结论仍能被召回。
+        """
+        if not self.policy.enabled:
+            return
+        try:
+            with repo.connect(self.db_path) as conn:
+                repo.init_db(conn)
+                repo.delete_expired(conn)
+        except Exception:  # noqa: BLE001 - 清理失败不该挡住记忆读写，下次创建再试
+            pass
 
     # --- 预算 ---------------------------------------------------------
     def budget(self, agent: Agent | None, prefix_tokens: int) -> Budget:
@@ -351,11 +382,16 @@ class MemoryRuntime:
         裁剪必须发事件：`MEMORY_TRIM(reason=snapshot_cap)` 是「这一轮不是请求裁剪
         丢的历史，而是快照时丢的」的唯一证据，丢了它就只能看到上下文莫名变短
         （SPEC-0013 §18.2 M6）。
+
+        历史额度要扣掉已有摘要：`snapshot_max_chars` 是整份 `state_json` 的上限，
+        摘要和上下文各算各的会稳定超出。版本号借 `stamp_snapshot` 写回——
+        那个函数此前没有任何调用方，`/api/context` 一直读不到真实版本。
         """
+        stamp_snapshot(agent.state, self.policy.context.snapshot_version)
         context = list(getattr(agent.state, "context", []) or [])
-        trimmed, report = trim_context_for_snapshot(
-            context, self.policy.short_term, self.policy.context.snapshot_max_chars
-        )
+        summary_chars = _summary_chars(getattr(agent.state, "summary", ""))
+        limit = max(0, self.policy.context.snapshot_max_chars - summary_chars)
+        trimmed, report = trim_context_for_snapshot(context, self.policy.short_term, limit)
         if report.dropped_turns <= 0:
             return report
         agent.state.context = trimmed
@@ -428,7 +464,7 @@ def memory_status() -> dict[str, Any]:
 def session_counts(session_id: str) -> dict[str, int]:
     """某个会话的两层条数（管理接口用）；读不到时返回 0。"""
     policy = load_memory()
-    scope_id = policy.user_id or f"session:{session_id}"
+    scope_id = resolve_scope_id(policy, session_id)
     try:
         with repo.connect() as conn:
             repo.init_db(conn)

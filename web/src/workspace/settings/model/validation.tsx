@@ -1,7 +1,7 @@
 /** 模型参数的本地校验与提示文案：服务端仍是唯一裁判。 */
 
-import { ApiError } from '../../api/client';
-import type { ModelBound, ModelPatch, ModelValues } from '../../types';
+import { ApiError } from '../../../api/client';
+import type { ModelBound, ModelPatch, ModelValues } from '../../../types';
 
 /** 推理强度的可选项：与后端 BOUNDS 的 choices 一致，后端仍是唯一裁判。 */
 export const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];

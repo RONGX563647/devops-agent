@@ -302,6 +302,19 @@ def count_long_term(conn: sqlite3.Connection, scope: str, scope_id: str) -> int:
     return int(row["n"])
 
 
+def store_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    """全库两层条目数（跨作用域，含过期行）。
+
+    回答的是「长期层到底有没有内容」—— 只看开关与后端名（`/api/memory/status`
+    原来只有这些）无法区分「配好了但一条没写」与「写进去又被清掉」。过期行也
+    计入：它们还在表里，读的人要能看见「表里有 16 条，其中 3 条已过期」。
+    """
+    return {
+        "episodic": int(conn.execute("SELECT COUNT(*) FROM session_memories").fetchone()[0]),
+        "long_term": int(conn.execute("SELECT COUNT(*) FROM long_term_memories").fetchone()[0]),
+    }
+
+
 def delete_long_term(conn: sqlite3.Connection, memory_id: int) -> bool:
     cur = conn.execute("DELETE FROM long_term_memories WHERE id=?", (memory_id,))
     return cur.rowcount > 0

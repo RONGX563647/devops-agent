@@ -102,7 +102,7 @@ DOMAINS: tuple[DomainSpec, ...] = (
         model="ModelSettings",
         writable=False,
         managed_by="model_settings",
-        note="写入口在输入栏齿轮抽屉（会话覆盖 / 全局默认两层）。",
+        note="写入口在设置 › 模型与网关 › 模型参数（会话覆盖 / 全局默认两层）。",
     ),
     DomainSpec(
         key="sandbox",

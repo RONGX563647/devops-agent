@@ -6,8 +6,8 @@
  *    ——正是 A44 要守的那条线。
  */
 
-import type { MatchKind, ModelCapability, ModelValues, ProviderModel } from '../../types';
-import { formatTokens } from '../ContextRing';
+import type { MatchKind, ModelCapability, ModelValues, ProviderModel } from '../../../types';
+import { formatTokens } from '../../ContextRing';
 
 /** 来源徽标文案。键是后端 `sources` 的取值，不在这里的走 `UNKNOWN_SOURCE`。 */
 export const SOURCE_LABEL: Record<string, string> = {

@@ -7,8 +7,8 @@
  */
 
 import { useState } from 'react';
-import { fetchProviderModels, fetchProviders, refreshProviderModels } from '../../api/client';
-import type { ProviderModel, ProvidersPayload } from '../../types';
+import { fetchProviderModels, fetchProviders, refreshProviderModels } from '../../../api/client';
+import type { ProviderModel, ProvidersPayload } from '../../../types';
 
 /** 一次模型列表取数的结果。`code` 为 `''` 表示还没取过。 */
 export interface ModelsState {

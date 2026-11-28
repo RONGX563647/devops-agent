@@ -16,15 +16,23 @@ import { send } from './store/actions';
 import { ensureHistory } from './store/history';
 import { newId } from './id';
 
+/** 一级导航按性质分三组（SPEC-0022 §4.1）。
+ *
+ * 七个 tab 平铺时，「会话级」「跨会话观测」「配置」三种性质挤在一行，
+ * 用户不知道该往哪看。分组只是加一层视觉层次，`parseTab` 的合法集合不变 ——
+ * 旧深链（`?tab=secrets`）零改动。
+ */
 const TABS = [
-  { key: 'chat', label: '对话' },
-  { key: 'trace', label: '轨迹' },
-  { key: 'metrics', label: '指标' },
-  { key: 'quality', label: '质量' },
-  { key: 'cost', label: '成本' },
-  { key: 'secrets', label: '密钥' },
-  { key: 'settings', label: '设置' },
+  { key: 'chat', label: '对话', group: '会话' },
+  { key: 'trace', label: '轨迹', group: '会话' },
+  { key: 'metrics', label: '指标', group: '观测' },
+  { key: 'quality', label: '质量', group: '观测' },
+  { key: 'cost', label: '成本', group: '观测' },
+  { key: 'secrets', label: '密钥', group: '观测' },
+  { key: 'settings', label: '设置', group: '配置' },
 ] as const;
+
+const TAB_GROUPS = [...new Set(TABS.map((t) => t.group))];
 
 export type TabKey = (typeof TABS)[number]['key'];
 
@@ -122,16 +130,23 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
             工作区
           </Link>
           <nav className="workspace-tabs" role="tablist" aria-label="会话视图">
-            {TABS.map((t) => (
-              <button
-                key={t.key}
-                role="tab"
-                aria-selected={tab === t.key}
-                className={`workspace-tab ${tab === t.key ? 'active' : ''}`}
-                onClick={() => switchTab(t.key)}
-              >
-                {t.label}
-              </button>
+            {TAB_GROUPS.map((group) => (
+              <div className="workspace-tabgroup" key={group} role="group" aria-label={group}>
+                <span className="workspace-tabgroup-label" aria-hidden="true">
+                  {group}
+                </span>
+                {TABS.filter((t) => t.group === group).map((t) => (
+                  <button
+                    key={t.key}
+                    role="tab"
+                    aria-selected={tab === t.key}
+                    className={`workspace-tab ${tab === t.key ? 'active' : ''}`}
+                    onClick={() => switchTab(t.key)}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
             ))}
           </nav>
         </header>
@@ -165,10 +180,11 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
           {tab === 'quality' && <Quality />}
           {tab === 'cost' && <Cost />}
           {tab === 'secrets' && <SecretsTab />}
-                    {tab === 'settings' && (
+          {tab === 'settings' && (
             <SettingsTab
-              key={params.get('domain') ?? 'default'}
-              initialDomain={params.get('domain')}
+              key={`${params.get('section') ?? ''}:${params.get('domain') ?? ''}:${params.get('field') ?? ''}`}
+              initialSection={params.get('section') ?? params.get('domain')}
+              initialField={params.get('field')}
             />
           )}
         </main>

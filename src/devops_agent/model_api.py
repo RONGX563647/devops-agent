@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from devops_agent import model_settings
 from devops_agent.model_catalog import ProviderError, get_catalog
+from devops_agent.model_catalog_view import capability_of, catalog_block, soft_warnings
 from devops_agent.model_settings import InvalidConfig
 from devops_agent.observability import repository as repo
 from devops_agent.observability.recorder import utc_now
@@ -55,6 +56,14 @@ class SessionModelRequest(BaseModel):
 
     overrides: dict[str, Any] = Field(default_factory=dict)
     session_id: str | None = None
+
+
+class PreviewRequest(BaseModel):
+    """草稿预览：算「如果保存会怎样」，不落库、不改会话。"""
+
+    patch: dict[str, Any] = Field(default_factory=dict)
+    session: str | None = None
+    domain: str = DEFAULT_DOMAIN
 
 
 # --- 内部：读写与校验 ---------------------------------------------------
@@ -116,17 +125,6 @@ def _conflict(version: int, resolved: dict[str, Any]) -> HTTPException:
     )
 
 
-def _capability(values: dict[str, Any]) -> Any:
-    """当前模型的能力卡（四源合并）。查不到返回 None，不抛 —— 面板要能显示。"""
-    try:
-        return get_catalog().capability(
-            str(values.get("provider") or ""), str(values.get("model") or "")
-        )
-    except Exception:  # noqa: BLE001 - 能力查询失败不该让配置读取 500
-        logger.warning("能力卡查询失败", exc_info=True)
-        return None
-
-
 def _check_provider(values: dict[str, Any]) -> None:
     """`provider` 的合法性在运行期用注册表判（BOUNDS 里写死 id 会随 yaml 失效）。"""
     provider = values.get("provider")
@@ -136,6 +134,54 @@ def _check_provider(values: dict[str, Any]) -> None:
         get_catalog().registry.get(str(provider))
     except ProviderError as exc:
         raise _invalid(InvalidConfig("provider", exc.reason)) from None
+
+
+def _ensure_model_in_provider(values: dict[str, Any]) -> None:
+    """`(provider, model)` 是一个键：只换网关时，模型名必须在新家存在。
+
+    现在的两级下拉允许「换了网关、模型名还指向旧家」，实际表现是请求发到一个
+    不认识的模型名（404/400），用户看不出是配置错了。`available` 让前端直接把
+    候选列出来让他改。已知列表为空表示「还没取过」，不据此拒绝。
+    """
+    provider = str(values.get("provider") or "")
+    model = str(values.get("model") or "")
+    if not provider or not model:
+        return
+    try:
+        known = get_catalog().known_models(provider)
+    except ProviderError:
+        return  # 注册表坏了由 _check_provider 报，这里不重复报同一件事
+    if known and model not in known:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "model_not_in_provider",
+                "provider": provider,
+                "model": model,
+                "available": known[:20],
+            },
+        )
+
+
+def _preview_errors(values: dict[str, Any]) -> list[dict[str, str]]:
+    """字段级错误：服务端仍是唯一裁判，预览只负责指出是哪一行。"""
+    errors: list[dict[str, str]] = []
+    try:
+        _check_provider(values)
+    except HTTPException as exc:
+        detail: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
+        errors.append(
+            {
+                "field": str(detail.get("field") or "provider"),
+                "reason": str(detail.get("reason") or exc.detail),
+            }
+        )
+    cap = capability_of(values)
+    try:
+        model_settings.validate(values, schema=cap.parameter_schema if cap else None)
+    except InvalidConfig as exc:
+        errors.append({"field": exc.field, "reason": exc.reason})
+    return errors
 
 
 def _checked_values(
@@ -155,67 +201,12 @@ def _checked_values(
     )
     values = model_settings.values_of(resolved)
     _check_provider(values)
-    cap = _capability(values)
+    cap = capability_of(values)
     try:
         model_settings.validate(values, schema=cap.parameter_schema if cap else None)
     except InvalidConfig as exc:
         raise _invalid(exc, remedy=remedy) from None
     return values
-
-
-def _registry_view(values: dict[str, Any]) -> tuple[int, str]:
-    """注册表里有几个网关、当前生效的是哪一个。
-
-    面板的下拉框要一个具体值：空 provider 表示「跟随注册表默认」，这里替它算出
-    到底是哪一个 —— 否则界面显示空选项，实际却已经连上了某个网关。
-    """
-    provider = str(values.get("provider") or "")
-    try:
-        registry = get_catalog().registry
-    except ProviderError:
-        return 0, provider
-    return len(registry.providers), provider or registry.default_id
-
-
-def _current_view(cap: Any, model: str) -> dict[str, Any]:
-    """当前模型的匹配与来源。查不到能力卡时给一张「什么都没查到」的形状。"""
-    if cap is None:
-        return {
-            "matched_by": "none",
-            "context_source": "",
-            "card_may_be_stale": False,
-            "status": "",
-            "deprecated_at": None,
-            "label": model,
-        }
-    context_source = cap.source_of("context_size")
-    return {
-        "matched_by": cap.matched_by,
-        "context_source": context_source,
-        "card_may_be_stale": context_source == "card",
-        "status": cap.status,
-        "deprecated_at": cap.deprecated_at or None,
-        "label": cap.label,
-    }
-
-
-def _catalog_block(values: dict[str, Any]) -> dict[str, Any]:
-    """`/api/model-config` 的 `catalog` 段：这个模型的能力从哪来。"""
-    configured, provider = _registry_view(values)
-    model = str(values.get("model") or "")
-    return {
-        "providers_configured": configured,
-        "provider": provider,
-        "current": _current_view(_capability(values), model),
-    }
-
-
-def _soft_warnings(values: dict[str, Any]) -> list[str]:
-    """模型名匹配不上只警告不报错：网关的 `/models` 常不全，手填是合法用法。"""
-    cap = _capability(values)
-    if cap is not None and cap.matched_by == "none" and values.get("model"):
-        return ["未在内置卡中找到该模型，窗口按未校准处理"]
-    return []
 
 
 def _body_payload(
@@ -231,8 +222,8 @@ def _body_payload(
     )
     values = model_settings.values_of(resolved)
     body = model_settings.payload(resolved, version)
-    body["catalog"] = _catalog_block(values)
-    body["warnings"] = [*body["warnings"], *_soft_warnings(values)]
+    body["catalog"] = catalog_block(values)
+    body["warnings"] = [*body["warnings"], *soft_warnings(values)]
     return body
 
 
@@ -302,6 +293,29 @@ def read_model_config(session: str | None = None, domain: str = DEFAULT_DOMAIN) 
     return body
 
 
+@router.post("/api/model-config/preview")
+def preview_model_config(req: PreviewRequest) -> dict[str, Any]:
+    """草稿预览：不落库、不改会话，回「如果保存会生效什么」。
+
+    存在的理由只有一个：右栏的「改了会怎样」必须是**具体数字**，而口径只能
+    在后端（前端重算 `worst_case_attempts` 就是第二个真相）。顺带把「保存才知
+    道 400」提前成字段级提示。
+    """
+    stored, version = _stored_now()
+    overrides = _session_overrides(req.session) if req.session else None
+    try:
+        draft = model_settings.apply_patch(stored, req.patch)
+    except InvalidConfig as exc:
+        # patch 里有未知键：连解析都不必做，直接把字段打回去
+        return {"version": version, "errors": [{"field": exc.field, "reason": exc.reason}]}
+    resolved = model_settings.resolve(overrides, draft, domain=req.domain, capability=get_catalog())
+    values = model_settings.values_of(resolved)
+    body = model_settings.payload(resolved, version)
+    body["catalog"] = catalog_block(values)
+    body["errors"] = _preview_errors(values)
+    return body
+
+
 @router.patch("/api/model-config")
 def patch_model_config(req: PatchRequest, request: Request) -> dict[str, Any]:
     """改部署默认：写 DB → 让活跃会话热替换（跑着的记 deferred）。"""
@@ -315,7 +329,9 @@ def patch_model_config(req: PatchRequest, request: Request) -> dict[str, Any]:
         merged = model_settings.apply_patch(stored, req.patch)
     except InvalidConfig as exc:
         raise _invalid(exc) from None
-    _checked_values(merged)
+    values = _checked_values(merged)
+    if "provider" in req.patch and "model" not in req.patch:
+        _ensure_model_in_provider(values)
     new_version = _save_stored(merged, expected=version, previous=stored)
     affected = registry_for(request).broadcast_model_defaults()
     return {**_body_payload(merged, new_version), "affected": affected}
@@ -394,7 +410,9 @@ def patch_session_model_config(
         merged = model_settings.apply_patch(overrides, req.overrides)
     except InvalidConfig as exc:
         raise _invalid(exc) from None
-    _checked_values(stored, merged)
+    values = _checked_values(stored, merged)
+    if "provider" in req.overrides and "model" not in req.overrides:
+        _ensure_model_in_provider(values)
     _save_overrides(session_id, merged)
     applied = registry_for(request).apply_model_params(session_id, merged)
     return {

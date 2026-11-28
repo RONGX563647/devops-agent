@@ -186,7 +186,7 @@ def warn_memory_backend() -> None:
     同一句「有记忆」，只有排障时才会发现根本没走向量检索。与缺依赖同理：
     只报警不拒绝启动，降级本身是可用状态。
     """
-    from devops_agent.memory.runtime import memory_status
+    from devops_agent.memory.status import memory_status
 
     status = memory_status()
     if status.get("reason"):

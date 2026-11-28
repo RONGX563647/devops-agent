@@ -100,6 +100,34 @@ def finish_run(
     )
 
 
+def reap_orphan_runs(
+    conn: sqlite3.Connection, *, started_before: str, ended_at: str, reason: str
+) -> int:
+    """把「上次进程没来得及收尾」的 running 行改成 failed，返回改动条数。
+
+    进程被杀（`uvicorn --reload`、Ctrl-C、崩溃）时 `finally` 里的 `finish()` 不保证
+    跑到，这些行会永远停在 `running`：失败率被算低、前端一直显示「进行中」，而且
+    没有 `ended_at` 的样本会污染耗时统计。
+
+    只碰 `started_at` 早于阈值的行：同一进程里仍在跑的长轮次、以及多 worker 共享
+    同一个库时其他进程正在写的 run 都不能被误伤。
+    """
+    cur = conn.execute(
+        """UPDATE runs
+              SET status='failed',
+                  ended_at=?,
+                  duration_ms=MAX(
+                      0, CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER)
+                  ),
+                  error=CASE WHEN error='' THEN ? ELSE error END
+            WHERE status='running'
+              AND (ended_at IS NULL OR ended_at='')
+              AND started_at < ?""",
+        (ended_at, ended_at, reason, started_before),
+    )
+    return int(cur.rowcount)
+
+
 def set_run_web_access(conn: sqlite3.Connection, run_id: int, payload: str) -> None:
     """写入本轮网络获取决策（JSON）。
 

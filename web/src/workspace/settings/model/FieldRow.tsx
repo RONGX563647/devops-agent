@@ -11,7 +11,7 @@
  */
 
 import type { ReactNode } from 'react';
-import type { ModelBound, ModelLayer, ModelPatch, ModelSource } from '../../types';
+import type { ModelBound, ModelLayer, ModelPatch, ModelSource } from '../../../types';
 import type { FieldSpec } from './groups';
 import { NumInput } from './NumInput';
 import { SourceBadge } from './Row';

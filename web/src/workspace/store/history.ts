@@ -37,12 +37,31 @@ function spanLabel(span: Span): string {
   return span.name || '工具';
 }
 
-/** span → 过程步骤：`start_offset_ms` 是相对运行开始的偏移，只能配合 run 起点还原。 */
-function spanToStep(run: Run, span: Span): ProcessEntry | null {
+/** 起止时间：offset 相对 run 起点，duration 为 0 时不编一个结束时间出来。 */
+function spanTimes(run: Run, span: Span): { at: string; endedAt: string | null } | null {
   const base = Date.parse(run.started_at);
   if (Number.isNaN(base)) return null;
   const offset = Math.max(0, span.start_offset_ms);
   const duration = Math.max(0, span.duration_ms ?? 0);
+  return {
+    at: new Date(base + offset).toISOString(),
+    endedAt: duration > 0 ? new Date(base + offset + duration).toISOString() : null,
+  };
+}
+
+/** 逐调用 token 分拆；老记录是 undefined，统一按 0 进图表。 */
+function spanTokens(span: Span): { tokensIn: number; tokensOut: number; cacheTokens: number } {
+  return {
+    tokensIn: span.input_tokens ?? 0,
+    tokensOut: span.output_tokens ?? 0,
+    cacheTokens: span.cache_input_tokens ?? 0,
+  };
+}
+
+/** span → 过程步骤。 */
+function spanToStep(run: Run, span: Span): ProcessEntry | null {
+  const times = spanTimes(run, span);
+  if (!times) return null;
   const detail = spanDetail(span);
   return {
     id: `span-${run.id}-${span.id}`,
@@ -50,14 +69,11 @@ function spanToStep(run: Run, span: Span): ProcessEntry | null {
     label: spanLabel(span),
     detail,
     state: span.status === 'error' ? 'error' : 'success',
-    at: new Date(base + offset).toISOString(),
-    endedAt: duration > 0 ? new Date(base + offset + duration).toISOString() : null,
+    ...times,
     toolName: span.type === 'tool' ? span.name : undefined,
     args: span.input || undefined,
     result: detail || undefined,
-    tokensIn: span.input_tokens ?? 0,
-    tokensOut: span.output_tokens ?? 0,
-    cacheTokens: span.cache_input_tokens ?? 0,
+    ...spanTokens(span),
   };
 }
 

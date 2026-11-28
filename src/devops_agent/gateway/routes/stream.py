@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from devops_agent.gateway.contract import REQUEST_ID_HEADER, SSE_HEADERS, SSE_MEDIA_TYPE
 from devops_agent.gateway.routes.deps import (
+    execution_for,
     profile_or_403,
     registry_of,
     resolve_workspace,
@@ -45,6 +46,7 @@ async def run_stream(
     settings = settings_of(request)
     # 1.5) 工作区解析：绑定/显式 id 决定执行目录与记忆作用域；未启用时为 None
     workspace = resolve_workspace(request, req.session_id, req.workspace_id)
+    execution = await execution_for(request, workspace)
     # 2) 会话租约：返回之后才开始吐流，所以并发错误还能用 4xx 表达
     lease = await open_lease(
         registry_of(request),
@@ -54,6 +56,7 @@ async def run_stream(
         settings=settings,
         request_id=x_request_id or "",
         workspace=workspace,
+        execution=execution,
     )
     # 3) 编排：一轮的业务顺序（结清 → 解析 → 转发 → 收尾）在 turn/orchestrate.py
     return StreamingResponse(

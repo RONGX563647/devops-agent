@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../../api/http';
-import { basename, errorText, repoName, shortPath, sourceDetail } from './meta';
+import { basename, errorText, repoName, shortPath, sourceDetail, sourceLabel } from './meta';
 
 describe('工作区文案', () => {
   it('已知错误码翻成能指导下一步的中文', () => {
@@ -45,5 +45,17 @@ describe('工作区文案', () => {
     expect(repoName('git@github.com:acme/demo.git')).toBe('demo');
     expect(sourceDetail({ source: 'git', branch: 'main' })).toBe('受管克隆 · main');
     expect(sourceDetail({ source: 'local', branch: '' })).toBe('原地引用');
+    // 工作树是第三种来源：既不是克隆也不是原地引用，分支一定带出来
+    expect(sourceLabel({ source: 'worktree' })).toBe('本地工作树');
+    expect(sourceDetail({ source: 'worktree', branch: 'agent/demo-1a2b' })).toBe(
+      '工作树 · agent/demo-1a2b',
+    );
+    expect(sourceDetail({ source: 'worktree', branch: '' })).toBe('工作树');
+  });
+
+  it('工作区目录丢了给可执行的下一步，而不是只说失败', () => {
+    const text = errorText(new ApiError('conflict', 409, 'workspace_root_missing'));
+    expect(text).toContain('目录不在了');
+    expect(text).toContain('删除这个工作区');
   });
 });

@@ -8,7 +8,12 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { createWorkspace } from '../../api/client';
-import type { CreateWorkspaceRequest, WorkspaceControl, WorkspaceSummary } from '../../types';
+import type {
+  CreateWorkspaceRequest,
+  LocalLanding,
+  WorkspaceControl,
+  WorkspaceSummary,
+} from '../../types';
 import { DirPicker } from './DirPicker';
 import { FolderIcon, GitIcon } from './icons';
 import { basename, errorText, repoName } from './meta';
@@ -33,6 +38,10 @@ export function NewWorkspaceDialog({ initialKind, control, onDismiss, onCreated 
   const [name, setName] = useState('');
   const [nameTouched, setNameTouched] = useState(false);
   const [path, setPath] = useState('');
+  // 默认工作树：用户选本地目录的本意是「让 Agent 在那个仓库里干活」，
+  // 而不是「在我的检出上乱改」。
+  const [landing, setLanding] = useState<LocalLanding>('worktree');
+  const [localBranch, setLocalBranch] = useState('');
   const [url, setUrl] = useState('');
   const [branch, setBranch] = useState('');
   const [credential, setCredential] = useState('');
@@ -83,7 +92,15 @@ export function NewWorkspaceDialog({ initialKind, control, onDismiss, onCreated 
     }
     const request: CreateWorkspaceRequest =
       kind === 'local'
-        ? { name: clean, source: { kind: 'local', path: path.trim() } }
+        ? {
+            name: clean,
+            source: {
+              kind: 'local',
+              path: path.trim(),
+              mode: landing,
+              branch: landing === 'worktree' ? localBranch.trim() || undefined : undefined,
+            },
+          }
         : {
             name: clean,
             source: {
@@ -160,7 +177,7 @@ export function NewWorkspaceDialog({ initialKind, control, onDismiss, onCreated 
               </span>
               <span className="wsp-kind-text">
                 <span className="wsp-kind-title">本地目录</span>
-                <span className="wsp-kind-desc">引用白名单内已有目录，不复制、不搬动</span>
+                <span className="wsp-kind-desc">在本地仓库上开工作树，主检出不动</span>
               </span>
             </label>
             <label
@@ -199,6 +216,50 @@ export function NewWorkspaceDialog({ initialKind, control, onDismiss, onCreated 
                 placeholder={localBlocked ? '未配置白名单' : '白名单内的绝对路径'}
                 onChange={(event) => pickPath(event.target.value)}
               />
+              <div className="wsp-landing" role="radiogroup" aria-label="落盘方式">
+                <label className={`wsp-landing-item${landing === 'worktree' ? ' is-active' : ''}`}>
+                  <input
+                    type="radio"
+                    name="wsp-landing"
+                    className="sr-only"
+                    checked={landing === 'worktree'}
+                    onChange={() => setLanding('worktree')}
+                  />
+                  <span className="wsp-landing-title">工作树</span>
+                  <span className="wsp-landing-desc">
+                    在受管目录新建一个 git worktree，Agent 用自己的分支改，你的检出不受影响
+                  </span>
+                </label>
+                <label className={`wsp-landing-item${landing === 'in_place' ? ' is-active' : ''}`}>
+                  <input
+                    type="radio"
+                    name="wsp-landing"
+                    className="sr-only"
+                    checked={landing === 'in_place'}
+                    onChange={() => setLanding('in_place')}
+                  />
+                  <span className="wsp-landing-title">原地引用</span>
+                  <span className="wsp-landing-desc">
+                    直接在这个目录里跑：能看到你未提交的改动，也会改到它们
+                  </span>
+                </label>
+              </div>
+              {landing === 'worktree' ? (
+                <div className="wsp-field">
+                  <label htmlFor="wsp-local-branch">分支</label>
+                  <input
+                    id="wsp-local-branch"
+                    value={localBranch}
+                    spellCheck={false}
+                    autoComplete="off"
+                    placeholder="留空自动生成 agent/<名字>-<后缀>"
+                    onChange={(event) => setLocalBranch(event.target.value)}
+                  />
+                  <p className="wsp-field-hint">
+                    目录不是 git 仓库时开不了工作树，会提示改选「原地引用」。
+                  </p>
+                </div>
+              ) : null}
               {localBlocked && control ? (
                 <p className="wsp-notice">
                   {control.allow_local_import

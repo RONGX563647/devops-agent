@@ -23,10 +23,16 @@ _BASE = "/workspaces"
 
 
 class LocalSource(BaseModel):
-    """本地目录来源：原地引用，不复制。"""
+    """本地目录来源。
+
+    `mode` 决定落盘语义：`auto`（默认）在 git 仓库上开工作树、其余原地引用；
+    `worktree` 强制开工作树（非 git 目录 400）；`in_place` 强制原地引用。
+    """
 
     kind: Literal["local"]
     path: str
+    mode: Literal["auto", "worktree", "in_place"] = "auto"
+    branch: str = ""
 
 
 class GitSource(BaseModel):
@@ -105,7 +111,13 @@ def create_workspace(req: CreateWorkspaceRequest, request: Request) -> dict[str,
     service = _service(request)
     try:
         if isinstance(req.source, LocalSource):
-            workspace = service.create_local(req.name, req.source.path, req.default_profile)
+            workspace = service.create_local(
+                req.name,
+                req.source.path,
+                req.default_profile,
+                mode=req.source.mode,
+                branch=req.source.branch,
+            )
         else:
             workspace = service.create_git(
                 req.name,

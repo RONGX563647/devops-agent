@@ -66,6 +66,9 @@ class SessionEntry:
     # 绑定工作区（SPEC-0021）：id 决定长期记忆作用域，ref 保存 root_path 供重建
     workspace_id: str = ""
     workspace_ref: Any | None = None
+    # 该实例实际使用的执行面宿主目录。切换工作区时工作区 id 变了会重建，
+    # 但「同一个工作区、执行面换了一份」也必须重建 —— 否则工具仍跑在旧目录。
+    execution_host: str = ""
     # 部署默认变了但这个会话正在跑：先挂起，run 结束后再热替换。
     # 直接广播会打断正在进行的流，只影响新会话又等于「改了但没生效」。
     pending_model: bool = False
@@ -126,23 +129,19 @@ class SessionRegistry:
         profile: Any,
         web_search: bool | None,
         workspace: Any | None = None,
+        execution: Any | None = None,
     ) -> SessionEntry:
         state_json = self._load_state(session_id)
         overrides = self._load_model_config(session_id)
-        if workspace is None:
-            # 未绑定工作区：保持旧工厂签名，Echo / 测试替身无需感知新参数
-            runtime = self._factory(
-                session_id, profile, state_json, web_search, model_config=overrides
-            )
-        else:
-            runtime = self._factory(
-                session_id,
-                profile,
-                state_json,
-                web_search,
-                model_config=overrides,
-                workspace=workspace,
-            )
+        extra: dict[str, Any] = {}
+        # 未绑定工作区、也没有专属执行面：保持旧工厂签名，Echo / 测试替身无需感知新参数
+        if workspace is not None:
+            extra["workspace"] = workspace
+        if execution is not None:
+            extra["execution"] = execution
+        runtime = self._factory(
+            session_id, profile, state_json, web_search, model_config=overrides, **extra
+        )
         entry = SessionEntry(
             session_id=session_id,
             runtime=runtime,
@@ -154,6 +153,7 @@ class SessionRegistry:
             model_overrides=overrides,
             workspace_id=str(getattr(workspace, "id", "") or "") if workspace is not None else "",
             workspace_ref=workspace,
+            execution_host=str(getattr(execution, "host_workdir", "") or ""),
         )
         return entry
 
@@ -165,18 +165,21 @@ class SessionRegistry:
         web_search: bool | None = None,
         *,
         workspace: Any | None = None,
+        execution: Any | None = None,
     ) -> SessionEntry:
-        """取得会话实例：命中复用；档位/联网开关/工作区变了重建；未命中从 DB 快照重建。
+        """取得会话实例：命中复用；档位/联网开关/工作区/执行面变了重建；未命中从 DB 快照重建。
 
         web_search=None 表示「不关心」：确认/续跑沿用现有实例的配置，
         否则前端没带这个字段就会把挂起中的会话重建掉。
         `workspace=None` 表示「不改归属」：有活跃实例时沿用它的工作区，
         没有实例时回落到旧路径（DEVOPS_AGENT_WORKDIR）。
+        `execution` 是该工作区对应的执行面（按目录缓存），不传则沿用启动期那一份。
         """
         entry = self._entries.get(session_id)
         key = str(getattr(profile, "key", ""))
         requested_id = str(getattr(workspace, "id", "") or "") if workspace is not None else None
-        if entry is not None and self._reusable(entry, key, web_search, requested_id):
+        host = str(getattr(execution, "host_workdir", "") or "")
+        if entry is not None and self._reusable(entry, key, web_search, requested_id, host):
             entry.last_used = _now().timestamp()
             self._entries.move_to_end(session_id)
             return entry
@@ -185,7 +188,7 @@ class SessionRegistry:
             # 切换档位/开关/工作区：先把旧状态存下来，再用新配置重建同一个会话
             self.save(session_id)
             self._entries.pop(session_id, None)
-        fresh = self._build(session_id, profile, web_search, target)
+        fresh = self._build(session_id, profile, web_search, target, execution)
         self._entries[session_id] = fresh
         self._evict()
         return fresh
@@ -196,11 +199,14 @@ class SessionRegistry:
         key: str,
         web_search: bool | None,
         requested_id: str | None,
+        execution_host: str = "",
     ) -> bool:
-        """实例能否直接复用：档位一致、工作区未被改投、联网开关未变。"""
+        """实例能否直接复用：档位一致、工作区未被改投、执行面未换、联网开关未变。"""
         if entry.profile != key:
             return False
         if requested_id is not None and entry.workspace_id != requested_id:
+            return False
+        if execution_host and entry.execution_host != execution_host:
             return False
         return web_search is None or entry.web_search == web_search
 
@@ -228,6 +234,7 @@ class SessionRegistry:
         web_search: bool | None = None,
         *,
         workspace: Any | None = None,
+        execution: Any | None = None,
     ) -> tuple[SessionEntry, bool]:
         """会话中切档：能热替换就原地改，返回 (entry, applied)。
 
@@ -237,7 +244,12 @@ class SessionRegistry:
         """
         entry = self.peek(session_id)
         if entry is None:
-            return self.acquire(session_id, profile, web_search, workspace=workspace), False
+            return (
+                self.acquire(
+                    session_id, profile, web_search, workspace=workspace, execution=execution
+                ),
+                False,
+            )
         apply_profile = getattr(entry.runtime, "apply_profile", None)
         if not callable(apply_profile):
             self._entries.pop(session_id, None)
@@ -246,6 +258,7 @@ class SessionRegistry:
                 profile,
                 web_search,
                 workspace=workspace if workspace is not None else entry.workspace_ref,
+                execution=execution,
             ), False
         apply_profile(profile, web_search=web_search)
         entry.profile = str(getattr(profile, "key", ""))

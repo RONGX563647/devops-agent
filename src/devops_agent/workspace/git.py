@@ -153,6 +153,86 @@ def clone(
     )
 
 
+def validate_branch(name: str) -> str:
+    """校验分支名（`git check-ref-format --branch`）；不合法直接拒。"""
+    text = str(name or "").strip()
+    if not text:
+        raise errors.WorkspaceError(errors.SOURCE_INVALID, "branch 不能为空")
+    result = _run(["git", "check-ref-format", "--branch", text], timeout=10)
+    if result.returncode != 0:
+        raise errors.WorkspaceError(errors.SOURCE_INVALID, f"分支名不合法: {text}")
+    return text
+
+
+def main_root(root: Path, *, timeout: int = 10) -> Path | None:
+    """从一个工作树反查它的主仓库根；不是 git 目录时返回 None。
+
+    `--git-common-dir` 在主工作区与链接工作树里都指向主仓库的 `.git`，
+    所以 `git worktree remove` 能拿到正确的「在哪执行」。这也让删除不必
+    额外存一列 origin（表结构不动）。
+    """
+    if not git_available():
+        return None
+    result = _run(["git", "-C", str(root), "rev-parse", "--git-common-dir"], timeout=timeout)
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+    common = Path(raw)
+    if not common.is_absolute():
+        common = (root / common).resolve()
+    return common.parent if common.name == ".git" else None
+
+
+def worktree_add(
+    repo_root: Path,
+    dest: Path,
+    *,
+    branch: str,
+    base: str = "HEAD",
+    timeout: int = 120,
+) -> RepoInfo:
+    """在本地仓库上开一个工作树，返回它的元信息。
+
+    为什么不用「复制目录」：复制会带走未提交改动、把 .git 复制一份导致两边
+    各说各话；工作树共用一个对象库，主检出不受影响，删掉工作树也不动用户的
+    工作副本。分支默认新建，同名分支已存在时直接复用它（重试一次）。
+    """
+    if not git_available():
+        raise errors.WorkspaceError(errors.GIT_FAILED, "部署环境缺少 git")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    result = _run(
+        ["git", "-C", str(repo_root), "worktree", "add", "-b", branch, str(dest), base],
+        timeout=timeout,
+    )
+    if result.returncode != 0 and "already exists" in (result.stderr or ""):
+        result = _run(
+            ["git", "-C", str(repo_root), "worktree", "add", str(dest), branch],
+            timeout=timeout,
+        )
+    if result.returncode != 0:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise errors.WorkspaceError(
+            errors.GIT_FAILED, f"git worktree add 失败: {_tail(result.stderr)}"
+        )
+    _run(["git", "-C", str(dest), "config", "core.hooksPath", "/dev/null"], timeout=timeout)
+    info = detect(dest)
+    return RepoInfo(detected_git=True, branch=info.branch or branch, commit=info.commit)
+
+
+def worktree_remove(repo_root: Path, dest: Path, *, timeout: int = 60) -> None:
+    """注销并删除工作树；主仓库已不可用时退回直接删目录。"""
+    if git_available() and repo_root.is_dir():
+        _run(
+            ["git", "-C", str(repo_root), "worktree", "remove", "--force", str(dest)],
+            timeout=timeout,
+        )
+        _run(["git", "-C", str(repo_root), "worktree", "prune"], timeout=timeout)
+    if dest.exists():
+        remove_managed_dir(dest)
+
+
 def status_porcelain(root: Path, *, timeout: int = 20) -> list[str]:
     """取工作区脏文件列表；非 git 目录返回空。"""
     result = _run(["git", "-C", str(root), "status", "--porcelain"], timeout=timeout)
@@ -206,8 +286,12 @@ __all__ = [
     "detect",
     "diff",
     "git_available",
+    "main_root",
     "remove_managed_dir",
     "status_porcelain",
+    "validate_branch",
     "validate_remote_url",
+    "worktree_add",
+    "worktree_remove",
     "write_delete_patch",
 ]

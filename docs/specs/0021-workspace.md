@@ -5,6 +5,7 @@
 - 基线：`main e1b3f6b`（SPEC-0018 已合并）
 - 关系：承接 SPEC-0013/0016（三层记忆与 token 口径）、SPEC-0017（配置域与降级）；复用 `executor/boundary.py` 的本机执行面，**不涉及 Docker / 沙箱**
 - 范围：`src/devops_agent/workspace/**`（新）、`runtime/{assembly,sessions,scope_runtime,prompt}.py`、`memory/{runtime,long_term}.py`、`memory_policy.py`、`observability/{models,repository}/*`、`gateway/{routes,contract}.py`、`config_store/{registry,schema}.py`、`config/workspaces.yaml`（新）、`web/src/pages/workspaces/**`（新）、`web/src/workspace/chat/**`、`tests/**`
+- 变更说明（v3）：修两处「设计写着、实现没做到」的断裂。① **执行面真的跟着工作区走**：v2 只把 `workdir` 传进去，而 `assembly.session_runtime_factory` 里 `execution=getattr(base, "execution", None)` 优先用了启动期执行面 —— `_execution_paths` 一见 `execution` 就整体以它为准，`workdir` 被丢弃，于是「绑了工作区，Agent 还在部署默认目录里跑」。现在按工作区根各取一份执行面（`SandboxManager.ensure(root)` 自带按 `(mode, host, image)` 缓存），并在消息末尾补一句身份说明（来源/执行目录/分支），模型不再答「我没有工作区」。② **本地来源拆成两种落盘语义**：默认在本地仓库上开 `git worktree`（`source=worktree`，Agent 在自己的 `agent/*` 分支上改，主检出不动），非 git 目录才原地引用（`source=local`）；远程仍克隆到本项目工作区目录 `<managed_root>/<id>/repo`。
 - 变更说明（v2）：收窄范围。移除沙箱/Docker 绑定与容器生命周期；明确「工作区共享长期记忆、不共享会话记忆与上下文」；创建方式改为「选择本地目录」或「导入 Git 仓库」两种
 - 触发来源：当前 Agent 只有进程级执行目录（`DEVOPS_AGENT_WORKDIR`），会话只按 `session_id` 隔离，记忆也没有仓库维度；接第二个代码库必须改环境变量并重启
 - 证据约定：现状结论一律带 `路径:行号`；设计建议与既存事实分开写
@@ -13,10 +14,11 @@
 
 1. **工作区是「一个代码库的归属单元」，不是一层目录包装**。它要回答三件事：这个会话在哪个仓库里干活、这个仓库的长期记忆算谁的、这个仓库什么时候被归档/删除。今天三者分别靠 `DEVOPS_AGENT_WORKDIR`（进程级，`runtime/prompt.py:17-19`）、`session:{id}`（会话级，`memory/runtime.py:101-104`）和一个手工目录承担，彼此没有关系。
 
-2. **创建只有两种入口：引用本地目录，或从 Git 导入**。
-   - 本地目录：**原地引用**，不复制。工作区记录 realpath，删除工作区只注销登记，绝不删除用户原目录。
+2. **创建只有两种入口：引用本地目录，或从 Git 导入**，但落盘有三种语义。
+   - 本地目录 + git 仓库（默认）：**开工作树**。`git worktree add <managed_root>/<id>/worktree -b agent/<slug>-<id末4位>`，与主检出共用一个对象库；Agent 在自己的分支上干活，用户那份 working copy 不会被弄脏，删工作区走 `git worktree remove`（先 `rev-parse --git-common-dir` 反查主仓库，否则留下 `.git/worktrees/<name>` 悬空登记）。
+   - 本地目录 + 非 git（或显式 `mode=in_place`）：**原地引用**，不复制。记录 realpath，删除只注销登记，绝不删除用户原目录。
    - Git 导入：克隆到受管目录 `workspace/workspaces/<id>/repo`，删除时按克隆产物处理（脏目录先出 patch）。
-   - 两者用 `Repository.managed` 区分，删除语义因此不同——这是本 spec 最重要的一条防误删规则。
+   - 三者用 `Repository.managed` 与 `source` 区分（`in_place` → `local/false`，`worktree` → `worktree/true`，`clone` → `git/true`），删除语义因此不同——这是本 spec 最重要的一条防误删规则。
 
 3. **长期记忆按工作区共享，短期与中期严格按会话隔离**。需求是「共享长期记忆，不共享会话记忆上下文」：
    - 共享：`long_term_memories` 的 `scope='workspace'`、`scope_id='workspace:<id>'`，同工作区任意会话可召回。
@@ -24,7 +26,7 @@
 
 4. **绑定关系不可静默改投**。一个会话首次绑定工作区后，后续请求带不同 `workspace_id` 必须 409，而不是「以最后一次为准」。否则同一会话的历史里会混入两个仓库的事实，记忆与权限边界同时失真。
 
-5. **执行目录由工作区决定，但仍兼容旧部署**。绑定工作区的会话，`workdir` 取工作区仓库根；未绑定的请求继续走 `resolve_workdir()`（`runtime/prompt.py:41-45`）。开关默认关，回滚即关闭。
+5. **执行目录由工作区决定，且执行面本身必须换**。绑定工作区的会话，`workdir` 取 `Repository.root_path`；未绑定的请求继续走 `resolve_workdir()`（`runtime/prompt.py:41-45`）。开关默认关，回滚即关闭。这里有一条必须写进契约的细节：**只传 `workdir` 是不够的**——`_execution_paths` 一旦看到 `execution` 就整体以它为准，`workdir` 会被丢弃。所以装配点必须按工作区根取一份执行面（`SandboxManager.ensure(Path(root))`，按 `(mode, host, image)` 缓存，同一目录复用），并把工作区身份（名称、来源、执行目录、分支/远端）作为一条说明追加在**消息末尾**，让模型能直接回答「我在哪个工作区、代码放哪」。工作区根不存在时返回 409 `workspace_root_missing`，不许悄悄按需建一个空目录冒充。
 
 6. **本地目录引用是新的攻击面，必须用白名单收口**。没有 Docker 隔离时，`/api/workspaces` 若接受任意路径，等于把宿主文件系统暴露给 Agent 工具。所以 `workspace.allowed_local_roots` 为空时本地创建直接禁用；路径必须 realpath 后落在白名单内，且拒绝符号链接逃逸。
 
@@ -110,13 +112,13 @@ Workspace:
 
 Repository:
   workspace_id: str       # PK，1:1
-  source: str             # local | git
-  managed: bool           # True=克隆到受管目录；False=原地引用本地目录
-  remote_url: str         # source=git 时必填；local 可空
-  branch: str             # 创建时分支，空 = 默认 HEAD
+  source: str             # local（原地引用）| worktree（本地开工作树）| git（远端克隆）
+  managed: bool           # True=落盘产物归本项目管（worktree / git）；False=原地引用
+  remote_url: str         # source=git 时必填；local / worktree 为空
+  branch: str             # 创建时分支（worktree 为 agent/<slug>-<id末4位>），空 = 默认 HEAD
   base_commit: str        # 创建时 resolve 的 commit（可空 = 非 git 目录）
   credential_ref: str     # secrets 保险箱里的 id，不存明文
-  detected_git: bool      # 本地目录是否本身是 git 仓库
+  detected_git: bool      # 本地目录是否本身是 git 仓库（worktree / git 恒为 True）
   created_at
 
 WorkspaceSession:
@@ -132,26 +134,30 @@ WorkspaceSession:
 - **I2 归属唯一**：一个 `session_id` 至多属于一个工作区；绑定后改投必须 409。
 - **I3 长期同源**：绑定工作区的会话，长期记忆 `scope='workspace'`、`scope_id='workspace:<id>'`；不得回落到 `session:{id}`。
 - **I4 会话隔离**：短期上下文、`session_memories`、`session_states` 永远以 `session_id` 为键，工作区不提供跨会话读取。
-- **I5 删除不伤源**：`managed=false` 的工作区删除只删登记；`managed=true` 才允许清理受管目录。
+- **I5 删除不伤源**：`managed=false` 的工作区删除只删登记；`managed=true` 才允许清理受管产物，且 `source=worktree` 的清理必须走 `git worktree remove`（先反查主仓库），不许直接 `rmtree` —— 那会留下 `.git/worktrees/<name>` 悬空登记，下次在同路径开工作树会失败。主仓库本身与用户分支永不删除。
 
 ## 5. 工作区创建：本地目录与 Git 导入
 
 ### 5.1 两种来源
 
-| 来源 | 行为 | `managed` | 目录位置 | 删除语义 |
-|---|---|---|---|---|
-| `local` | 引用用户选择的已有目录，不复制、不改名 | `false` | 用户目录（realpath） | 只删登记与绑定；不动目录 |
-| `git` | `git clone` 到 `workspace/workspaces/<id>/repo` | `true` | 受管目录 | 脏则先出 patch；干净则可删 |
+| `source` | 触发 | 行为 | `managed` | 目录位置 | 删除语义 |
+|---|---|---|---|---|---|
+| `worktree` | 本地目录是 git 仓库（`mode=auto` 默认）或显式 `mode=worktree` | `git worktree add`，新建分支 `agent/<slug>-<id末4位>` | `true` | `<managed_root>/<id>/worktree` | `git worktree remove`；主仓库与用户的 checkout 不动 |
+| `local` | 本地目录不是 git 仓库，或显式 `mode=in_place` | 原地引用，不复制、不改名 | `false` | 用户目录（realpath） | 只删登记与绑定；不动目录 |
+| `git` | 远程地址 | `git clone` 到本项目工作区目录 | `true` | `<managed_root>/<id>/repo` | 脏则先出 patch；干净则可删 |
 
-本地目录若本身是 Git 仓库，记录 `detected_git=true` 与当前 `branch/base_commit`，便于前端展示；导入 Git 则强制 `detected_git=true`。
+`mode=worktree` 用在非 git 目录上返回 400（`workspace_source_invalid`），而不是静默降级成原地引用 —— 用户明确选了「工作树」，就得说清做不到。
+
+**为什么本地默认开工作树而不是原地引用**：原地引用会让 Agent 的改动直接落在用户的 working copy 上，「我让它改个文件，结果本地一堆未提交改动」比多一个目录更难收拾；工作树共用对象库，创建只要几百毫秒（实测 0.54s），并且天然隔离分支。代价是 `.git` 目录多一条登记，所以清理必须走 `worktree remove`。
 
 ### 5.2 本地目录的准入
 
 1. `allowed_local_roots` 必须非空，否则 `POST /api/workspaces` 的 `source.kind=local` 返回 403（功能未启用本地导入）。
 2. 请求路径 `expanduser()` → `realpath()`；必须是目录、必须存在、必须位于某个白名单根的 realpath 之下。
 3. 拒绝：符号链接指向白名单外、根路径 `/`、用户 home 根、包含 `..` 的原始字符串（归一化后仍按 realpath 判定）。
-4. 同一 realpath 不能被两个 active 工作区同时引用；返回 409 并给出占用者。
+4. 同一 realpath 不能被两个 active 工作区同时引用；返回 409 并给出占用者。工作树的落盘目录由本项目分配，天然唯一，同一个仓库可以开多个工作树。
 5. 不校验目录内容是否为空：允许接管已有项目，这也是「选择本地目录」的主要用途。
+6. 分支名经 `git check-ref-format --branch` 校验；不填则按 `agent/<slug>-<id末4位>` 生成，中文名压不出 ASCII 时 slug 退回 `ws`（不生成空分支）。
 
 ### 5.3 Git 导入
 
@@ -185,12 +191,17 @@ WorkspaceSession:
 3. 未绑定且请求未带：走旧逻辑（`DEVOPS_AGENT_WORKDIR`），**不**自动塞默认工作区（避免旧部署行为漂移）；
 4. 功能开关关闭：完全不解析，忽略 `workspace_id`。
 
-### 6.2 执行目录
+### 6.2 执行目录与执行面
 
-- 绑定后 `workdir = Repository.root_path`，由 `gateway/turn/lease.py` 解析后传给 `SessionRegistry.acquire`，最终进入 `build_agentscope_runtime(workdir=...)`（`runtime/assembly.py:249-280`）。
-- `SessionRegistry._build`（`runtime/sessions.py:120-134`）的工厂签名增加可选 `workspace` 参数；未传时行为不变。
-- 绑定变化（理论上只发生在首次）需要重建运行时；与现有「档位/联网变化即重建」同一路径（`runtime/sessions.py:145-162`）。
+- 绑定后 `workdir = Workspace.root_path`，由 `gateway/routes/stream.py` 解析后经 `turn/lease.py` 传给 `SessionRegistry.acquire`，最终进入 `build_agentscope_runtime(workdir=...)`。
+- **执行面必须与 `workdir` 一起换**（v3 修正）：`gateway/routes/workspace_deps.py:execution_for` 用 `SandboxManager.ensure(Path(root))` 取该目录的执行面，一并传给租约与工厂；`assembly.session_runtime_factory` 的 `execution` 形参优先于 `base.execution`。只传 `workdir` 会被 `_execution_paths` 丢弃 —— 那是「绑了工作区却在默认目录里跑」的唯一根因，`tests/unit/test_workspace_execution.py::test_real_runtime_actually_runs_in_the_workspace` 用真装配钉住它。
+- 执行面按目录缓存（键 `(mode, host, image)`），同一工作区的多个会话复用一份，不同工作区各一份，不重复初始化。
+- `SessionEntry.execution_host` 记录本会话执行面所在目录：同一工作区换执行面也要重建实例，不能只看 `workdir` 字符串。
+- 工作区根不存在时 `execution_for` 返回 409 `workspace_root_missing`。不这么做的话，按需初始化会建出一个空目录，Agent 在空目录里跑却认为自己在工作区。
+- **身份说明**：`WorkspaceNoteMiddleware`（`runtime/workspace_note.py`）在**模型请求的最后一条消息**追加工作区身份（名称、来源中文说法、执行目录、分支/远端）；未绑定时如实说「没有绑定工作区，执行目录是 X，不要假设别处还有副本」。放消息末尾而不是系统提示，理由与档位说明相同（`runtime/profile_note.py`）：系统提示改一字节，后面的工具 schema 与整段历史前缀缓存全部作废。
+- 未归属会话的详情不再 404：`GET /api/workspaces/sessions/{id}` 返回空 `workspace_id` 与 `root_path`，界面据此显示「未归属工作区 · 跑在默认目录」，而不是把「没绑过」当成「不存在」。
 - 系统提示里的 workdir 随工作区变化，字节指纹因此变化（`runtime/prompt.py:106-112`）；评测批次要记录 `workspace_id` 与 `prompt_bytes_sha`，避免把「换了仓库」误判成「提示词退化」。
+- Windows 上 `uvicorn --reload` / `--workers>1` 会把事件循环设成 `WindowsSelectorEventLoopPolicy`，而 `asyncio` 只有 Proactor 实现 `create_subprocess_exec`，于是 `exec_shell` 全线报 `RuntimeError`。`executor/subprocess_compat.py` 不抢回策略（那会弄坏 uvicorn 自己的重载子进程），只把 `LocalBackend.exec_shell` 换成「循环不支持就下线程」的实现，能力经 `/health.sandbox.subprocess` 暴露。
 
 ### 6.3 会话隔离
 
@@ -388,7 +399,7 @@ CREATE INDEX IF NOT EXISTS idx_workspace_sessions_ws ON workspace_sessions(works
 
 ```
 workspace list
-workspace create --name <n> --local /path [--profile workspace]
+workspace create --name <n> --local /path [--mode auto|worktree|in_place] [--branch b] [--profile workspace]
 workspace create --name <n> --git <url> [--branch main] [--credential <ref>]
 workspace bind <id> --session <sid>
 workspace status <id>
@@ -401,9 +412,9 @@ CLI 与服务层共用同一组函数，不复制业务逻辑。
 ### 10.4 前端
 
 - 新增 `/workspaces`、`/workspaces/:id` 路由（`web/src/App.tsx:21-27` 追加），侧边栏加入口。
-- 创建工作区向导：两个页签「选择本地目录」（`browse` 接口 + 路径输入）与「导入 Git」（URL/分支/凭据）。
-- 聊天页顶部显示当前工作区切换器；未绑定时显示「未绑定工作区」而非静默落默认。
-- 详情页展示：来源、`managed`、分支、`base_commit`、会话数、长期记忆条数、归档/删除按钮。
+- 创建工作区向导：两个页签「选择本地目录」（`browse` 接口 + 路径输入）与「导入 Git」（URL/分支/凭据）。本地页签里要选**落盘方式**（`role=radiogroup`）：工作树（默认，可填分支）或原地引用 —— 这是用户唯一能表达「别动我本地那份」的地方，默认藏起来等于逼人踩坑。
+- 聊天页顶部显示当前工作区**名称 + 执行目录末两段**；未绑定时显示「未归属工作区 · 跑在默认目录」而非静默落默认。用户问「你在哪跑」，界面自己先答一遍。
+- 详情页展示：来源（本地工作树 / 本地目录 / 远端克隆）、`managed`、分支、`base_commit`、执行目录、会话数、长期记忆条数、归档/删除按钮，并明说「会话就在这个目录里执行」。
 - 改动 `web/**` 必须先按 AGENTS §3.8 读取 `skills/.seed/modern-web-guidance/SKILL.md` 并检索；本 spec 不含前端实现细节。
 
 ## 11. 配置
@@ -447,7 +458,7 @@ class WorkspacePolicy(BaseModel):
 | 仓库钩子执行任意代码 | clone 后 `core.hooksPath=/dev/null`；不自动 checkout 未知 ref |
 | `.git` 读写与权限矛盾 | Agent 不直接读 `.git`（`governance/paths.py:58` 保持）；状态查询走受控 `git` 子进程 |
 | 跨工作区记忆泄漏 | I3 + 查询固定 scope；A9 断言 0 命中 |
-| 误删用户目录 | `managed=false` 不删目录；`managed=true` 才处理，脏则先出 patch |
+| 误删用户目录 | `managed=false` 不删目录；`managed=true` 才处理，脏则先出 patch；`source=worktree` 只 `git worktree remove`，主仓库与用户 checkout 永不删除 |
 | 无容器隔离的残余风险 | 显式声明：安全边界在 OS 用户与权限档；readonly/execute 档仍生效；不对不可信用户开放 |
 
 ## 13. 可观测
@@ -483,6 +494,13 @@ class WorkspacePolicy(BaseModel):
 | A14 | `browse` 只列白名单内目录，不返回文件内容 | 单测 |
 | A15 | `runs.workspace_id` 正确落库，可按工作区查询 | 单测 |
 | A16 | 前端创建工作区（本地/Git 两页签）与聊天页切换器可用 | 前端测试（先读 modern-web-guidance） |
+| A17 | 本地 git 仓库默认落成 `source=worktree`：落盘在 `<managed_root>/<id>/worktree`、分支 `agent/<slug>-<id末4位>`、主检出 `git status` 不变；非 git 目录落 `local`；`mode=worktree` 遇非 git 目录 400 | 单测（真 git 仓库） |
+| A18 | 删工作区走 `git worktree remove`，主仓库与登记目录都清干净；不许留下 `.git/worktrees/<name>` | 单测 |
+| A19 | 老库（`workspace_repositories.source` 的 CHECK 只允许 `local/git`）能升级到允许 `worktree`，且原有行不丢 | 迁移单测 |
+| A20 | **真装配**：绑定工作区后运行时的 `_workdir` 与 `_tool_workdir` 都等于工作区根，中间件链里有 `WorkspaceNoteMiddleware` 且说明里带真实路径 | 单测（不 mock 装配） |
+| A21 | 端到端：绑工作区跑一轮 `pwd`，工具输出的就是工作区目录；模型回答里能说出工作区名、来源、分支 | 手工验收（真模型一次调用） |
+| A22 | 工作区根不存在时 409 `workspace_root_missing`；未归属会话详情返回空 `workspace_id` 而非 404 | 单测 |
+| A23 | `WindowsSelectorEventLoopPolicy` 下 shell/文件工具仍可用（线程回落），`/health.sandbox.subprocess` 如实上报能力 | 单测 + 手工（`uvicorn --reload`） |
 
 ### 14.2 质量门禁
 
@@ -543,9 +561,11 @@ class WorkspacePolicy(BaseModel):
 | 术语 | 含义 |
 |---|---|
 | 工作区 / Workspace | 本 spec 引入的领域实体：一个代码库 + 一组归属会话 |
-| 本地引用 / local | 工作区指向用户已有目录，`managed=false`，删除不删目录 |
+| 本地工作树 / worktree | 在用户已有的 git 仓库上开的工作树，落盘在受管目录，Agent 在 `agent/*` 分支上改，用户 checkout 不受影响 |
+| 本地引用 / local | 工作区指向用户已有目录，`managed=false`，删除不删目录；**仅用于非 git 目录或显式 `mode=in_place`** |
 | Git 导入 / git | 克隆到受管目录，`managed=true`，删除按脏状态处理 |
 | 执行目录 / workdir | Agent 工具的相对路径基准与 shell cwd；绑定时等于 `root_path` |
+| 执行面 / execution | `SandboxManager` 按工作区根给出的那份执行后端；**必须与 workdir 一起换**，只换 workdir 不生效 |
 | 工作区会话 / WorkspaceSession | `session_id → workspace_id` 的绑定，一经建立不可静默改投 |
 | 长期记忆作用域 / MemoryScope | `scope='workspace'`、`scope_id='workspace:<id>'` |
 | 会话记忆 | 短期上下文、`session_memories`、`session_states`；始终按 `session_id` 隔离 |

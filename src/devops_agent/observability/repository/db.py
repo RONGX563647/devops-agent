@@ -205,6 +205,28 @@ _SCHEMA = _SCHEMA + _SPANS_DDL
 
 # 工作区（SPEC-0021）：一工作区一代码库。三张表追加式引入，
 # 老库由 init_db 幂等建表；session_states / runs / session_memories 只补列。
+# `source` 的 CHECK 里必须有 worktree：本地仓库的工作区落的是 git worktree，
+# 既不是原地引用也不是克隆。SQLite 改不了 CHECK，老库走 _ensure_repository_sources。
+_WORKSPACE_REPO_DDL = """CREATE TABLE {if_not_exists}{table} (
+    workspace_id   TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+    source         TEXT NOT NULL CHECK (source IN ('local','git','worktree')),
+    managed        INTEGER NOT NULL DEFAULT 0,
+    remote_url     TEXT NOT NULL DEFAULT '',
+    branch         TEXT NOT NULL DEFAULT '',
+    base_commit    TEXT NOT NULL DEFAULT '',
+    credential_ref TEXT NOT NULL DEFAULT '',
+    detected_git   INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL
+);"""
+
+# 建表用 IF NOT EXISTS；重建表（迁移）不能带它，否则会静默跳过
+_WORKSPACE_REPO_SQL = _WORKSPACE_REPO_DDL.format(
+    if_not_exists="IF NOT EXISTS ", table="workspace_repositories"
+)
+_WORKSPACE_REPO_REBUILD_SQL = _WORKSPACE_REPO_DDL.format(
+    if_not_exists="", table="workspace_repositories"
+)
+
 _WORKSPACE_DDL = """
 CREATE TABLE IF NOT EXISTS workspaces (
     id              TEXT PRIMARY KEY,
@@ -223,17 +245,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_name
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_root
     ON workspaces(root_path) WHERE status = 'active';
 
-CREATE TABLE IF NOT EXISTS workspace_repositories (
-    workspace_id   TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
-    source         TEXT NOT NULL CHECK (source IN ('local','git')),
-    managed        INTEGER NOT NULL DEFAULT 0,
-    remote_url     TEXT NOT NULL DEFAULT '',
-    branch         TEXT NOT NULL DEFAULT '',
-    base_commit    TEXT NOT NULL DEFAULT '',
-    credential_ref TEXT NOT NULL DEFAULT '',
-    detected_git   INTEGER NOT NULL DEFAULT 0,
-    created_at     TEXT NOT NULL
-);
+{_WORKSPACE_REPO_SQL}
 
 CREATE TABLE IF NOT EXISTS workspace_sessions (
     session_id   TEXT PRIMARY KEY,
@@ -248,7 +260,9 @@ CREATE TABLE IF NOT EXISTS workspace_sessions (
 CREATE INDEX IF NOT EXISTS idx_workspace_sessions_ws ON workspace_sessions(workspace_id);
 """
 
-_SCHEMA = _SCHEMA + _WORKSPACE_DDL
+# 占位符在拼接时替换：让建表与「重建表迁移」用同一份 DDL
+_WORKSPACE_SQL = _WORKSPACE_DDL.replace("{_WORKSPACE_REPO_SQL}", _WORKSPACE_REPO_SQL)
+_SCHEMA = _SCHEMA + _WORKSPACE_SQL
 
 # 后加的列（CREATE TABLE IF NOT EXISTS 不会给老库补列，必须 ALTER）。
 # parked：该 run 正在等用户确认；用独立列而不是塞进 status，
@@ -358,11 +372,37 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _ensure_columns(conn, "session_states", _SESSION_COLUMNS)
     _ensure_columns(conn, "session_memories", _MEMORY_COLUMNS)
     _ensure_columns(conn, "workspace_sessions", _WORKSPACE_SESSION_COLUMNS)
+    # 老库的 source CHECK 只有 local/git：新增 worktree 要重建表
+    _ensure_repository_sources(conn)
 
     _ensure_columns(conn, "long_term_memories", _LONG_TERM_COLUMNS)
     # 索引在建表语句之后、补列之前都建不了：老库没有 norm_text。
     # 用 execute 而不是 executescript：后者会先隐式提交，破坏调用方的事务
     conn.execute(_LONG_INDEX_SQL.strip().rstrip(";"))
+
+
+def _ensure_repository_sources(conn: sqlite3.Connection) -> None:
+    """老库的 `workspace_repositories.source` CHECK 只有 local/git：重建表放开 worktree。
+
+    与 `_ensure_span_types` 同一套办法（SQLite 改不了 CHECK）：新建、复制、改名，
+    整个动作在调用方的事务里，失败回滚不留半张表。`source` 已含 worktree 时是空操作。
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='workspace_repositories'"
+    ).fetchone()
+    if row is None or "'worktree'" in str(row["sql"] or ""):
+        return
+    columns = (
+        "workspace_id, source, managed, remote_url, branch, base_commit, "
+        "credential_ref, detected_git, created_at"
+    )
+    conn.execute("ALTER TABLE workspace_repositories RENAME TO workspace_repositories_legacy")
+    conn.execute(_WORKSPACE_REPO_REBUILD_SQL)
+    conn.execute(
+        f"INSERT INTO workspace_repositories ({columns}) SELECT {columns} "
+        "FROM workspace_repositories_legacy"
+    )
+    conn.execute("DROP TABLE workspace_repositories_legacy")
 
 
 def _ensure_span_types(conn: sqlite3.Connection) -> None:

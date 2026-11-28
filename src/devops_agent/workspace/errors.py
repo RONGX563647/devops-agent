@@ -38,6 +38,8 @@ DIRTY = "workspace_dirty"
 IN_USE = "workspace_in_use"
 GIT_FAILED = "workspace_git_failed"
 SOURCE_INVALID = "workspace_source_invalid"
+# 工作区登记还在，但它的目录已经不在了（删了、移动了、盘符没挂上）
+ROOT_MISSING = "workspace_root_missing"
 
 __all__ = [
     "ALREADY_BOUND",
@@ -53,6 +55,7 @@ __all__ = [
     "NOT_FOUND",
     "PATH_INVALID",
     "PATH_TAKEN",
+    "ROOT_MISSING",
     "SOURCE_INVALID",
     "WorkspaceError",
 ]

@@ -94,7 +94,20 @@ def _bind_and_ref(
             ),
         )
         store.set_session_workspace(conn, session_id, requested)
-    return WorkspaceRef(id=workspace.id, root_path=workspace.root_path)
+    return _ref(conn, workspace)
+
+
+def _ref(conn: Any, workspace: Any) -> WorkspaceRef:
+    """执行目录 + 身份：来源与分支随行，模型据此回答「代码在哪」。"""
+    repository = store.get_repository(conn, workspace.id)
+    return WorkspaceRef(
+        id=workspace.id,
+        root_path=workspace.root_path,
+        name=workspace.name,
+        source=repository.source if repository is not None else "",
+        remote_url=repository.remote_url if repository is not None else "",
+        branch=repository.branch if repository is not None else "",
+    )
 
 
 def _bound_ref(conn: Any, binding: WorkspaceSession | None) -> WorkspaceRef | None:
@@ -106,7 +119,7 @@ def _bound_ref(conn: Any, binding: WorkspaceSession | None) -> WorkspaceRef | No
         return None  # 工作区已删除：回到旧路径，由调用方提示
     if workspace.status != "active":
         raise errors.WorkspaceError(errors.ARCHIVED, "工作区已归档")
-    return WorkspaceRef(id=workspace.id, root_path=workspace.root_path)
+    return _ref(conn, workspace)
 
 
 def for_workspace(
@@ -185,12 +198,34 @@ def _activity(group: dict[str, Any]) -> str:
 
 
 def detail(service: WorkspaceService, session_id: str) -> dict[str, Any]:
-    """单条会话的聚合视图：改名后标题立刻可见，不必等整块分组重取。"""
+    """单条会话的聚合视图：改名后标题立刻可见，不必等整块分组重取。
+
+    一并带上归属工作区的身份（名称 / 执行目录 / 来源 / 分支）：会话页要能直接
+    回答「这条会话在哪个目录里跑」；未归属的老会话不是 404，而是显式标明
+    「没有工作区」—— 那正是它跑在部署默认目录里的原因。
+    """
     with store.connect(service.db_path) as conn:
         row = store.session_stat(conn, session_id)
+        if row is not None:
+            binding = store.get_session_binding(conn, session_id)
+            workspace = store.get_workspace(conn, binding.workspace_id) if binding else None
+        else:
+            row = store.unbound_session_stat(conn, session_id)
+            workspace = None
         if row is None:
-            raise errors.WorkspaceError(errors.NOT_FOUND, "会话不存在或未归属工作区")
-    return queries.session_item(row)
+            raise errors.WorkspaceError(errors.NOT_FOUND, "会话不存在")
+        ref = _ref(conn, workspace) if workspace is not None else None
+    payload = queries.session_item(row)
+    payload.update(
+        {
+            "workspace_id": ref.id if ref is not None else "",
+            "workspace_name": ref.name if ref is not None else "",
+            "root_path": ref.root_path if ref is not None else "",
+            "source": ref.source if ref is not None else "",
+            "branch": ref.branch if ref is not None else "",
+        }
+    )
+    return payload
 
 
 _MAX_TITLE = 120

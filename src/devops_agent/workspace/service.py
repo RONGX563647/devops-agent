@@ -15,18 +15,15 @@ from pathlib import Path
 from typing import Any
 
 from devops_agent.config_schema import WorkspacePolicy
-from devops_agent.workspace import errors, git, paths, queries, sessions, store
+from devops_agent.workspace import creation, errors, git, paths, queries, sessions, store
 from devops_agent.workspace.models import (
     RepoInfo,
     Repository,
     Workspace,
     WorkspaceRef,
     WorkspaceSession,
-    new_id,
     now_iso,
 )
-
-_MAX_NAME = 120
 
 
 def _now() -> str:
@@ -44,15 +41,6 @@ def _default_secret(name: str) -> str | None:
     return get_vault().get(name)
 
 
-def _clean_name(name: str) -> str:
-    text = str(name or "").strip()
-    if not text:
-        raise errors.WorkspaceError(errors.SOURCE_INVALID, "name 不能为空")
-    if len(text) > _MAX_NAME:
-        raise errors.WorkspaceError(errors.SOURCE_INVALID, f"name 不能超过 {_MAX_NAME} 字符")
-    return text
-
-
 @dataclass
 class WorkspaceService:
     """工作区用例集合；`policy` 由调用方注入（默认取配置域）。"""
@@ -67,38 +55,22 @@ class WorkspaceService:
         name: str,
         path: str,
         default_profile: str | None = None,
+        *,
+        mode: str = "auto",
+        branch: str = "",
     ) -> Workspace:
-        """引用一个已有本地目录（原地引用，`managed=false`，删除不动目录）。"""
-        self._require_enabled()
-        if not self.policy.allow_local_import:
-            raise errors.WorkspaceError(
-                errors.LOCAL_DISABLED, "部署未开启本地目录导入（allow_local_import=false）"
-            )
-        clean = _clean_name(name)
-        root = paths.resolve_local_root(path, self.policy.allowed_local_roots)
-        info = git.detect(root)
-        with store.connect(self.db_path) as conn:
-            self._check_capacity(conn)
-            self._unique(conn, clean, str(root))
-            workspace, repository = self._build_workspace(
-                clean,
-                root_path=str(root),
-                repository=Repository(
-                    workspace_id="",
-                    source="local",
-                    managed=False,
-                    branch=info.branch,
-                    base_commit=info.commit,
-                    detected_git=info.detected_git,
-                    created_at=_now(),
-                ),
-                default_profile=default_profile,
-            )
-            try:
-                store.insert(conn, workspace, repository)
-            except sqlite3.IntegrityError as exc:  # 并发下的唯一索引兜底
-                raise errors.WorkspaceError(errors.NAME_TAKEN, "名称或路径已被占用") from exc
-        return workspace
+        """引用本地目录：git 仓库默认开工作树（`worktree`），其余原地引用（`local`）。
+
+        工作树的落盘、回滚与登记写入在 `workspace.creation.local`，这里只做委托。
+        """
+        return creation.local(
+            self,
+            name,
+            path,
+            mode=mode,
+            branch=branch,
+            default_profile=default_profile,
+        )
 
     def create_git(
         self,
@@ -110,54 +82,16 @@ class WorkspaceService:
         depth: int = 1,
         default_profile: str | None = None,
     ) -> Workspace:
-        """克隆远端到受管目录（`managed=true`），失败不留下半成品与登记。"""
-        self._require_enabled()
-        if not self.policy.allow_git_import:
-            raise errors.WorkspaceError(
-                errors.GIT_DISABLED, "部署未开启 Git 导入（allow_git_import=false）"
-            )
-        clean = _clean_name(name)
-        remote = git.validate_remote_url(url)
-        workspace_id = new_id()
-        dest = paths.managed_root(self.policy.root) / workspace_id / "repo"
-        with store.connect(self.db_path) as conn:
-            self._check_capacity(conn)
-            self._unique(conn, clean, None)
-        secret = self.credential_resolver(credential_ref) if credential_ref else ""
-        info = git.clone(
-            remote,
-            dest,
+        """克隆远端到本项目工作区目录（`managed=true`），失败不留下半成品与登记。"""
+        return creation.clone(
+            self,
+            name,
+            url,
             branch=branch,
+            credential_ref=credential_ref,
             depth=depth,
-            credential=secret or "",
-            timeout=self.policy.git_clone_timeout_sec,
-        )
-        workspace, repository = self._build_workspace(
-            clean,
-            workspace_id=workspace_id,
-            root_path=str(dest.resolve()),
-            repository=Repository(
-                workspace_id=workspace_id,
-                source="git",
-                managed=True,
-                remote_url=remote,
-                branch=info.branch,
-                base_commit=info.commit,
-                credential_ref=credential_ref,
-                detected_git=True,
-                created_at=_now(),
-            ),
             default_profile=default_profile,
         )
-        try:
-            with store.connect(self.db_path) as conn:
-                store.insert(conn, workspace, repository)
-        except Exception as exc:
-            git.remove_managed_dir(dest)
-            if isinstance(exc, sqlite3.IntegrityError):
-                raise errors.WorkspaceError(errors.NAME_TAKEN, "名称已被占用") from exc
-            raise
-        return workspace
 
     # --- 查询 ---------------------------------------------------------
     def list(self, *, status: str | None = None) -> list[dict[str, Any]]:
@@ -205,7 +139,7 @@ class WorkspaceService:
                 raise errors.WorkspaceError(errors.NOT_FOUND, "工作区不存在")
             fields: dict[str, Any] = {"updated_at": _now()}
             if name is not None:
-                clean = _clean_name(name)
+                clean = creation.clean_name(name)
                 if clean != workspace.name:
                     taken = store.find_active_by_name(conn, clean)
                     if taken is not None and taken.id != workspace_id:
@@ -289,9 +223,11 @@ class WorkspaceService:
         *,
         force: bool,
     ) -> tuple[str | None, bool]:
-        """受管克隆的删除前处理：脏目录先 409 或落 patch，再清理目录。
+        """受管产物的删除前处理：脏目录先 409 或落 patch，再清理目录。
 
         本地引用（`managed=false`）直接返回，绝不触碰用户目录（I5）。
+        工作树不能直接 rmtree：主仓库的 `.git/worktrees/<name>` 会留下悬空登记，
+        下次 `worktree add` 到同一路径会失败，所以先反查主仓库并正式注销。
         """
         if repository is None or not repository.managed:
             return None, False
@@ -299,12 +235,16 @@ class WorkspaceService:
         if changed and self.policy.require_clean_on_delete and not force:
             raise errors.WorkspaceError(
                 errors.DIRTY,
-                "受管克隆目录有未提交改动；先提交/清理，或 force=true",
+                "受管目录有未提交改动；先提交/清理，或 force=true",
                 changed_files=changed,
             )
         patch = str(git.write_delete_patch(root, workspace_id)) if changed else None
         if root.exists():
-            git.remove_managed_dir(root)
+            origin = git.main_root(root) if repository.source == "worktree" else None
+            if origin is not None:
+                git.worktree_remove(origin, root)
+            else:
+                git.remove_managed_dir(root)
         return patch, True
 
     # --- 会话归属与分组 -----------------------------------------------
@@ -410,59 +350,6 @@ class WorkspaceService:
     def _require_enabled(self) -> None:
         if not self.policy.enabled:
             raise errors.WorkspaceError(errors.DISABLED, "工作区功能未开启")
-
-    def _check_capacity(self, conn: Any) -> None:
-        if store.count_workspaces(conn) >= self.policy.max_workspaces:
-            raise errors.WorkspaceError(
-                errors.LIMIT, f"工作区数量已达上限 {self.policy.max_workspaces}"
-            )
-
-    def _unique(self, conn: Any, name: str, root_path: str | None) -> None:
-        taken = store.find_active_by_name(conn, name)
-        if taken is not None:
-            raise errors.WorkspaceError(
-                errors.NAME_TAKEN, "同名工作区已存在", workspace_id=taken.id
-            )
-        if root_path is not None:
-            occupied = store.find_active_by_root(conn, root_path)
-            if occupied is not None:
-                raise errors.WorkspaceError(
-                    errors.PATH_TAKEN, "该目录已被其他工作区引用", workspace_id=occupied.id
-                )
-
-    def _build_workspace(
-        self,
-        name: str,
-        *,
-        root_path: str,
-        repository: Repository,
-        workspace_id: str | None = None,
-        default_profile: str | None = None,
-    ) -> tuple[Workspace, Repository]:
-        now = _now()
-        identifier = workspace_id or new_id()
-        workspace = Workspace(
-            id=identifier,
-            name=name,
-            owner="local",
-            root_path=root_path,
-            default_profile=(default_profile or self.policy.default_profile),
-            status="active",
-            created_at=now,
-            updated_at=now,
-        )
-        bound_repo = Repository(
-            workspace_id=identifier,
-            source=repository.source,
-            managed=repository.managed,
-            remote_url=repository.remote_url,
-            branch=repository.branch,
-            base_commit=repository.base_commit,
-            credential_ref=repository.credential_ref,
-            detected_git=repository.detected_git,
-            created_at=repository.created_at or now,
-        )
-        return workspace, bound_repo
 
 
 __all__ = ["RepoInfo", "WorkspaceService"]

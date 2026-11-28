@@ -247,3 +247,38 @@ def test_restore_archived_session(tmp_path: Path) -> None:
     body = client.get(f"/api/workspaces/{ws_id}/sessions").json()
     assert [item["session_id"] for item in body["items"]] == ["s1"]
     assert body["items"][0]["archived_at"] == ""
+
+
+def test_session_detail_reports_execution_directory(tmp_path: Path) -> None:
+    """会话详情带出归属工作区的身份：名称、执行目录、来源。
+
+    会话页顶栏与模型的「你在哪」都靠它 —— 之前只有 id 与 root_path 藏在
+    服务端，界面与模型都拿不到，用户只能问模型、而模型答错。
+    """
+    client, service = _client(tmp_path)
+    ws_id = _workspace(service, tmp_path, "alpha")
+    service.bind_session("s1", ws_id)
+    _seed_run(service, "s1", text="看下目录", started_at="2026-11-28T09:00:00+00:00")
+
+    body = client.get("/api/workspaces/sessions/s1").json()
+    assert body["workspace_id"] == ws_id
+    assert body["workspace_name"] == "alpha"
+    assert body["root_path"].endswith("alpha")
+    assert body["source"] == "local"
+
+
+def test_session_detail_keeps_unbound_session_visible(tmp_path: Path) -> None:
+    """未归属的老会话不是 404：显式给出空工作区，界面才能说清它在哪跑。"""
+    client, _service = _client(tmp_path)
+    _seed_run(_service, "s-old", text="老会话", started_at="2026-11-28T09:00:00+00:00")
+
+    body = client.get("/api/workspaces/sessions/s-old").json()
+    assert body["session_id"] == "s-old"
+    assert body["workspace_id"] == ""
+    assert body["root_path"] == ""
+
+
+def test_session_detail_unknown_session_404(tmp_path: Path) -> None:
+    """一条 run 都没有的会话仍然是 404：那不是「未归属」，是不存在。"""
+    client, _service = _client(tmp_path)
+    assert client.get("/api/workspaces/sessions/nope").status_code == 404

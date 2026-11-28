@@ -29,6 +29,7 @@ from devops_agent.config_store import schema
 from devops_agent.config_store.api import router as config_router
 from devops_agent.env import load_env
 from devops_agent.executor.manager import SandboxManager, SandboxUnavailable
+from devops_agent.executor.subprocess_compat import install as install_subprocess_compat
 from devops_agent.gateway.bootstrap import (
     describe_runtime,
     load_settings,
@@ -98,6 +99,11 @@ def create_app(*, runtime: AgentRuntime | None = None) -> FastAPI:
         if reaped:
             logger.warning("回收 %d 条悬挂运行记录（上次进程未收尾）", reaped)
         manager: SandboxManager | None = None
+        # 子进程兼容：Windows 上被 uvicorn 换成 SelectorEventLoop 时（--reload /
+        # --workers），asyncio 起不了子进程，shell / glob / grep 会全废。只替换本地
+        # 执行面的那一个入口，不动全局策略（那会弄坏 uvicorn 自己的重载）。
+        if not install_subprocess_compat():
+            logger.debug("子进程兼容层未安装（缺 agentscope 本地执行面）")
         if injected is None:
             manager = SandboxManager(load_sandbox())
             application.state.sandbox_manager = manager

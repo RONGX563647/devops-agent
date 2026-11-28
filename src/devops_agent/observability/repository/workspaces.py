@@ -324,6 +324,28 @@ def list_unbound_session_stats(
     return _session_rows(rows)
 
 
+def unbound_session_stat(conn: sqlite3.Connection, session_id: str) -> dict[str, Any] | None:
+    """未归属会话的单条聚合；有绑定行时返回 None（那种走 `session_stat`）。
+
+    没有它，`session_detail` 只能对老会话答 404 —— 而「这条会话没有工作区」
+    恰恰是最该告诉用户的事。
+    """
+    sql = _SESSION_STATS_SQL.format(
+        source="r.session_id",
+        bound_at="NULL",
+        bound_by="NULL",
+        archived_at="NULL",
+        title=_TITLE_SQL.format(alias="ws", source="r.session_id", chars=_TITLE_CHARS),
+        frm="runs r LEFT JOIN workspace_sessions ws ON ws.session_id = r.session_id",
+        where=(
+            "WHERE r.session_id = ? AND NOT EXISTS (SELECT 1 FROM workspace_sessions ws2"
+            " WHERE ws2.session_id = r.session_id)"
+        ),
+    )
+    row = conn.execute(sql, (session_id,)).fetchone()
+    return _session_rows([row])[0] if row is not None else None
+
+
 def session_stat(conn: sqlite3.Connection, session_id: str) -> dict[str, Any] | None:
     """单条会话的运行聚合（标题 / 最近时间 / 次数），给「改完名立刻刷新标题」用。"""
     sql = _SESSION_STATS_SQL.format(

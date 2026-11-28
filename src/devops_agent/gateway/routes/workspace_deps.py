@@ -6,11 +6,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 from fastapi import Request
 
 from devops_agent.config import load_workspace
 from devops_agent.gateway.errors import workspace_http
-from devops_agent.workspace import WorkspaceError, WorkspaceRef, WorkspaceService
+from devops_agent.workspace import WorkspaceError, WorkspaceRef, WorkspaceService, errors
 
 
 def workspace_service_of(request: Request) -> WorkspaceService:
@@ -34,4 +37,25 @@ def resolve_workspace(
         raise workspace_http(exc.code) from None
 
 
-__all__ = ["resolve_workspace", "workspace_service_of"]
+async def execution_for(request: Request, workspace: WorkspaceRef | None) -> Any | None:
+    """把工作区根换成该目录的执行面；未绑定返回 None（沿用启动期执行面）。
+
+    为什么必须单独传执行面：运行时装配时一旦拿到 `execution`，就整体以它的
+    `host_workdir` 为准、把 `workdir` 参数丢掉，于是「绑了工作区、还是在启动期
+    的目录里跑」。执行面按目录缓存，所以每个工作区各取一份即可，不重复初始化。
+
+    目录不存在时直接 409：执行面会「按需创建」目录，放任下去会得到一个空工作区，
+    表现为「我明明 clone 过，怎么什么都没有」。
+    """
+    if workspace is None:
+        return None
+    manager = getattr(request.app.state, "sandbox_manager", None)
+    if manager is None:
+        return None
+    root = Path(workspace.root_path)
+    if not root.is_dir():
+        raise workspace_http(errors.ROOT_MISSING)
+    return await manager.ensure(root)
+
+
+__all__ = ["execution_for", "resolve_workspace", "workspace_service_of"]

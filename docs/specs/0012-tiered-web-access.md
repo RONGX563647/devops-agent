@@ -6,7 +6,7 @@
 - 范围：`src/devops_agent/input/pipeline/**`、`src/devops_agent/tools/web_search.py`、`src/devops_agent/runtime/{assembly,prompt,profile_note}.py`、`src/devops_agent/gateway/{turn,routes}*`、`src/devops_agent/observability/**`、`config/*.yaml`、`pyproject.toml`、`web/src/workspace/**`
 - 前置阅读：SPEC-0011 §3（`tools` 管文件、`net` 管出站）、PR #115（引用展开三态）、`docs/wiki/Architecture.md` §3
 - 证据约定：现状结论带 `路径:行号`，基线 `0cdd330`；设计建议与既存事实分开写
-- 前端实施约束：改 `web/**` 先读 `skills/modern-web-guidance/SKILL.md` 并按其 search → retrieve → 校验 → 披露流程执行
+- 前端实施约束：改 `web/**` 先读 `skills/.seed/modern-web-guidance/SKILL.md` 并按其 search → retrieve → 校验 → 披露流程执行
 
 ## 1. 结论
 

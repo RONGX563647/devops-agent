@@ -125,7 +125,7 @@ git fetch origin && git checkout main && git pull
      单条不超过 3 行，禁止复述代码。长解释放 docstring / ADR，不在函数中间堆段落。
 8. **前端改动必用 modern-web-guidance skill**：凡修改 `web/**`（TS / TSX / CSS / HTML，
    含 `web/src/pages/**`、`web/src/styles.css` 等），开始前必须先读取
-   `skills/modern-web-guidance/SKILL.md` 并按其流程执行：
+   `skills/.seed/modern-web-guidance/SKILL.md` 并按其流程执行：
    1. `npx -y modern-web-guidance@latest search "<2–5 词英文能力名>" --skill-version 2026_11_16-268fb9ea`
       检索相关 use case（框架名与业务名词不进 query，多特性拆多次 search）。
    2. 对匹配的 `id`（及适用的 discipline guide，如 `html` / `css` / `a11y`）执行
@@ -137,9 +137,15 @@ git fetch origin && git checkout main && git pull
    浏览器支持默认按指南的 Baseline Widely available 判定；项目若有自定义支持策略，
    在 AGENTS.md 本条后追加，并按指南的兼容性数据决定是否允许省略 fallback。
    该 skill 是指南检索器而非静态知识：内容以 `search` / `retrieve` 的当次输出为准，
-   `skills/modern-web-guidance/guides/` 是随发布仓库同步的离线副本。
+   `skills/.seed/modern-web-guidance/guides/` 是随发布仓库同步的离线副本。
    DO NOT trigger：后端（SQL / ORM / API 路由）、基础设施与脚本（CI/CD、Docker、Python/Go、
    Git）、纯工具与琐碎改动（Vite / tsconfig / ESLint / 测试 / 复制重命名）不调用。
+
+   **技能入库位置是 `skills/.seed/`，不是 `skills/` 顶层。** 执行目录就是仓库根，AgentScope
+   把 `<workdir>/skills` 当技能分区根，首次调用技能时会把 `skills/<name>/`（含 `SKILL.md` 的目录）
+   整体搬进 `skills/.seed/` 当模板；模板入库后这步就是空操作，否则每次启动都会让 214 个已跟踪
+   文件显示为删除。新增 vendored 技能直接放 `skills/.seed/<name>/`。`skills/` 顶层只允许
+   `.seed/`、`.gitkeep` 与不含 `SKILL.md` 的目录（如 `understand-anything/` 文本快照）。
 
 ---
 

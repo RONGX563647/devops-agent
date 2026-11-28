@@ -123,7 +123,8 @@ devops-agent/
 │   └── memory/ledger.py      #   Mem0Middleware 工厂（未接线）
 ├── web/                      # React 18 + TS + Vite 前端
 ├── tests/                    # unit / integration
-├── skills/, config/agents/   # 占位（仅 .gitkeep）
+├── skills/.seed/             # vendored 技能模板（AgentScope 技能分区种子；见 AGENTS.md §3.8）
+├── config/agents/            # 占位（仅 .gitkeep）
 └── workspace/                # 运行态：observability.db、附件、评测报告、题库覆盖层（不提交）
 ```
 

@@ -5,7 +5,7 @@
 - 范围：`src/devops_agent/openjudge/**`、`eval/openjudge/**`、`web/src/pages/quality/**`、`web/src/api/**`、`web/src/types/**`、`docs/specs/0008-quality-frontend-ux.md`
 - 前置阅读：`docs/specs/0006-agent-eval-quality-gate.md` §4.4 / §6.1、`docs/specs/0007-eval-model-and-cases-online.md`、`docs/wiki/Observability-and-Eval.md` §4–§5、SPEC-0008
 - 证据约定：本文所有现状结论均带 `文件路径:行号`，基线为 `d0d2fc6`。设计建议与既有事实分开写，不把“应该有”写成“已有”。
-- 前端实施约束：凡修改 `web/**`，先读 `skills/modern-web-guidance/SKILL.md` 并按 `AGENTS.md:126-140` 的 search → retrieve → 合规校验 → 披露流程执行。
+- 前端实施约束：凡修改 `web/**`，先读 `skills/.seed/modern-web-guidance/SKILL.md` 并按 `AGENTS.md:126-140` 的 search → retrieve → 合规校验 → 披露流程执行。
 
 ## 1. 结论
 

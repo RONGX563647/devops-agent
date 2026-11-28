@@ -6,6 +6,8 @@ import type {
   WorkspaceControl,
   WorkspaceList,
   WorkspaceMemoryPage,
+  WorkspaceSessionBoard,
+  WorkspaceSessionPage,
   WorkspaceStatus,
   WorkspaceSummary,
 } from '../types';
@@ -35,6 +37,22 @@ export function fetchWorkspaceMemory(id: string, limit = 5): Promise<WorkspaceMe
 
 export function createWorkspace(req: CreateWorkspaceRequest): Promise<WorkspaceSummary> {
   return sendJson<WorkspaceSummary>('/api/workspaces', 'POST', req);
+}
+
+/** 左栏分组：一次拿全量工作区与各自最近会话，避免按工作区数量发 N 个请求。 */
+export function fetchSessionBoard(limitPerWorkspace = 5): Promise<WorkspaceSessionBoard> {
+  return getJson<WorkspaceSessionBoard>(`/api/workspaces/sessions?limit=${limitPerWorkspace}`);
+}
+
+/** 按工作区列会话（详情页与「展开更多」共用），最近运行优先。 */
+export function fetchWorkspaceSessions(
+  id: string,
+  limit = 50,
+  offset = 0,
+): Promise<WorkspaceSessionPage> {
+  return getJson<WorkspaceSessionPage>(
+    `/api/workspaces/${encodeURIComponent(id)}/sessions?limit=${limit}&offset=${offset}`,
+  );
 }
 
 export function browseWorkspaceDirs(path = ''): Promise<BrowseResult> {

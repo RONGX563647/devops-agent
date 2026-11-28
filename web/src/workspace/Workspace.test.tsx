@@ -43,6 +43,21 @@ function mockRuns(runs: Run[]) {
   );
 }
 
+function mockApi(payload: { runs: Run[]; board?: unknown; control?: unknown }) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const body = url.includes('/api/workspaces/sessions')
+        ? (payload.board ?? { items: [], unbound: [] })
+        : url.includes('/api/workspaces/control')
+          ? (payload.control ?? null)
+          : { items: payload.runs, total: payload.runs.length, limit: 200, offset: 0 };
+      return { ok: true, body: null, json: async () => body };
+    }),
+  );
+}
+
 function renderWorkspace(entry = '/?tab=chat') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -121,6 +136,96 @@ describe('aggregateSessions', () => {
       makeRun(2, 's-one', 'success', '2026-11-23T10:05:00', '继续'),
     ]);
     expect(sessions[0].title).toBe('会话主题：CI 流水线为什么失败');
+  });
+});
+
+describe('左侧分组', () => {
+  it('按工作区分组：工作区头可新开会话，会话照常在底下点开', async () => {
+    const run = makeRun(1, 's-one', 'success', '2026-11-28T10:00:01', '修 CI 流水线为什么失败');
+    mockApi({
+      runs: [run],
+      control: {
+        enabled: true,
+        allow_local_import: true,
+        allow_git_import: false,
+        allowed_local_roots: ['/code'],
+        git_available: false,
+        max_workspaces: 20,
+        default_profile: 'workspace',
+      },
+      board: {
+        items: [
+          {
+            id: 'ws_a',
+            name: 'webpanel',
+            root_path: '/code/webpanel',
+            status: 'active',
+            session_count: 1,
+            sessions: [
+              {
+                session_id: 's-one',
+                title: '修 CI 流水线为什么失败',
+                last_at: '2026-11-28T10:00:01',
+                run_count: 1,
+                failed_count: 0,
+                bound_at: '2026-11-28T09:00:00',
+                bound_by: 'local',
+              },
+            ],
+          },
+        ],
+        unbound: [],
+      },
+    });
+    renderWorkspace('/?session=s-one');
+
+    expect(await screen.findByText('webpanel')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '新建工作区' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /在「webpanel」中新开会话/ }));
+    expect(screen.getByRole('heading', { name: '新会话' })).toBeTruthy();
+  });
+
+  it('左栏的 + 直接打开新建工作区对话框', async () => {
+    mockApi({
+      runs: [],
+      control: {
+        enabled: true,
+        allow_local_import: true,
+        allow_git_import: false,
+        allowed_local_roots: ['/code'],
+        git_available: false,
+        max_workspaces: 20,
+        default_profile: 'workspace',
+      },
+      board: { items: [], unbound: [] },
+    });
+    renderWorkspace();
+    const trigger = await screen.findByRole('button', { name: '新建工作区' });
+    // 能力自述没回来之前按钮是禁用的：点它不会开对话框，先等它可用。
+    await vi.waitFor(() => expect(trigger.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(trigger);
+    expect(await screen.findByRole('heading', { name: '新建工作区' })).toBeTruthy();
+  });
+
+  it('工作区接口不可用时不显示工作区入口，会话列表照常', async () => {
+    const run = makeRun(1, 's-one', 'success', '2026-11-28T10:00:01', '会话一的第一个问题');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/api/workspaces')) {
+          return { ok: false, body: null, json: async () => ({}) };
+        }
+        return {
+          ok: true,
+          body: null,
+          json: async () => ({ items: [run], total: 1, limit: 200, offset: 0 }),
+        };
+      }),
+    );
+    renderWorkspace();
+    expect(await screen.findByRole('button', { name: /会话一的第一个问题/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '新建工作区' })).toBeNull();
   });
 });
 

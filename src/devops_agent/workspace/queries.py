@@ -38,6 +38,23 @@ def summary(workspace: Workspace, repository: Repository | None) -> dict[str, An
     }
 
 
+def session_item(row: dict[str, Any]) -> dict[str, Any]:
+    """一条「工作区下的会话」：标题留原文截断，前端再按宽度压缩。
+
+    `last_at` 取最近一次运行；刚绑定还没跑过的会话回落到绑定时间，
+    否则排序会把它们永远排在最后，用户看不到自己刚挂上去的会话。
+    """
+    return {
+        "session_id": str(row.get("session_id") or ""),
+        "title": str(row.get("title") or ""),
+        "last_at": str(row.get("last_run_at") or row.get("bound_at") or ""),
+        "run_count": int(row.get("run_count") or 0),
+        "failed_count": int(row.get("failed_count") or 0),
+        "bound_at": str(row.get("bound_at") or ""),
+        "bound_by": str(row.get("bound_by") or ""),
+    }
+
+
 def control(policy: WorkspacePolicy, *, git_available: bool) -> dict[str, Any]:
     """能力自述：开关、白名单、git 是否可用（/health 与前端共用）。"""
     return {
@@ -51,4 +68,4 @@ def control(policy: WorkspacePolicy, *, git_available: bool) -> dict[str, Any]:
     }
 
 
-__all__ = ["control", "scope_id", "summary"]
+__all__ = ["control", "scope_id", "session_item", "summary"]

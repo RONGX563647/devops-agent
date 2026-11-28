@@ -9,6 +9,12 @@ from __future__ import annotations
 import base64
 import secrets
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+
+
+def now_iso() -> str:
+    """统一秒级 UTC 时间戳；登记、绑定与投影都读它，避免各层格式漂移。"""
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def new_id() -> str:
@@ -93,4 +99,5 @@ __all__ = [
     "WorkspaceRef",
     "WorkspaceSession",
     "new_id",
+    "now_iso",
 ]

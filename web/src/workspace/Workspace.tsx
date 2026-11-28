@@ -43,6 +43,9 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
   const session = params.get('session') ?? initialSession;
   // 新会话先用一个草稿 id 承载消息，首次发送时再落到 URL，避免固定 live-1。
   const [draftId, setDraftId] = useState(() => newId('sess'));
+  // 草稿会话准备落进哪个工作区：只对「还没发出第一轮」的会话有意义。
+  // 已有会话的归属以服务端绑定为准，再从界面传一次会把 409 引进来。
+  const [workspace, setWorkspace] = useState<string | null>(null);
   const sessionId = session ?? draftId;
 
   const sessions = useSessionList();
@@ -67,12 +70,21 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
     if (id === null) next.delete('session');
     else next.set('session', id);
     setParams(next, { replace: true });
+    // 切到别的会话后，上一条草稿选的工作区不再适用；归属交给服务端绑定。
+    if (id !== null) setWorkspace(null);
   }
 
   /** 新会话 = 换一个草稿 id 并清空选中；即使当前已经在「新会话」也生效。 */
   function startNewSession() {
     setDraftId(newId('sess'));
     switchSession(null);
+  }
+
+  /** 在某个工作区里新开会话：草稿记住它，首轮请求带上 workspace_id 由后端落绑定。 */
+  function startNewInWorkspace(workspaceId: string) {
+    setDraftId(newId('sess'));
+    switchSession(null);
+    setWorkspace(workspaceId);
   }
 
   /** 首次发送：把草稿 id 写回 URL，让刷新/深链能回到同一会话。 */
@@ -82,7 +94,13 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
 
   return (
     <div className="workspace">
-      <SessionSidebar selected={session} onSelect={switchSession} onNew={startNewSession} />
+      <SessionSidebar
+        selected={session}
+        workspace={workspace}
+        onSelect={switchSession}
+        onNew={startNewSession}
+        onNewInWorkspace={startNewInWorkspace}
+      />
       <div className="workspace-main">
         <header className="workspace-header">
           <h1 className="workspace-title">{title}</h1>
@@ -112,6 +130,7 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
             <ChatTab
               key={sessionId}
               session={sessionId}
+              workspace={session ? null : workspace}
               onFirstSend={handleFirstSend}
               onOpenTrace={() => switchTab('trace')}
             />

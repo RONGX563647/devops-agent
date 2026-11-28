@@ -151,6 +151,18 @@ def count_sessions(conn: Any, workspace_id: str) -> int:
     return repo.count_workspace_sessions(conn, workspace_id)
 
 
+def session_stats(
+    conn: Any, workspace_id: str, *, limit: int = 50, offset: int = 0
+) -> list[dict[str, Any]]:
+    """工作区下会话的运行聚合（标题 / 最近时间 / 次数），供左栏与详情页共用。"""
+    return repo.list_workspace_session_stats(conn, workspace_id, limit=limit, offset=offset)
+
+
+def unbound_session_stats(conn: Any, *, limit: int = 50) -> list[dict[str, Any]]:
+    """尚未归属任何工作区的会话聚合。"""
+    return repo.list_unbound_session_stats(conn, limit=limit)
+
+
 def set_session_workspace(conn: Any, session_id: str, workspace_id: str) -> None:
     repo.set_session_workspace(conn, session_id, workspace_id)
 
@@ -188,6 +200,8 @@ __all__ = [
     "list_long_term",
     "list_sessions",
     "list_workspaces",
+    "session_stats",
     "set_session_workspace",
+    "unbound_session_stats",
     "update",
 ]

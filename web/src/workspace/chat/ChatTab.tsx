@@ -37,6 +37,8 @@ export { attachMeta, formatSize } from './attachments';
 export { formatClock } from '../time';
 interface Props {
   session: string;
+  /** 草稿会话要落进的工作区；已有会话传 null，归属以服务端绑定为准。 */
+  workspace?: string | null;
   /** 首次发送时通知外层把「新会话」落到 URL 上。 */
   onFirstSend?: () => void;
   onOpenTrace?: () => void;
@@ -63,7 +65,7 @@ const SAMPLES = [
   '最近失败最多的阶段是哪个？',
 ];
 
-export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
+export function ChatTab({ session, workspace = null, onFirstSend, onOpenTrace }: Props) {
   const view = useSession(session);
   // 运行时模式：Echo 兜底意味着没配模型凭据，回复只是把输入回显一遍。
   // 不显式说出来，用户只会看到「模型答非所问」然后反复重试。
@@ -159,7 +161,7 @@ export function ChatTab({ session, onFirstSend, onOpenTrace }: Props) {
     // 只挂附件、不写字也是合法的一轮：这时候问题就是「看看这个文件」
     if ((!value && attachments.length === 0) || view.running || view.awaiting) return;
     onFirstSend?.();
-    send(session, value, attachments, view.permission, webSearch);
+    send(session, value, attachments, view.permission, webSearch, workspace);
   }
 
   /** 确认卡片的三选一：全部待确认调用一起答复。 */

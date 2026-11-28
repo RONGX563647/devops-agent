@@ -212,6 +212,95 @@ def count_workspace_sessions(conn: sqlite3.Connection, workspace_id: str) -> int
     return int(row["n"])
 
 
+# 左栏只显示一行标题，把整段输入搬进列表纯属浪费带宽：统一在 SQL 里截断。
+_TITLE_CHARS = 80
+
+# 「会话 + 运行聚合」是同一条 SQL 的两种口径（限定工作区 / 未归属），
+# 只有 WHERE 与分组来源不同，所以共用这段 SELECT 与 ORDER BY。
+_SESSION_STATS_SQL = """
+    SELECT {source} AS session_id,
+           {bound_at} AS bound_at,
+           {bound_by} AS bound_by,
+           COUNT(r.id) AS run_count,
+           COALESCE(SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END), 0) AS failed_count,
+           MAX(r.started_at) AS last_run_at,
+           (SELECT substr(t.input, 1, {chars})
+              FROM runs AS t
+             WHERE t.session_id = {source}
+             ORDER BY t.started_at ASC, t.id ASC
+             LIMIT 1) AS title
+      FROM {frm}
+      {where}
+     GROUP BY {source}
+"""
+
+
+def _session_rows(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    return [
+        {
+            "session_id": str(row["session_id"]),
+            "bound_at": str(row["bound_at"] or ""),
+            "bound_by": str(row["bound_by"] or ""),
+            "title": str(row["title"] or ""),
+            "run_count": int(row["run_count"] or 0),
+            "failed_count": int(row["failed_count"] or 0),
+            "last_run_at": str(row["last_run_at"] or ""),
+        }
+        for row in rows
+    ]
+
+
+def list_workspace_session_stats(
+    conn: sqlite3.Connection,
+    workspace_id: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """某工作区下的会话及其运行聚合；标题取最早一条输入，时间取最近一次运行。
+
+    绑定表是归属的唯一真相，所以从左表出发：刚绑定还没跑过的会话也要出现
+    （`run_count=0`，排序回落到 `bound_at`）。
+    """
+    sql = (
+        _SESSION_STATS_SQL.format(
+            source="ws.session_id",
+            bound_at="ws.bound_at",
+            bound_by="ws.bound_by",
+            chars=_TITLE_CHARS,
+            frm="workspace_sessions ws LEFT JOIN runs r ON r.session_id = ws.session_id",
+            where="WHERE ws.workspace_id = ?",
+        )
+        + " ORDER BY COALESCE(MAX(r.started_at), ws.bound_at) DESC, ws.session_id DESC"
+        " LIMIT ? OFFSET ?"
+    )
+    rows = conn.execute(sql, (workspace_id, limit, offset)).fetchall()
+    return _session_rows(rows)
+
+
+def list_unbound_session_stats(
+    conn: sqlite3.Connection, *, limit: int = 50
+) -> list[dict[str, Any]]:
+    """还没归属任何工作区的会话（老会话保持可见，不因新模型上线而消失）。"""
+    sql = (
+        _SESSION_STATS_SQL.format(
+            source="r.session_id",
+            bound_at="NULL",
+            bound_by="NULL",
+            chars=_TITLE_CHARS,
+            frm="runs r",
+            where=(
+                "WHERE NOT EXISTS (SELECT 1 FROM workspace_sessions ws"
+                " WHERE ws.session_id = r.session_id)"
+            ),
+        )
+        + " ORDER BY COALESCE(MAX(r.started_at), '') DESC, r.session_id DESC"
+        " LIMIT ?"
+    )
+    rows = conn.execute(sql, (limit,)).fetchall()
+    return _session_rows(rows)
+
+
 def set_session_workspace(conn: sqlite3.Connection, session_id: str, workspace_id: str) -> None:
     """把绑定写进会话快照的审计列；快照不存在时不动（绑定表才是唯一真相）。"""
     conn.execute(
@@ -231,6 +320,8 @@ __all__ = [
     "get_session_binding",
     "get_workspace",
     "insert_workspace",
+    "list_unbound_session_stats",
+    "list_workspace_session_stats",
     "list_workspace_sessions",
     "list_workspaces",
     "set_session_workspace",

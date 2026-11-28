@@ -89,6 +89,8 @@ export async function streamRun(
   permission?: string,
   webSearch = false,
   onActivity?: () => void,
+  /** 草稿会话要落进的工作区；省略时后端按已绑定归属解析执行目录。 */
+  workspace?: string | null,
 ): Promise<void> {
   const resp = await fetch('/run/stream', {
     method: 'POST',
@@ -105,6 +107,7 @@ export async function streamRun(
       // 每次都显式表态：省略会被服务端理解为「按部署默认」，
       // 部署开了 DEVOPS_AGENT_ENABLE_SEARCH 时，界面上的「关」就关不掉了。
       web_search: webSearch,
+      ...(workspace ? { workspace_id: workspace } : {}),
     }),
     signal,
   });

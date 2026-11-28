@@ -17,6 +17,7 @@ import {
   fetchWorkspace,
   fetchWorkspaceControl,
   fetchWorkspaceMemory,
+  fetchWorkspaceSessions,
   fetchWorkspaces,
   restoreWorkspace,
 } from '../api/client';
@@ -90,9 +91,18 @@ export function Workspaces() {
     retry: 0,
     staleTime: 15_000,
   });
+  // 会话同理想法：详情页展示「最近 5 条」，完整列表由左栏分组承担。
+  const sessions = useQuery({
+    queryKey: ['workspace-sessions', activeId],
+    queryFn: () => fetchWorkspaceSessions(activeId as string, 5),
+    enabled: Boolean(activeId),
+    retry: 0,
+    staleTime: 15_000,
+  });
 
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+    await queryClient.invalidateQueries({ queryKey: ['workspace-sessions'] });
     if (activeId) await queryClient.invalidateQueries({ queryKey: ['workspace', activeId] });
   }
 
@@ -185,6 +195,8 @@ export function Workspaces() {
               loading={detail.isLoading}
               memories={memories.data?.items ?? []}
               memoriesLoading={memories.isLoading}
+              sessions={sessions.data?.items ?? []}
+              sessionsLoading={sessions.isLoading}
               onArchive={onArchive}
               onRestore={onRestore}
               onDelete={onDelete}

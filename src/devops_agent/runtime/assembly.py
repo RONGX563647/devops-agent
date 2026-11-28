@@ -32,6 +32,7 @@ from devops_agent.runtime.compression import CompressionMiddleware, CompressionS
 from devops_agent.runtime.profile_note import ProfileNoteMiddleware
 from devops_agent.runtime.prompt import build_system_prompt, resolve_workdir
 from devops_agent.runtime.scope_runtime import PROFILE_KEY, AgentScopeRuntime
+from devops_agent.runtime.workspace_note import WorkspaceNoteMiddleware, workspace_brief
 from devops_agent.search_mode import search_mode
 from devops_agent.secrets.middleware import build_secret_middleware
 from devops_agent.tools.catalog import BackendFactory, build_toolkit_for
@@ -127,6 +128,9 @@ class RuntimeParts:
     backend_factory: BackendFactory | None = None
     execution: ExecutionTarget | None = None
     note_mw: ProfileNoteMiddleware | None = None
+    # 工作区说明（名称/来源/分支/执行目录）：追加在消息末尾，不进系统提示
+    workspace_brief: str = ""
+    workspace_mw: WorkspaceNoteMiddleware | None = None
     # 联网检索工具实例：预算要跨轮 reset，所以必须由运行时与 toolkit 共用同一个对象。
     search_tool: WebSearchTool | None = None
     toolkit_mws: list[ToolMiddlewareBase] = field(default_factory=list)
@@ -228,6 +232,7 @@ def _build_middlewares(
     return replace(
         parts,
         note_mw=ProfileNoteMiddleware(parts.profile, web_search=parts.web_search),
+        workspace_mw=WorkspaceNoteMiddleware(parts.workspace_brief),
         toolkit_mws=[build_secret_middleware()],
         compression_sink=CompressionSink(),
         memory=memory,
@@ -239,6 +244,8 @@ def _build_agent(parts: RuntimeParts) -> RuntimeParts:
     note_mw = parts.note_mw
     sink = parts.compression_sink
     assert note_mw is not None and sink is not None
+    # 工作区说明排在档位说明之后：请求尾部顺序是「档位 → 工作区 → 中期 → 长期」
+    workspace_mws = [parts.workspace_mw] if parts.workspace_mw is not None else []
     # 记忆中间件放在档位说明之后：请求尾部顺序才是「档位 → 中期 → 长期」
     memory_mws = [MemoryMiddleware(parts.memory)] if parts.memory is not None else []
     # 联网工具不在 profile.tools 里：它由独立的 net 维度授予，只有这一刻才拼进来。
@@ -263,6 +270,7 @@ def _build_agent(parts: RuntimeParts) -> RuntimeParts:
         ),
         middlewares=[
             note_mw,
+            *workspace_mws,
             *memory_mws,
             CompressionMiddleware(sink, parts.memory),
         ],
@@ -304,6 +312,7 @@ def build_agentscope_runtime(
     memory_policy: Any | None = None,
     execution: ExecutionTarget | None = None,
     workspace_id: str = "",
+    workspace_brief: str = "",
 ) -> AgentScopeRuntime:
     """装配真实运行时（env 提供模型凭据）。
 
@@ -321,6 +330,9 @@ def build_agentscope_runtime(
     parts = _resolve_runtime_inputs(
         system_prompt, workdir, profile, state, web_search, params, execution
     )
+    # 工作区说明随本轮工作区走：它决定模型怎么回答「你在哪」，与执行目录同源
+    if workspace_brief:
+        parts = replace(parts, workspace_brief=workspace_brief)
     # 2) 联网工具：只有 tool 模式且后端可用才建，预算实例要交给运行时持有
     parts = _build_search_tool(parts)
     # 3) 建中间件、压缩 sink 与记忆运行时（无 session_id 时不装配记忆）
@@ -348,6 +360,7 @@ def session_runtime_factory(base: object) -> Callable[..., Any]:
         web_search: bool | None = None,
         model_config: dict[str, Any] | None = None,
         workspace: Any | None = None,
+        execution: Any | None = None,
     ) -> Any:
         if not isinstance(base, AgentScopeRuntime):
             return base
@@ -356,6 +369,10 @@ def session_runtime_factory(base: object) -> Callable[..., Any]:
         # 未绑定（None）时 workdir 传 None，回落到 DEVOPS_AGENT_WORKDIR —— 旧行为不变。
         workdir = getattr(workspace, "root_path", None) if workspace is not None else None
         workspace_id = str(getattr(workspace, "id", "") or "") if workspace is not None else ""
+        # 执行面按目录缓存：工作区必须带自己的那份进来。只传 workdir 是不够的 ——
+        # `_execution_paths` 一旦看到 execution 就整体以它为准，workdir 会被丢掉，
+        # 表现为「绑了工作区还是在启动期的目录里跑」。
+        target = execution if execution is not None else getattr(base, "execution", None)
         return build_agentscope_runtime(
             profile=profile,
             state=state,
@@ -364,8 +381,8 @@ def session_runtime_factory(base: object) -> Callable[..., Any]:
             params=effective_params(session=model_config or {}),
             session_id=session_id,
             workspace_id=workspace_id,
-            # 会话重建必须复用启动期的执行面，否则切档/换会话会退回宿主。
-            execution=getattr(base, "execution", None),
+            execution=target,
+            workspace_brief=workspace_brief(workspace, str(workdir or "")),
         )
 
     return make

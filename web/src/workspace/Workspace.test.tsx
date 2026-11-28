@@ -395,4 +395,26 @@ describe('Workspace', () => {
     fireEvent.click(sidebar().getByRole('button', { name: /^会话一的第一个问题/ }));
     expect(await screen.findByRole('heading', { name: '会话一的第一个问题' })).toBeTruthy();
   });
+
+  it('顶栏显示这条会话的执行目录', async () => {
+    // 用户此前只能从模型嘴里问出「你在哪」，答案还是错的；现在顶栏直接给路径
+    mockApi({
+      session: {
+        ...sessionItem('s-one', '会话一的第一个问题'),
+        workspace_id: 'ws_a',
+        workspace_name: 'webpanel',
+        root_path: 'E:////code////webpanel',
+        source: 'local',
+      },
+    });
+    renderWorkspace('/?tab=chat&session=s-one');
+    expect(await screen.findByText('webpanel', { selector: '.workspace-cwd-name' })).toBeTruthy();
+    expect(screen.getByText('…/code/webpanel')).toBeTruthy();
+  });
+
+  it('未归属会话明确标出跑在默认目录', async () => {
+    mockApi({ session: sessionItem('s-one', '会话一的第一个问题') });
+    renderWorkspace('/?tab=chat&session=s-one');
+    expect(await screen.findByText('未归属工作区 · 跑在默认目录')).toBeTruthy();
+  });
 });

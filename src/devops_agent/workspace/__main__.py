@@ -33,7 +33,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     create = sub.add_parser("create", help="创建工作区")
     create.add_argument("--name", required=True)
-    create.add_argument("--local", default="", help="引用本地目录（原地引用）")
+    create.add_argument("--local", default="", help="引用本地目录")
+    create.add_argument(
+        "--mode",
+        default="auto",
+        choices=["auto", "worktree", "in_place"],
+        help="本地来源落盘方式：auto=git 仓库开工作树，worktree/in_place 强制",
+    )
     create.add_argument("--git", default="", help="从远端克隆")
     create.add_argument("--branch", default="")
     create.add_argument("--credential", default="", help="secrets 里的凭据名")
@@ -66,7 +72,10 @@ def main(argv: list[str] | None = None) -> int:
             if bool(args.local) == bool(args.git):
                 raise errors.WorkspaceError(errors.SOURCE_INVALID, "--local 与 --git 必须二选一")
             if args.local:
-                _print(asdict(service.create_local(args.name, args.local, args.profile)))
+                workspace = service.create_local(
+                    args.name, args.local, args.profile, mode=args.mode, branch=args.branch
+                )
+                _print(asdict(workspace))
             else:
                 _print(
                     asdict(

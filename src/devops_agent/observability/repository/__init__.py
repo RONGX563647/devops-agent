@@ -105,6 +105,7 @@ from .workspaces import (
     set_session_archived,
     set_session_title,
     set_session_workspace,
+    unbound_session_stat,
     update_workspace,
 )
 
@@ -155,6 +156,8 @@ __all__ = [
     "init_db",
     "insert_workspace",
     "list_unbound_session_stats",
+    "unbound_session_stat",
+    "unbound_session_stat",
     "list_workspace_session_stats",
     "json",
     "latest_version",

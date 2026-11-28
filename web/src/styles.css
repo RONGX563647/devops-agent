@@ -8305,3 +8305,75 @@ a:hover {
   font-variant-numeric: tabular-nums;
   color: var(--ink-faint);
 }
+
+/* 落盘方式（本地来源）：两个并排的说明型单选项，跟来源卡片同一套视觉语言，
+   但更矮 —— 这里是来源之后的第二个决定，不该跟来源抢注意力。 */
+.wsp-landing {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+.wsp-landing-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-4);
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+.wsp-landing-item:hover {
+  border-color: var(--line-strong);
+}
+.wsp-landing-item.is-active {
+  background: var(--accent-faint);
+  border-color: var(--accent);
+}
+.wsp-landing-item:focus-within {
+  box-shadow: var(--shadow-focus);
+}
+.wsp-landing-title {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--ink);
+}
+.wsp-landing-desc {
+  font-size: var(--text-2xs);
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+
+/* 顶栏的「这条会话在哪跑」：工作区名 + 执行目录末两段。
+   未归属时用警示色把「跑在默认目录」这件事说出来 —— 之前它完全不可见，
+   用户只能从模型嘴里听到「我在 E:/code/devops-agent」。 */
+.workspace-cwd {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  max-width: 320px;
+  padding: 2px var(--sp-3);
+  font-size: var(--text-2xs);
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.workspace-cwd-name {
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.workspace-cwd-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  color: var(--ink-muted);
+}
+.workspace-cwd.is-unbound {
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+  border-color: transparent;
+}

@@ -42,6 +42,13 @@ function parseTab(value: string | null): TabKey {
   return value && VALID_KEYS.has(value) ? (value as TabKey) : 'chat';
 }
 
+/** 顶栏只留末两段路径：整条 Windows 路径会把会话标题挤走。 */
+function shortCwd(path: string, keep = 2): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  if (parts.length === 0) return path;
+  return parts.length <= keep ? path : `…/${parts.slice(-keep).join('/')}`;
+}
+
 interface Props {
   /** 供旧路由深链复用：指定初始 tab。 */
   initialTab?: string | null;
@@ -107,8 +114,10 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
   /** 首次发送：把草稿 id 写回 URL，让刷新/深链能回到同一会话。 */
   function handleFirstSend() {
     if (!session) switchSession(draftId);
-    // 后端刚落下归属，立刻重取分组：新会话要在工作区底下出现，而不是等 15s 轮询。
+    // 后端刚落下归属，立刻重取分组与详情：新会话要在工作区底下出现，
+    // 顶栏也要马上显示它现在跑在哪个目录，而不是等 15s 轮询。
     void queryClient.invalidateQueries({ queryKey: ['workspace-sessions'] });
+    void queryClient.invalidateQueries({ queryKey: ['session'] });
   }
 
   return (
@@ -129,6 +138,25 @@ export function Workspace({ initialTab = null, initialSession = null }: Props) {
           <Link className="workspace-chip" to="/workspaces">
             工作区
           </Link>
+          {session ? (
+            <span
+              className={`workspace-cwd${detail.data?.workspace_id ? '' : ' is-unbound'}`}
+              title={
+                detail.data?.root_path
+                  ? `执行目录：${detail.data.root_path}`
+                  : '未归属工作区：在部署默认目录里执行'
+              }
+            >
+              {detail.data?.workspace_id ? (
+                <>
+                  <span className="workspace-cwd-name">{detail.data.workspace_name}</span>
+                  <span className="workspace-cwd-path">{shortCwd(detail.data.root_path ?? '')}</span>
+                </>
+              ) : (
+                '未归属工作区 · 跑在默认目录'
+              )}
+            </span>
+          ) : null}
           <nav className="workspace-tabs" role="tablist" aria-label="会话视图">
             {TAB_GROUPS.map((group) => (
               <div className="workspace-tabgroup" key={group} role="group" aria-label={group}>

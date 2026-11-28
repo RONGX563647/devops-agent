@@ -175,6 +175,11 @@ def session_stat(conn: Any, session_id: str) -> dict[str, Any] | None:
     return repo.session_stat(conn, session_id)
 
 
+def unbound_session_stat(conn: Any, session_id: str) -> dict[str, Any] | None:
+    """单条未归属会话的聚合（老会话没有绑定行）。"""
+    return repo.unbound_session_stat(conn, session_id)
+
+
 def unbound_session_stats(conn: Any, *, limit: int = 50) -> list[dict[str, Any]]:
     """尚未归属任何工作区的会话聚合（没有绑定行，也就没有改名与归档）。"""
     return repo.list_unbound_session_stats(conn, limit=limit)

@@ -144,7 +144,7 @@ export function WorkspaceDetail({
           <h2 id="wsp-code-title">代码位置</h2>
           <span className={`wsp-card-tag${git ? ' is-git' : ''}`}>
             {git ? <GitIcon size={13} /> : <FolderIcon size={13} />}
-            {git ? '受管克隆' : '原地引用'}
+            {git ? '受管克隆' : item.source === 'worktree' ? '工作树' : '原地引用'}
           </span>
         </div>
         <div className="wsp-path">
@@ -154,6 +154,10 @@ export function WorkspaceDetail({
             <span className="sr-only">{copied ? '已复制' : '复制路径'}</span>
           </button>
         </div>
+        <p className="wsp-field-hint">
+          会话就在这个目录里执行：shell 的工作目录与文件工具的路径基准都是它。
+          {item.source === 'worktree' ? '这是主仓库的一个工作树，你的检出不受影响。' : ''}
+        </p>
         <dl className="wsp-dl">
           {git ? (
             <>

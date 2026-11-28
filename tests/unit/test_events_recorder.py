@@ -540,3 +540,23 @@ def test_recorder_records_ttft_and_tool_failure_reason(tmp_path: Path) -> None:
         assert repo.ttft_samples(conn) == [model.ttft_ms]
         failures = repo.error_spans(conn)
         assert failures == [{"type": "tool", "name": "Bash", "error": "Command failed: npm test"}]
+
+
+def test_reply_end_error_becomes_run_failure_reason(tmp_path: Path) -> None:
+    """REPLY_END 带来的异常原文要落成 run.error。
+
+    框架内部收口时只发 finished_reason=error，不会把异常抛给调用方；不接住这个
+    字段，落库的就只有一句「未捕获到异常信息」—— 看板上等于没有失败原因。
+    """
+    rec = RunRecorder(tmp_path / "reason.db", model="qwen")
+    rec.start("s-reason", "跑测试")
+    rec.consume(
+        _evt("REPLY_END", finished_reason="error", error="PermissionDeniedError: Error code 403")
+    )
+    run_id = rec.finish()
+
+    with repo.connect(tmp_path / "reason.db") as conn:
+        run = repo.get_run(conn, run_id)
+    assert run is not None
+    assert run.status == "failed"
+    assert run.error == "PermissionDeniedError: Error code 403"

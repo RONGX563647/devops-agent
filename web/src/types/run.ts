@@ -29,6 +29,8 @@ export interface Run {
   model_params?: string;
   /** 本轮网络获取决策（JSON：net / prefetch / fallback）；空串 = 老记录未记录。 */
   web_access?: string;
+  /** 失败原因原文；空串 = 成功或老记录。 */
+  error?: string;
 }
 
 export interface RunList {
@@ -41,7 +43,7 @@ export interface RunList {
 export interface Span {
   id: number;
   run_id: number;
-  type: 'model' | 'tool' | 'permission';
+  type: 'model' | 'tool' | 'memory' | 'permission';
   name: string;
   start_offset_ms: number;
   duration_ms: number | null;
@@ -55,6 +57,8 @@ export interface Span {
   output_tokens?: number;
   cache_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  /** 首 token 等待（毫秒）；0 表示没采到，不能按 0ms 计入均值。 */
+  ttft_ms?: number;
   /** run 内单调序号与父 span：泳道与列表共用同一顺序。 */
   seq?: number;
   parent_id?: number | null;

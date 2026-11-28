@@ -60,6 +60,8 @@ class RunOut(BaseModel):
     web_access: str = ""
     # 本轮所属工作区（SPEC-0021）；空串 = 未绑定或老记录
     workspace_id: str = ""
+    # 失败原因原文；空串 = 成功或老记录。不返回它，「失败原因」就只能从步骤里猜
+    error: str = ""
 
 
 class SpanOut(BaseModel):
@@ -450,6 +452,7 @@ def _run_out(run: RunRecord) -> RunOut:
         model_params=run.model_params,
         web_access=run.web_access,
         workspace_id=run.workspace_id,
+        error=run.error,
     )
 
 

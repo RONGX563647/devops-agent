@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchRuns } from '../api/client';
-import type { ConfirmDecision, PendingCall, Run, StreamEvent } from '../types';
+import { fetchRuns, fetchSpans } from '../api/client';
+import type { ConfirmDecision, PendingCall, Run, Span, StreamEvent } from '../types';
 import { clearAllHistory, loadMessages, loadPermission } from './history';
 import { confirm, refreshPending, send, setPermission, stop } from './store/actions';
 import { ensureHistory, listSessions } from './store/history';
@@ -17,7 +17,11 @@ vi.mock('../api/stream', async (importOriginal) => {
   return { ...actual, streamRun: streamRunMock, streamConfirm: streamConfirmMock };
 });
 
-vi.mock('../api/client', () => ({ fetchRuns: vi.fn(), fetchPending: fetchPendingMock }));
+vi.mock('../api/client', () => ({
+  fetchRuns: vi.fn(),
+  fetchSpans: vi.fn(),
+  fetchPending: fetchPendingMock,
+}));
 
 type Handler = (event: StreamEvent) => void;
 
@@ -63,7 +67,7 @@ const CALLS: PendingCall[] = [
   { tool_call_id: 't1', name: 'Bash', input: 'rm -rf build', risk: 'danger' },
 ];
 
-function makeRun(id: number, sessionId: string): Run {
+function makeRun(id: number, sessionId: string, patch: Partial<Run> = {}): Run {
   return {
     id,
     session_id: sessionId,
@@ -79,6 +83,23 @@ function makeRun(id: number, sessionId: string): Run {
     health_score: 80,
     input_tokens: 10,
     output_tokens: 10,
+    ...patch,
+  };
+}
+
+function makeSpan(patch: Partial<Span> & { id: number }): Span {
+  return {
+    run_id: 31,
+    type: 'model',
+    name: 'qwen',
+    start_offset_ms: 0,
+    duration_ms: 0,
+    input: '',
+    output: '',
+    tokens: 0,
+    status: 'ok',
+    error: null,
+    ...patch,
   };
 }
 
@@ -89,6 +110,8 @@ beforeEach(() => {
   streamConfirmMock.mockReset();
   fetchPendingMock.mockReset();
   vi.mocked(fetchRuns).mockReset();
+  vi.mocked(fetchSpans).mockReset();
+  vi.mocked(fetchSpans).mockResolvedValue([]);
   mockStream();
 });
 
@@ -155,6 +178,67 @@ describe('会话 store', () => {
     expect(result.current.messages[0].text).toBe('历史问题');
     expect(result.current.messages[1].text).toBe('历史回答');
     expect(result.current.messages[1].runId).toBe(11);
+  });
+
+  it('ensureHistory 用 spans 还原步骤：历史会话的轨迹页才有泳道与耗时', async () => {
+    vi.mocked(fetchRuns).mockResolvedValue({
+      items: [makeRun(31, 's-7')],
+      total: 1,
+      limit: 200,
+      offset: 0,
+    });
+    vi.mocked(fetchSpans).mockResolvedValue([
+      makeSpan({
+        id: 1,
+        seq: 1,
+        type: 'model',
+        name: 'qwen',
+        start_offset_ms: 100,
+        duration_ms: 1200,
+        output: '好的',
+        input_tokens: 10,
+        output_tokens: 5,
+      }),
+      makeSpan({
+        id: 2,
+        seq: 2,
+        type: 'tool',
+        name: 'grep',
+        start_offset_ms: 1400,
+        duration_ms: 300,
+        input: '{"pattern":"x"}',
+        output: '3 hits',
+        status: 'error',
+        error: 'Command failed: grep',
+      }),
+    ]);
+    const { result } = renderHook(() => useSession('s-7'));
+    await act(async () => {
+      await ensureHistory('s-7');
+    });
+    const steps = result.current.messages[1].steps;
+    expect(steps).toHaveLength(2);
+    expect(steps[0]).toMatchObject({ kind: 'model', state: 'success', tokensIn: 10, tokensOut: 5 });
+    // 偏移相对运行起点：不能凭空造时间轴
+    expect(Date.parse(steps[0].at!) - Date.parse('2026-11-23T10:00:00')).toBe(100);
+    expect(Date.parse(steps[0].endedAt!) - Date.parse('2026-11-23T10:00:00')).toBe(1300);
+    // 失败步骤带 error 原文：失败原因分类靠它归并
+    expect(steps[1]).toMatchObject({ kind: 'tool', toolName: 'grep', state: 'error' });
+    expect(steps[1].result).toBe('Command failed: grep');
+  });
+
+  it('历史 run 的失败原因跟着消息走：老数据 spans 没有 error 也不丢原因', async () => {
+    vi.mocked(fetchRuns).mockResolvedValue({
+      items: [makeRun(41, 's-8', { status: 'failed', error: 'Orphaned: 进程重启，本轮未收尾' })],
+      total: 1,
+      limit: 200,
+      offset: 0,
+    });
+    const { result } = renderHook(() => useSession('s-8'));
+    await act(async () => {
+      await ensureHistory('s-8');
+    });
+    expect(result.current.messages[1].error).toBe('Orphaned: 进程重启，本轮未收尾');
   });
 
   it('ensureHistory 首次失败不把会话锁死，下次还能重试', async () => {

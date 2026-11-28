@@ -24,6 +24,7 @@ export function CallRows({
   query,
   activeStepId,
   activeGroupKey,
+  onlyErrors = false,
   onSelect,
   onSelectGroup,
 }: {
@@ -32,6 +33,8 @@ export function CallRows({
   activeStepId: string | null;
   /** 右侧正在展示统计的那一组：列表保持高亮，避免「点了哪组」对不上。 */
   activeGroupKey: string | null;
+  /** 只保留失败步骤时为真：空态要说明「运行级失败不是 span」，否则看着像坏了。 */
+  onlyErrors?: boolean;
   onSelect: (step: TraceStep) => void;
   onSelectGroup: (group: CallGroup) => void;
 }) {
@@ -50,7 +53,12 @@ export function CallRows({
   if (groups.length === 0) {
     return (
       <p className="trace-empty">
-        {needle ? `没有匹配「${query}」的调用。` : '还没有模型或工具调用。'}
+        {needle
+          ? `没有匹配「${query}」的调用。`
+          : onlyErrors
+            // 断开/中断这类失败只有 runs.error，没有 span，调用视图本来就看不见
+            ? '过滤后没有失败的模型或工具调用：运行级失败（客户端断开、进程中断）不是步骤，去「轮次」页签看。'
+            : '还没有模型或工具调用。'}
       </p>
     );
   }

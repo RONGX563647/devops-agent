@@ -52,6 +52,7 @@ def db(monkeypatch: object, tmp_path: Path) -> Path:
             health_score=40.0,
             input_tokens=60,
             output_tokens=20,
+            error="ClientDisconnected: 客户端断开，本轮中止",
         )
         id1 = repo.create_run(conn, r1)
         repo.create_run(conn, r2)
@@ -82,6 +83,9 @@ def test_list_runs_and_filters(db: Path) -> None:
     assert body["total"] == 2
     assert len(body["items"]) == 2
     assert body["items"][0]["session_id"] == "s2"  # 倒序
+    # 失败原因必须随 run 一起返回：老数据的 span 里没有 error，只剩这一份
+    assert body["items"][0]["error"] == "ClientDisconnected: 客户端断开，本轮中止"
+    assert body["items"][1]["error"] == ""
 
     filtered = client.get("/api/runs", params={"domain": "debug"})
     assert filtered.json()["total"] == 1
@@ -166,9 +170,14 @@ def test_metrics_breakdown(db: Path) -> None:
     # 输入量在、缓存量为 0 → 命中率是 0%，但「有没有缓存数据」要单独说清
     assert body["tokens"]["cache_hit_rate"] == 0.0
     assert body["tokens"]["cache_recorded"] is False
-    # 失败的那次没有 error 文本，聚成一条「未记录失败原因」（kind=run 标明来源）
+    # 失败原因取 run.error 原文，kind=run 标明来源
     assert body["failures"] == [
-        {"reason": "(未记录失败原因)", "count": 1, "kind": "run", "name": ""}
+        {
+            "reason": "ClientDisconnected: 客户端断开，本轮中止",
+            "count": 1,
+            "kind": "run",
+            "name": "",
+        }
     ]
 
 

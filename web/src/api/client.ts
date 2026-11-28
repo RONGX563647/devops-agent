@@ -17,8 +17,12 @@ import type {
   ModelConfig,
   ModelLayers,
   ModelPatch,
+  ModelPreview,
+  ModelsAggregate,
   PendingState,
   PermissionCatalog,
+  ProviderCheck,
+  ProviderDraft,
   ProviderModels,
   ProvidersPayload,
   Run,
@@ -364,4 +368,75 @@ export async function exportConfigYaml(domain: string): Promise<string> {
   const resp = await fetch(`/api/config/${encodeURIComponent(domain)}/export`);
   if (!resp.ok) throw new Error(`导出失败 ${resp.status}`);
   return resp.text();
+}
+
+// --- 网关写入口 / 聚合模型 / 草稿预览（SPEC-0022）-------------------------
+
+/** 跨网关模型列表：会话里的选择器只发这一个请求。 */
+export function fetchModels(
+  params: { q?: string; provider?: string; refresh?: boolean; limit?: number } = {},
+): Promise<ModelsAggregate> {
+  const search = new URLSearchParams();
+  if (params.q) search.set('q', params.q);
+  if (params.provider) search.set('provider', params.provider);
+  if (params.refresh) search.set('refresh', 'true');
+  if (params.limit) search.set('limit', String(params.limit));
+  const suffix = search.toString();
+  return getJson<ModelsAggregate>(`/api/models${suffix ? `?${suffix}` : ''}`);
+}
+
+/** 编辑页需要的一条完整配置（地址与 key 变量名）。 */
+export function fetchProviderDraft(id: string): Promise<ProviderDraft> {
+  return getJson<ProviderDraft>(`/api/providers/${encodeURIComponent(id)}/draft`);
+}
+
+export interface ProviderWriteBody {
+  provider: ProviderDraft;
+  /** 内容摘要：写入前必须与文件当前版本一致，否则 409。 */
+  expected_version: string;
+  default?: string;
+}
+
+/** 新增网关：成功 201，`providers.yaml` 立即重写并热加载。 */
+export function createProvider(body: ProviderWriteBody): Promise<{ version: string }> {
+  return sendJson<{ version: string }>('/api/providers', 'POST', body);
+}
+
+/** 改网关：`id` 在服务端取自路径，传了也不生效。 */
+export function updateProvider(
+  id: string,
+  body: ProviderWriteBody,
+): Promise<{ version: string }> {
+  return sendJson<{ version: string }>(`/api/providers/${encodeURIComponent(id)}`, 'PATCH', body);
+}
+
+/** 删网关：删默认网关时必须给 `reassign_to`。 */
+export async function deleteProvider(
+  id: string,
+  expectedVersion: string,
+  reassignTo?: string,
+): Promise<{ version: string }> {
+  const search = new URLSearchParams({ expected_version: expectedVersion });
+  if (reassignTo) search.set('reassign_to', reassignTo);
+  const resp = await fetch(`/api/providers/${encodeURIComponent(id)}?${search.toString()}`, {
+    method: 'DELETE',
+  });
+  if (!resp.ok) {
+    const payload = (await resp.json().catch(() => null)) as { detail?: unknown } | null;
+    throw new Error(JSON.stringify(payload?.detail ?? resp.status));
+  }
+  return (await resp.json()) as { version: string };
+}
+
+/** 探活：拉一次上游 `/models`，不写文件。 */
+export function checkProvider(id: string): Promise<ProviderCheck> {
+  return sendJson<ProviderCheck>(`/api/providers/${encodeURIComponent(id)}/check`, 'POST');
+}
+
+/** 草稿预览：算「如果保存会怎样」，不落库。 */
+export function previewModelConfig(
+  patch: ModelPatch,
+  session?: string,
+): Promise<ModelPreview> {
+  return sendJson<ModelPreview>('/api/model-config/preview', 'POST', { patch, session });
 }

@@ -79,6 +79,7 @@ export function send(
   attachments: Attachment[] = [],
   permission?: PermissionKey,
   webSearch = false,
+  workspace?: string | null,
 ): void {
   // 1) 前置校验与档位：空会话/运行中直接忽略，档位有变先落档再发
   if (!sessionId) return;
@@ -126,6 +127,7 @@ export function send(
       entry.permission,
       webSearch,
       touch,
+      workspace,
     ),
   );
 }

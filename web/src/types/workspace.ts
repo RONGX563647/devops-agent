@@ -88,3 +88,35 @@ export interface CreateWorkspaceRequest {
   default_profile?: string;
   source: LocalWorkspaceSource | GitWorkspaceSource;
 }
+
+/** 一条「工作区下的会话」：标题是后端截断后的最早一条输入。 */
+export interface WorkspaceSessionItem {
+  session_id: string;
+  title: string;
+  /** 最近一次运行时间；刚绑定还没跑过时回落到 bound_at。 */
+  last_at: string;
+  run_count: number;
+  failed_count: number;
+  bound_at: string;
+  bound_by: string;
+}
+
+export interface WorkspaceSessionPage {
+  workspace_id: string;
+  items: WorkspaceSessionItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** 分组视图里的一栏：工作区本身 + 它最近的几条会话。 */
+export interface WorkspaceSessionGroup extends WorkspaceSummary {
+  session_count: number;
+  sessions: WorkspaceSessionItem[];
+}
+
+/** 左栏一次拿全量分组；`unbound` 是没有归属行的老会话。 */
+export interface WorkspaceSessionBoard {
+  items: WorkspaceSessionGroup[];
+  unbound: WorkspaceSessionItem[];
+}

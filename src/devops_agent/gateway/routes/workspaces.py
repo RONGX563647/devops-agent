@@ -133,6 +133,21 @@ def workspace_control(request: Request) -> dict[str, Any]:
     return _service(request).control()
 
 
+@router.get(_BASE + "/sessions")
+def session_board(request: Request, limit: int = Query(default=5, ge=1, le=50)) -> dict[str, Any]:
+    """左栏分组视图：每个工作区挂最近 `limit` 条会话，另附「未归属」一栏。
+
+    一次请求给全量分组，是为了让左栏不必按工作区数量发 N 个请求——
+    N 个并发请求的到达顺序不定，渲染出的分组会乱跳。
+    必须声明在 `/{workspace_id}` 之前，否则 `sessions` 会被当成工作区 id。
+    """
+    service = _service(request)
+    try:
+        return service.session_board(limit_per_workspace=limit)
+    except WorkspaceError as exc:
+        raise _fail(exc) from None
+
+
 @router.get(_BASE + "/{workspace_id}")
 def get_workspace(workspace_id: str, request: Request) -> dict[str, Any]:
     """工作区详情：仓库元信息、绑定会话数、长期记忆条数。"""
@@ -201,6 +216,21 @@ def workspace_long_term(
     service = _service(request)
     try:
         return service.memory_items(workspace_id, limit=limit, offset=offset)
+    except WorkspaceError as exc:
+        raise _fail(exc) from None
+
+
+@router.get(_BASE + "/{workspace_id}/sessions")
+def workspace_sessions(
+    workspace_id: str,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """按工作区列会话：最近运行优先，标题取该会话最早一条输入。"""
+    service = _service(request)
+    try:
+        return service.sessions_for(workspace_id, limit=limit, offset=offset)
     except WorkspaceError as exc:
         raise _fail(exc) from None
 

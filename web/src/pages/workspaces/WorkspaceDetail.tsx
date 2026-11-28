@@ -5,7 +5,8 @@
  */
 
 import { useState } from 'react';
-import type { WorkspaceMemoryItem, WorkspaceSummary } from '../../types';
+import { Link } from 'react-router-dom';
+import type { WorkspaceMemoryItem, WorkspaceSessionItem, WorkspaceSummary } from '../../types';
 import { formatAgo, formatDateTime } from '../../workspace/time';
 import { ArchiveIcon, CheckIcon, CopyIcon, GitIcon, FolderIcon, RestoreIcon, TrashIcon } from './icons';
 import { MEMORY_KIND_LABEL, errorText, isGit, shortPath, sourceLabel } from './meta';
@@ -15,6 +16,9 @@ interface Props {
   loading: boolean;
   memories: WorkspaceMemoryItem[];
   memoriesLoading: boolean;
+  /** 归属该工作区的最近会话（分页口径与左栏一致，最近运行优先）。 */
+  sessions: WorkspaceSessionItem[];
+  sessionsLoading: boolean;
   onArchive: () => Promise<void>;
   onRestore: () => Promise<void>;
   /** `force` 跳过脏文件 / 绑定会话的 409；只有在用户显式勾选后才传 true。 */
@@ -36,6 +40,8 @@ export function WorkspaceDetail({
   loading,
   memories,
   memoriesLoading,
+  sessions: recent,
+  sessionsLoading,
   onArchive,
   onRestore,
   onDelete,
@@ -226,6 +232,40 @@ export function WorkspaceDetail({
             {memoriesLoading
               ? '正在读取这个工作区的长期记忆…'
               : '还没有长期记忆：对话里值得留下的结论会自动写进来，跨会话共享。'}
+          </p>
+        )}
+      </section>
+
+      <section className="wsp-card" aria-labelledby="wsp-sessions-title">
+        <div className="wsp-card-head">
+          <h2 id="wsp-sessions-title">最近会话</h2>
+          <span className="wsp-card-tag">
+            {sessionsLoading ? '读取中…' : `共 ${sessions} 个`}
+          </span>
+        </div>
+        {recent.length > 0 ? (
+          <ul className="wsp-sessions">
+            {recent.map((session) => (
+              <li key={session.session_id}>
+                {/* 点进去直接续上这条会话：归属已落库，不需要再选工作区 */}
+                <Link className="wsp-session-link" to={`/?session=${encodeURIComponent(session.session_id)}`}>
+                  <span className="wsp-session-title" title={session.title}>
+                    {session.title || '未命名会话'}
+                  </span>
+                  <span className="wsp-session-meta">
+                    {session.run_count} 次运行
+                    {session.failed_count ? ` · ${session.failed_count} 次失败` : ''}
+                    {session.last_at ? ` · ${formatAgo(session.last_at)}` : ''}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="wsp-memory-empty">
+            {sessionsLoading
+              ? '正在读取这个工作区的会话…'
+              : '还没有会话：在左栏点这个工作区名，新开一条就会归到这里。'}
           </p>
         )}
       </section>

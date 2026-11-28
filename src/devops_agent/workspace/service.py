@@ -1,8 +1,9 @@
-"""工作区服务 —— 创建、绑定、解析、归档与删除的唯一业务入口。
+"""工作区服务 —— 创建、归档、删除与记忆查询的唯一业务入口。
 
 所有入口（HTTP / CLI）共用这里，不复制判定。安全相关的三件事只在这里收口：
 本地路径白名单（`paths.resolve_local_root`）、远端 URL 形态（`git.validate_remote_url`）、
 删除语义（`managed` 区分「注销登记」与「清理克隆产物」）。
+会话归属与「按工作区检索」在 `workspace.sessions`，这里只做一层无判定委托。
 """
 
 from __future__ import annotations
@@ -10,12 +11,11 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from devops_agent.config_schema import WorkspacePolicy
-from devops_agent.workspace import errors, git, paths, queries, store
+from devops_agent.workspace import errors, git, paths, queries, sessions, store
 from devops_agent.workspace.models import (
     RepoInfo,
     Repository,
@@ -23,13 +23,14 @@ from devops_agent.workspace.models import (
     WorkspaceRef,
     WorkspaceSession,
     new_id,
+    now_iso,
 )
 
 _MAX_NAME = 120
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    return now_iso()
 
 
 def _default_secret(name: str) -> str | None:
@@ -160,13 +161,19 @@ class WorkspaceService:
 
     # --- 查询 ---------------------------------------------------------
     def list(self, *, status: str | None = None) -> list[dict[str, Any]]:
-        """列表：工作区 + 仓库来源（前端要显示 source / managed / branch）。"""
+        """列表：工作区 + 仓库来源（前端要显示 source / managed / branch）。
+
+        一并带上 `session_count`：列表页与详情页说的是同一件事，
+        列表显示 0 而详情显示 3 会让人以为绑定没生效。
+        """
         self._require_enabled()
         with store.connect(self.db_path) as conn:
             items: list[dict[str, Any]] = []
             for workspace in store.list_workspaces(conn, status=status):
                 repository = store.get_repository(conn, workspace.id)
-                items.append(queries.summary(workspace, repository))
+                payload = queries.summary(workspace, repository)
+                payload["session_count"] = store.count_sessions(conn, workspace.id)
+                items.append(payload)
         return items
 
     def detail(self, workspace_id: str) -> dict[str, Any]:
@@ -300,92 +307,27 @@ class WorkspaceService:
             git.remove_managed_dir(root)
         return patch, True
 
-    # --- 会话绑定 -----------------------------------------------------
+    # --- 会话归属与分组 -----------------------------------------------
     def bind_session(self, session_id: str, workspace_id: str) -> WorkspaceSession:
-        """显式绑定；已绑到别处一律 409，不做「以最后一次为准」。"""
+        """显式绑定会话；判定与写入在 `sessions.bind`（同一职责簇已迁出）。"""
         self._require_enabled()
-        session = str(session_id or "").strip()
-        if not session:
-            raise errors.WorkspaceError(errors.SOURCE_INVALID, "session_id 不能为空")
-        with store.connect(self.db_path) as conn:
-            workspace = store.get_workspace(conn, workspace_id)
-            if workspace is None:
-                raise errors.WorkspaceError(errors.NOT_FOUND, "工作区不存在")
-            if workspace.status != "active":
-                raise errors.WorkspaceError(errors.ARCHIVED, "工作区已归档，不能绑定")
-            existing = store.get_session_binding(conn, session)
-            if existing is not None:
-                if existing.workspace_id != workspace_id:
-                    raise errors.WorkspaceError(
-                        errors.ALREADY_BOUND,
-                        "会话已绑定其他工作区",
-                        workspace_id=existing.workspace_id,
-                    )
-                return existing
-            binding = WorkspaceSession(
-                session_id=session,
-                workspace_id=workspace_id,
-                bound_at=_now(),
-                bound_by="local",
-            )
-            store.bind_session(conn, binding)
-            store.set_session_workspace(conn, session, workspace_id)
-        return binding
+        return sessions.bind(self, session_id, workspace_id)
 
     def resolve(self, session_id: str, requested_id: str | None = None) -> WorkspaceRef | None:
         """一轮请求的执行目录解析：显式 > 已绑定 > 旧路径（None）。"""
-        if not self.policy.enabled:
-            return None
-        requested = str(requested_id or "").strip() or None
-        with store.connect(self.db_path) as conn:
-            binding = store.get_session_binding(conn, session_id)
-            if requested is not None:
-                return self._bind_and_ref(conn, session_id, requested, binding)
-            return self._bound_ref(conn, binding)
+        return sessions.resolve(self, session_id, requested_id)
 
-    @staticmethod
-    def _bind_and_ref(
-        conn: Any,
-        session_id: str,
-        requested: str,
-        binding: WorkspaceSession | None,
-    ) -> WorkspaceRef:
-        """显式 id：校验 active 与归属一致；首次出现即落绑定。"""
-        workspace = store.get_workspace(conn, requested)
-        if workspace is None:
-            raise errors.WorkspaceError(errors.NOT_FOUND, "工作区不存在")
-        if workspace.status != "active":
-            raise errors.WorkspaceError(errors.ARCHIVED, "工作区已归档")
-        if binding is not None and binding.workspace_id != requested:
-            raise errors.WorkspaceError(
-                errors.ALREADY_BOUND,
-                "会话已绑定其他工作区，需新开会话",
-                workspace_id=binding.workspace_id,
-            )
-        if binding is None:
-            store.bind_session(
-                conn,
-                WorkspaceSession(
-                    session_id=session_id,
-                    workspace_id=requested,
-                    bound_at=_now(),
-                    bound_by="local",
-                ),
-            )
-            store.set_session_workspace(conn, session_id, requested)
-        return WorkspaceRef(id=workspace.id, root_path=workspace.root_path)
+    def sessions_for(
+        self, workspace_id: str, *, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        """某工作区下的会话（左栏展开与详情页共用）。"""
+        self._require_enabled()
+        return sessions.for_workspace(self, workspace_id, limit=limit, offset=offset)
 
-    @staticmethod
-    def _bound_ref(conn: Any, binding: WorkspaceSession | None) -> WorkspaceRef | None:
-        """已绑定：工作区被删则回落旧路径；归档则拒绝。"""
-        if binding is None:
-            return None
-        workspace = store.get_workspace(conn, binding.workspace_id)
-        if workspace is None:
-            return None  # 工作区已删除：回到旧路径，由调用方提示
-        if workspace.status != "active":
-            raise errors.WorkspaceError(errors.ARCHIVED, "工作区已归档")
-        return WorkspaceRef(id=workspace.id, root_path=workspace.root_path)
+    def session_board(self, *, limit_per_workspace: int = 5) -> dict[str, Any]:
+        """左栏分组视图：工作区底下挂最近会话 + 未归属会话。"""
+        self._require_enabled()
+        return sessions.board(self, limit_per_workspace=limit_per_workspace)
 
     # --- 目录浏览与记忆 -----------------------------------------------
     def browse(self, path: str = "") -> dict[str, Any]:

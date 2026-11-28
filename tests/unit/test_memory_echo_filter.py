@@ -11,17 +11,26 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from agentscope.message import Msg, SystemMsg, TextBlock, UserMsg
+from agentscope.message import (
+    Msg,
+    SystemMsg,
+    TextBlock,
+    ToolCallBlock,
+    ToolResultBlock,
+    UserMsg,
+)
 
 from devops_agent.config import load_memory
 from devops_agent.memory import events
 from devops_agent.memory.long_term import Hit
-from devops_agent.memory.observer import MemoryMiddleware, _drop_echoes
+from devops_agent.memory.observer import MemoryMiddleware, _context_blob, _drop_echoes
 from devops_agent.memory.runtime import MemoryRuntime
 from devops_agent.memory.sink import MemorySink
 
 #: 召回条目：与下面用户消息有足够的词面重合，能过 min_score
 ENTRY = "记忆写入的正文只保留结论，不保留工具调用的参数 JSON，因此召回不会把自己说过的话还回来。"
+QUESTION = "记忆为什么总是召回自己说过的话？"
+ANSWER = "结论：长期层写入前要先剔除工具入参，因此摘要只会保留结论句。"
 
 
 def _runtime(tmp_path: Path) -> MemoryRuntime:
@@ -95,3 +104,36 @@ def test_short_hits_are_never_dropped_by_substring() -> None:
     kept = _drop_echoes([short, long_hit], "以后统一用ruff不要用flake8" + ENTRY.replace("，", ""))
     assert short in kept
     assert long_hit not in kept
+
+
+def test_tool_messages_between_question_and_answer_do_not_defeat_the_filter() -> None:
+    """问题与结论之间隔着工具调用时，整串判定会失效 —— 必须逐句判。
+
+    这是最有价值的回合形态（带工具的 ReAct 轮次）：用户问题、工具调用、工具结果、
+    最终结论是四条消息，拼接串里问题与结论并不相邻。旧实现拿整条记忆做子串判定，
+    恰好在这类回合漏掉「复读自己」。
+    """
+    entry = f"{QUESTION}\n{ANSWER}"
+    messages = [
+        SystemMsg(name="system", content="sys"),
+        UserMsg(name="s1", content=QUESTION),
+        Msg(
+            name="devops",
+            role="assistant",
+            content=[ToolCallBlock(type="tool_call", id="c1", name="Grep", input='{"p": 1}')],
+        ),
+        Msg(
+            name="devops",
+            role="assistant",
+            content=[ToolResultBlock(type="tool_result", id="c1", name="Grep", output="a.py:1")],
+        ),
+        Msg(name="devops", role="assistant", content=[TextBlock(type="text", text=ANSWER)]),
+    ]
+    assert _drop_echoes([Hit(id=1, text=entry, score=1.0)], _context_blob(messages)) == []
+
+
+def test_hit_with_one_new_sentence_is_still_injected() -> None:
+    """只有一部分已在历史里：仍然注入 —— 新句子就是要补的信息。"""
+    partial = f"{ANSWER}\n另外：检索用的是 BM25，min_score 默认 0.30。"
+    kept = _drop_echoes([Hit(id=1, text=partial, score=0.9)], ANSWER)
+    assert len(kept) == 1

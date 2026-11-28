@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import { fetchPermissions } from '../api/client';
 import type { PermissionKey, PermissionMeta } from '../types';
 
-/** 后端不可用时的兜底列表：至少让界面能用，且不含 unrestricted。 */
+/** 后端不可用时的兜底列表：与后端默认可用集对齐，含 unrestricted（选中仍需二次确认）。 */
 export const FALLBACK_PROFILES: PermissionMeta[] = [
   {
     key: 'readonly',
@@ -36,6 +36,13 @@ export const FALLBACK_PROFILES: PermissionMeta[] = [
     label: '无人值守',
     note: '给定时任务用：工作区内可读写，越界一律拒绝且不弹确认。',
     fallback: 'deny',
+    write: true,
+  },
+  {
+    key: 'unrestricted',
+    label: '全放开',
+    note: '跳过所有逐次确认，只剩 deny_rules 兜底；仅建议本地或一次性环境使用。',
+    fallback: 'hard_deny',
     write: true,
   },
 ];

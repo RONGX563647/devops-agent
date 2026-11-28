@@ -837,80 +837,73 @@ a:hover {
   background: var(--surface);
 }
 
-/* ---- 左侧会话栏：浅灰底，与白色画布拉开一层 ---- */
+/* ---- 左侧工作区面板：工作区 → 会话两级，行内操作只在悬停时出现 ---- */
 .session-sidebar {
   display: flex;
   flex-shrink: 0;
   flex-direction: column;
   width: var(--sidebar-width);
-  padding: var(--sp-4) var(--sp-4) var(--sp-6);
+  padding: var(--sp-3) var(--sp-3) var(--sp-6);
   overflow-y: auto;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--line-soft);
 }
-.session-sidebar-brand {
+/* 唯一的一行标题：左边是名字，右边是搜索 / 归档筛选 / 新建 */
+.session-head {
   display: flex;
-  gap: var(--sp-4);
-  align-items: center;
-  padding: var(--sp-2) var(--sp-3) var(--sp-6);
-}
-.rail-mark {
-  display: grid;
   flex-shrink: 0;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  color: var(--ink-inverse);
-  background: var(--brand-mark-bg);
-  border-radius: var(--radius-sm);
-}
-.brand-name {
-  font-size: 13.5px;
-  font-weight: 600;
-  line-height: 1.2;
-  letter-spacing: -0.01em;
-  color: var(--ink);
-}
-.brand-meta {
-  display: block;
-  margin-top: 1px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  color: var(--ink-faint);
-  text-transform: uppercase;
-}
-.session-new {
-  display: flex;
-  gap: var(--sp-3);
   align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: var(--control-lg);
-  margin-bottom: var(--sp-4);
+  justify-content: space-between;
+  height: 34px;
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+.session-head-title {
+  margin: 0;
   font-size: var(--text-sm);
-  font-weight: 500;
-  color: var(--ink-soft);
-  cursor: pointer;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-1);
-  transition: color var(--dur-fast) ease, border-color var(--dur-fast) ease;
-}
-.session-new:hover {
+  font-weight: 600;
+  letter-spacing: 0.01em;
   color: var(--ink);
-  border-color: var(--line-strong);
 }
-.session-new svg {
-  flex-shrink: 0;
-  color: var(--accent);
+.session-head-actions {
+  display: flex;
+  gap: 1px;
+  align-items: center;
+}
+.session-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--ink-muted);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  transition: color var(--dur-fast) ease, background var(--dur-fast) ease;
+}
+.session-icon-btn:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+.session-icon-btn.is-on {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+.session-icon-btn:disabled {
+  color: var(--ink-faint);
+  cursor: not-allowed;
+}
+.session-icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .session-search {
   width: 100%;
   height: var(--control-md);
-  padding: 0 var(--sp-5);
-  margin-bottom: var(--sp-4);
+  padding: 0 var(--sp-4);
+  margin-bottom: var(--sp-3);
   font-size: var(--text-sm);
   color: var(--ink);
   background: var(--surface);
@@ -926,155 +919,62 @@ a:hover {
   border-color: var(--accent-ring);
   box-shadow: var(--shadow-focus);
 }
-.session-group-label {
-  padding: var(--sp-6) var(--sp-4) var(--sp-2);
-  font-size: var(--text-2xs);
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  color: var(--ink-faint);
-}
-.session-item {
-  position: relative;
-  display: flex;
-  gap: var(--sp-4);
-  align-items: center;
-  width: 100%;
-  height: var(--control-md);
-  padding: 0 var(--sp-4) 0 var(--sp-5);
-  font-size: var(--text-sm);
-  color: var(--ink-soft);
-  text-align: left;
-  cursor: pointer;
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-sm);
-  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
-}
-.session-item:hover {
-  color: var(--ink);
-  background: var(--surface-hover);
-}
-/* 当前会话：白色卡片 + 左侧 2px 蓝条，是全站唯一的“选中”表达 */
-.session-item.active {
-  font-weight: 500;
-  color: var(--ink);
-  background: var(--surface);
-  box-shadow: var(--shadow-1);
-}
-.session-item.active::before {
-  position: absolute;
-  top: 7px;
-  bottom: 7px;
-  left: 0;
-  width: 2px;
-  content: '';
-  background: var(--accent);
-  border-radius: 0 2px 2px 0;
-}
-.session-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.session-count {
-  flex-shrink: 0;
-  font-size: 10px;
-  color: var(--ink-faint);
-}
-.session-count.has-failed {
-  color: var(--danger);
-}
-.session-empty {
-  padding: var(--sp-3) var(--sp-4);
-  margin: 0;
-  font-size: var(--text-xs);
-  line-height: var(--leading-relaxed);
-  color: var(--ink-muted);
-}
 
-/* ---- 工作区分组：顶层是工作区，底下挂最近会话 ---- */
 .session-nav {
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
-.session-section-head {
-  display: flex;
-  gap: var(--sp-3);
-  align-items: center;
-  justify-content: space-between;
-  padding-right: var(--sp-2);
-}
-/* 组标签是 h2：标题语义交给屏幕阅读器，视觉上仍是原来那行小字 */
-.session-nav .session-group-label {
-  margin: 0;
-  font-weight: 500;
-}
-.session-add {
-  display: grid;
-  flex-shrink: 0;
-  place-items: center;
-  min-inline-size: 24px;
-  min-block-size: 24px;
-  padding: 0;
-  color: var(--ink-muted);
-  cursor: pointer;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  transition: color var(--dur-fast) ease, background var(--dur-fast) ease;
-}
-.session-add:hover:not(:disabled) {
-  color: var(--ink);
-  background: var(--surface-hover);
-}
-.session-add:disabled {
-  color: var(--ink-faint);
-  cursor: not-allowed;
-}
-.session-add:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
 .session-ws-list,
-.session-ws-sessions,
-.session-plain-list,
-.session-plain-sublist {
+.session-ws-sessions {
   padding: 0;
   margin: 0;
   list-style: none;
 }
+/* 工作区块之间留 12px：分组靠留白而不是分割线，列表才不会像表格 */
 .session-ws {
-  margin-bottom: var(--sp-2);
+  margin-bottom: var(--sp-6);
+}
+
+/* 工作区行：折叠箭头 + 文件夹 + 名字；右侧 +/⋯ 悬停才出现 */
+.session-ws-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-md);
 }
 .session-ws-head {
   display: flex;
-  gap: var(--sp-3);
+  flex: 1;
+  gap: var(--sp-2);
   align-items: center;
-  width: 100%;
+  min-width: 0;
   min-block-size: var(--control-md);
-  padding: 0 var(--sp-4);
+  padding: 0 var(--sp-2) 0 var(--sp-2);
   font-size: var(--text-sm);
-  font-weight: 500;
+  font-weight: 600;
   color: var(--ink);
   text-align: left;
   cursor: pointer;
   background: transparent;
   border: 0;
-  border-radius: var(--radius-sm);
-  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+  border-radius: var(--radius-md);
+  transition: background var(--dur-fast) ease;
 }
 .session-ws-head:hover {
   background: var(--surface-hover);
 }
-.session-ws-head.active {
-  color: var(--accent-ink);
-  background: var(--accent-faint);
-}
 .session-ws-head:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+.session-chevron {
+  flex-shrink: 0;
+  color: var(--ink-faint);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.session-chevron.is-open {
+  transform: rotate(90deg);
 }
 .session-ws-icon {
   display: grid;
@@ -1082,27 +982,245 @@ a:hover {
   place-items: center;
   color: var(--ink-muted);
 }
-.session-ws-head.active .session-ws-icon {
-  color: var(--accent);
-}
-.session-ws.is-archived .session-ws-head {
-  color: var(--ink-muted);
+.session-ws-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .session-ws-tag {
   flex-shrink: 0;
   padding: 0 var(--sp-2);
   font-size: 10px;
+  font-weight: 400;
   color: var(--warn-ink);
   background: var(--warn-soft);
   border-radius: var(--radius-xs);
 }
-.session-ws-sessions {
-  padding-left: var(--sp-6);
+.session-ws.is-archived .session-ws-name {
+  color: var(--ink-muted);
 }
-.session-time-label {
-  padding: var(--sp-4) var(--sp-4) var(--sp-2);
+.session-ws-actions {
+  position: absolute;
+  top: 50%;
+  right: var(--sp-2);
+  display: flex;
+  gap: 1px;
+  padding-left: var(--sp-3);
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--sidebar-bg) 40%);
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity var(--dur-fast) ease;
+}
+.session-ws-row:hover .session-ws-actions,
+.session-ws-row:focus-within .session-ws-actions {
+  pointer-events: auto;
+  opacity: 1;
+}
+.session-ws-row:hover .session-ws-actions {
+  background: linear-gradient(90deg, transparent, var(--surface-hover) 40%);
+}
+
+/* 会话行：缩进到工作区名字下方，右侧是相对时间 */
+.session-ws-sessions {
+  margin-top: 1px;
+  /* 与工作区名对齐（跳过折叠箭头与文件夹图标），层级靠缩进而不是分割线 */
+  padding-left: 24px;
+}
+.session-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.session-item {
+  display: flex;
+  flex: 1;
+  gap: var(--sp-3);
+  align-items: center;
+  min-width: 0;
+  height: 30px;
+  padding: 0 var(--sp-3);
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.session-item:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+/* 当前会话：一层浅灰底，不用左侧色条——侧栏里已经有足够多的线了 */
+.session-item.active {
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--surface-active);
+}
+.session-item.is-draft {
+  font-style: italic;
+  color: var(--ink-muted);
+}
+.session-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-time {
+  flex-shrink: 0;
   font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
   color: var(--ink-faint);
+  transition: opacity var(--dur-fast) ease;
+}
+.session-row.is-archived .session-name {
+  color: var(--ink-muted);
+}
+/* 悬停时时间让位给 ⋯：两个都显示会挤掉标题 */
+.session-row:hover .session-time,
+.session-row:focus-within .session-time {
+  opacity: 0;
+}
+.session-more {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--ink-muted);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+.session-more:hover {
+  color: var(--ink);
+  background: var(--surface-active);
+}
+.session-more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.session-row > .session-more {
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity var(--dur-fast) ease;
+}
+.session-row:hover > .session-more,
+.session-row:focus-within > .session-more {
+  opacity: 1;
+}
+.session-row.is-active > .session-more {
+  background: var(--surface);
+}
+
+/* 行内菜单：贴着行底弹出，不改变列表高度 */
+.session-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 2px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 132px;
+  padding: var(--sp-1);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+}
+.session-menu button {
+  width: 100%;
+  padding: 6px var(--sp-4);
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+.session-menu button:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+.session-menu button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 行内改名：宽度跟着行，高度压到 26px，避免整行跳动 */
+.session-rename {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 var(--sp-2);
+  margin: 2px var(--sp-2);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--accent-ring);
+  border-radius: var(--radius-sm);
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.session-group-label {
+  margin: var(--sp-6) 0 var(--sp-2);
+  padding: 0 var(--sp-3);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
+}
+.session-hint {
+  margin: 2px 0 0;
+  padding: 0 var(--sp-3);
+  font-size: var(--text-2xs);
+  line-height: 1.6;
+  color: var(--ink-faint);
+}
+.session-ws > .session-hint {
+  padding-left: calc(var(--sp-5) + var(--sp-3));
+}
+.session-hint.is-error {
+  color: var(--danger-ink);
+}
+.session-blank {
+  padding: var(--sp-9) var(--sp-4);
+  text-align: center;
+}
+.session-blank-title {
+  margin: 0 0 var(--sp-4);
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+.session-blank-action {
+  height: var(--control-sm);
+  padding: 0 var(--sp-5);
+  font-size: var(--text-xs);
+  color: var(--accent-ink);
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.session-blank-action:hover:not(:disabled) {
+  border-color: var(--accent-ring);
+}
+.session-blank-action:disabled {
+  color: var(--ink-faint);
+  cursor: not-allowed;
 }
 
 /* ---- 顶栏：单行 52px，标题 + 统计 + 胶囊 tab ---- */
@@ -7141,4 +7259,30 @@ a:hover {
   font-size: var(--text-2xs);
   color: var(--ink-faint);
   white-space: nowrap;
+}
+
+/* 未归属会话是历史数据：一行开关收起，不让它压过工作区层级 */
+.session-unbound-toggle {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  width: 100%;
+  height: var(--control-md);
+  padding: 0 var(--sp-2);
+  margin-top: var(--sp-4);
+  font-size: var(--text-2xs);
+  color: var(--ink-faint);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
+}
+.session-unbound-toggle:hover {
+  color: var(--ink-muted);
+  background: var(--surface-hover);
+}
+.session-unbound-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
 }

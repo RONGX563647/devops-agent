@@ -55,3 +55,21 @@ export function formatAgo(value?: string | number | null, now: Date = new Date()
   if (days < 365) return `${Math.floor(days / 30)} 个月前`;
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
+
+/** ISO → 侧栏用的极简相对时间：刚刚 / 3分 / 5时 / 2天 / 4月 / 2025-01-02。
+ *
+ * 侧栏每行右侧只留 5~6 个字符，`5 天前` 这种带空格的说法会把标题挤窄；
+ * 精度只到「帮助判断新近」，不是精确时长。
+ */
+export function formatAgoShort(value?: string | number | null, now: Date = new Date()): string {
+  const date = toDate(value);
+  if (!date) return '';
+  const diff = now.getTime() - date.getTime();
+  if (diff < MINUTE) return '刚刚';
+  if (diff < HOUR) return `${Math.floor(diff / MINUTE)}分`;
+  if (diff < DAY) return `${Math.floor(diff / HOUR)}时`;
+  const days = Math.floor(diff / DAY);
+  if (days < 30) return `${days}天`;
+  if (days < 365) return `${Math.floor(days / 30)}月`;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}

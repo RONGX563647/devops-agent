@@ -1,14 +1,20 @@
-/** 左侧会话栏：顶层是工作区，工作区底下挂最近会话；没有归属的老会话单独一栏。
+/** 左侧工作区面板：工作区 → 会话两级，会话只能挂在工作区下。
  *
- * 三层信息的分工：
- * - 工作区分组来自 `GET /api/workspaces/sessions`（一次请求拿全量，避免 N 个并发请求乱序）；
- * - 会话本身仍以 runs 聚合为底（标题取最早一条输入），本地草稿再从 localStorage 合并进来；
- * - 工作区接口不可用（未开启 / 老后端）时整体回落到「按时间分组」的老视图。
+ * 三条产品约束（都落在这一层，别处不再重复判断）：
+ * - 没有任何「新会话」入口：新会话必须先在某个工作区里点 +，避免出现无归属会话；
+ * - 工作区与会话都可重命名 / 归档，归档只是从默认视图收起，数据不动；
+ * - 工作区接口不可用（未开启 / 老后端）时整体回落到「按时间分组」的只读列表。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchRuns, fetchSessionBoard, fetchWorkspaceControl } from '../api/client';
-import type { Run } from '../types';
+import {
+  archiveWorkspace,
+  fetchSessionBoard,
+  fetchWorkspaceControl,
+  restoreWorkspace,
+  updateSession,
+  updateWorkspace,
+} from '../api/client';
 import { NewWorkspaceDialog, type SourceKind } from '../pages/workspaces/NewWorkspaceDialog';
 import {
   GROUP_ORDER,
@@ -17,169 +23,56 @@ import {
   type SessionGroup,
   type SessionItem,
 } from './sidebar-utils';
-import { buildWorkspaceGroups, unboundSessions } from './sidebar-workspaces';
-import { listSessions } from './store/history';
-import { useStoreVersion } from './store/state';
-import type { StoredSession } from './history';
+import { useSessionList, useSessionRuns } from './sidebar-sessions';
+import {
+  buildWorkspaceGroups,
+  filterGroups,
+  injectDraft,
+  unboundSessions,
+  type DraftSession,
+} from './sidebar-workspaces';
+import { ChevronIcon, FolderPlusIcon, SearchIcon, SlidersIcon } from './SidebarIcons';
+import { SessionRow } from './SidebarSessionRow';
+import { WorkspaceBlock } from './SidebarWorkspaceBlock';
 
 export { GROUP_ORDER, groupOf, toSessionTitle };
 export type { SessionGroup, SessionItem };
 
-export function aggregateSessions(runs: Run[]): SessionItem[] {
-  const map = new Map<string, SessionItem & { firstAt: string }>();
-  for (const run of runs) {
-    const cur = map.get(run.session_id);
-    if (!cur) {
-      map.set(run.session_id, {
-        id: run.session_id,
-        title: toSessionTitle(run.input),
-        lastAt: run.started_at,
-        firstAt: run.started_at,
-        runCount: 1,
-        failedCount: run.status === 'failed' ? 1 : 0,
-      });
-      continue;
-    }
-    cur.runCount += 1;
-    cur.failedCount += run.status === 'failed' ? 1 : 0;
-    if (run.started_at > cur.lastAt) cur.lastAt = run.started_at;
-    // 标题取最早那条输入，避免最新一轮的短问题覆盖会话主题
-    if (run.started_at < cur.firstAt) {
-      cur.firstAt = run.started_at;
-      cur.title = toSessionTitle(run.input);
-    }
-  }
-  return [...map.values()]
-    .sort((a, b) => b.lastAt.localeCompare(a.lastAt))
-    .map((item) => ({
-      id: item.id,
-      title: item.title,
-      lastAt: item.lastAt,
-      runCount: item.runCount,
-      failedCount: item.failedCount,
-    }));
-}
-
-/** 合并远端会话与本地缓存：本地新会话（后端还没有运行记录）也要出现在侧栏。 */
-export function mergeSessions(remote: SessionItem[], local: StoredSession[]): SessionItem[] {
-  const merged = new Map(remote.map((item) => [item.id, { ...item }]));
-  for (const item of local) {
-    const existing = merged.get(item.id);
-    if (existing) {
-      existing.messageCount = item.messageCount;
-      if (existing.runCount === 0) existing.lastAt = item.lastAt;
-      continue;
-    }
-    merged.set(item.id, {
-      id: item.id,
-      title: item.title,
-      lastAt: item.lastAt,
-      runCount: 0,
-      failedCount: 0,
-      messageCount: item.messageCount,
-    });
-  }
-  return [...merged.values()].sort((a, b) => b.lastAt.localeCompare(a.lastAt));
-}
-
-/** 会话列表数据源：侧栏与顶部统计共用同一个 queryKey，缓存自动复用。 */
-export function useSessionRuns() {
-  return useQuery({
-    queryKey: ['runs', 'sessions'],
-    queryFn: () => fetchRuns({ limit: 200 }),
-    refetchInterval: 10000,
-  });
-}
-
-/** 合并后的会话列表；订阅 store 版本号，本地新会话创建后立即出现。 */
-export function useSessionList(): SessionItem[] {
-  const runs = useSessionRuns();
-  useStoreVersion();
-  return mergeSessions(aggregateSessions(runs.data?.items ?? []), listSessions());
-}
-
 interface Props {
   selected: string | null;
-  /** 当前草稿会话打算落在哪个工作区：用于高亮，也用于把没归属的会话归位。 */
-  workspace: string | null;
+  /** 当前未发送的草稿：只会挂在它选中的工作区底下。 */
+  draft: DraftSession | null;
   onSelect: (id: string | null) => void;
-  /** 真正开一个新会话（清空当前对话），与「选中全部会话」区分。 */
-  onNew: () => void;
   /** 在指定工作区开新会话：归属由首轮请求携带的 workspace_id 落地。 */
   onNewInWorkspace: (workspaceId: string) => void;
 }
 
-function MarkIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M3.2 5.5 8 2.8l4.8 2.7v5L8 13.2l-4.8-2.7v-5Z"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinejoin="round"
-      />
-      <path d="M8 8v5.2M8 8 3.4 5.6M8 8l4.6-2.4" stroke="currentColor" strokeWidth="1.1" opacity=".7" />
-    </svg>
-  );
-}
-
-function PlusIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M8 3.4v9.2M3.4 8h9.2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function FolderIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M2.2 4.6c0-.6.5-1.1 1.1-1.1h2.6l1.3 1.5h5.4c.6 0 1.1.5 1.1 1.1v5.6c0 .6-.5 1.1-1.1 1.1H3.3c-.6 0-1.1-.5-1.1-1.1V4.6Z"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-/** 一行会话：标题 + 计数；失败数用红色计数提示。 */
-function SessionRow({
-  item,
-  active,
-  onSelect,
-}: {
-  item: SessionItem;
-  active: boolean;
-  onSelect: () => void;
-}) {
-  const count = item.runCount || item.messageCount || 0;
-  return (
-    <button
-      className={`session-item ${active ? 'active' : ''}`}
-      onClick={onSelect}
-      title={`${item.id} · ${item.runCount} 次运行 · ${item.messageCount ?? 0} 轮对话${
-        item.failedCount ? ` · ${item.failedCount} 失败` : ''
-      }`}
-    >
-      <span className="session-name">{item.title}</span>
-      <span className={`session-count ${item.failedCount ? 'has-failed' : ''}`}>{count}</span>
-    </button>
-  );
-}
-
-export function SessionSidebar({ selected, workspace, onSelect, onNew, onNewInWorkspace }: Props) {
+export function SessionSidebar({ selected, draft, onSelect, onNewInWorkspace }: Props) {
   const runs = useSessionRuns();
   const sessions = useSessionList();
+  const queryClient = useQueryClient();
+
   const [query, setQuery] = useState('');
-  // 搜索时把每个工作区的窗口开大：只拿最近 5 条的话，早期会话搜不到等于丢了。
-  const fetchLimit = query.trim() ? 50 : 5;
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+  const [menu, setMenu] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [creating, setCreating] = useState<SourceKind | null>(null);
+  const [createSeq, setCreateSeq] = useState(0);
+  const [notice, setNotice] = useState<string | null>(null);
+  // 未归属是历史数据：默认收起，不让它把「工作区 → 会话」的层级冲掉
+  const [showUnbound, setShowUnbound] = useState(false);
+
+  // 搜索时把每个工作区的窗口开大：只拿最近 8 条的话，早期会话搜不到等于丢了。
+  const fetchLimit = query.trim() ? 50 : 8;
   const board = useQuery({
-    queryKey: ['workspace-sessions', fetchLimit],
-    queryFn: () => fetchSessionBoard(fetchLimit),
+    queryKey: ['workspace-sessions', fetchLimit, showArchived],
+    queryFn: () => fetchSessionBoard(fetchLimit, showArchived),
     retry: 0,
     refetchInterval: 15_000,
+    // 搜索会换窗口大小 → 换 queryKey；沿用上一份数据，列表不在输入时闪空
+    placeholderData: (previous) => previous,
   });
   const control = useQuery({
     queryKey: ['workspace-control'],
@@ -187,45 +80,67 @@ export function SessionSidebar({ selected, workspace, onSelect, onNew, onNewInWo
     retry: 0,
     staleTime: 30_000,
   });
-  const queryClient = useQueryClient();
-  const [creating, setCreating] = useState<SourceKind | null>(null);
-  const [createSeq, setCreateSeq] = useState(0);
 
-  const groups = useMemo(() => buildWorkspaceGroups(board.data), [board.data]);
-  const unbound = useMemo(() => unboundSessions(board.data, sessions), [board.data, sessions]);
-  // 工作区接口不可用（未开启 / 老后端）时不显示分组入口，但会话列表本身照旧。
+  // 工作区接口不可用（未开启 / 老后端）时不显示分组，只回落成只读的按时间列表。
   const workspacesOff = control.isError;
   const canCreate = !workspacesOff && control.data !== undefined;
 
-  function match(item: SessionItem) {
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    return item.title.toLowerCase().includes(q) || item.id.toLowerCase().includes(q);
+  const groups = filterGroups(injectDraft(buildWorkspaceGroups(board.data), draft), {
+    query,
+    showArchived,
+  });
+  const unbound = workspacesOff
+    ? unboundSessions(undefined, sessions)
+    : unboundSessions(board.data, []).filter(() => !query.trim());
+
+  const activeWorkspace =
+    draft?.workspaceId ??
+    groups.find((group) => group.sessions.some((item) => item.id === selected))?.id ??
+    null;
+
+  // 菜单与改名都是「一次只服务一行」的瞬态状态：切走就关掉，避免两行同时展开。
+  useEffect(() => {
+    if (!menu) return;
+    function close(event: MouseEvent) {
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest('.session-menu, .session-more')) setMenu(null);
+    }
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [menu]);
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setMenu(null);
+        setEditing(null);
+        setSearchOpen(false);
+      }
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
+  async function mutate(action: () => Promise<unknown>, sessionId?: string) {
+    setNotice(null);
+    try {
+      await action();
+      await queryClient.invalidateQueries({ queryKey: ['workspace-sessions'] });
+      await queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+      if (sessionId) await queryClient.invalidateQueries({ queryKey: ['session', sessionId] });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '操作失败');
+    }
   }
 
-  const searching = query.trim().length > 0;
-  const matchedUnbound = unbound.filter(match);
-  // 未归属列表不设上限会变成一堵墙：默认只铺最近 12 条，搜索时展开到窗口上限。
-  const shownUnbound = matchedUnbound.slice(0, searching ? 50 : 12);
-  const hiddenUnbound = matchedUnbound.length - shownUnbound.length;
-  const visibleGroups = groups
-    .map((group) => ({ ...group, shown: group.sessions.filter(match) }))
-    // 搜索时把「一条都不匹配」和「本来就没会话」的工作区一起收起，列表才干净。
-    .filter((group) => group.shown.length > 0 || (!searching && group.sessions.length === 0));
-
-  const buckets = new Map<SessionGroup, SessionItem[]>();
-  for (const item of shownUnbound) {
-    const group = groupOf(item.lastAt);
-    const list = buckets.get(group) ?? [];
-    list.push(item);
-    buckets.set(group, list);
+  function toggleCollapsed(id: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
-  const timeGroups = GROUP_ORDER.filter((group) => buckets.has(group)).map(
-    (group) => [group, buckets.get(group)!] as const,
-  );
-
-  const shownCount =
-    visibleGroups.reduce((sum, group) => sum + group.shown.length, 0) + matchedUnbound.length;
 
   function openCreate() {
     // 本地目录导入被禁用时直接给 Git 表单，避免用户先填一张注定被拒的表。
@@ -236,133 +151,162 @@ export function SessionSidebar({ selected, workspace, onSelect, onNew, onNewInWo
     setCreateSeq((seq) => seq + 1);
   }
 
+  function menuKey(kind: 'ws' | 'session', id: string) {
+    return `${kind}:${id}`;
+  }
+
   return (
     <aside className="session-sidebar">
-      <div className="session-sidebar-brand">
-        <span className="rail-mark">
-          <MarkIcon />
-        </span>
-        <span>
-          <span className="brand-name">DevOps Agent</span>
-          <span className="brand-meta">workspace</span>
-        </span>
-      </div>
-      <button className="session-new" onClick={onNew}>
-        <PlusIcon />
-        新会话
-      </button>
-      <input
-        className="session-search"
-        type="search"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="搜索会话"
-        aria-label="搜索会话"
-      />
-      <button
-        className={`session-item ${selected === null ? 'active' : ''}`}
-        onClick={() => onSelect(null)}
-      >
-        <span className="session-name">全部会话</span>
-        <span className="session-count">{sessions.length}</span>
-      </button>
-
-      <nav className="session-nav" aria-label="工作区与会话">
-        <div className="session-section-head">
-          <h2 className="session-group-label">工作区</h2>
+      <div className="session-head">
+        <h2 className="session-head-title">工作区</h2>
+        <div className="session-head-actions">
+          <button
+            className={`session-icon-btn${searchOpen ? ' is-on' : ''}`}
+            onClick={() => setSearchOpen((open) => !open)}
+            aria-label="搜索会话"
+            aria-pressed={searchOpen}
+            title="搜索会话"
+          >
+            <SearchIcon />
+          </button>
+          <button
+            className={`session-icon-btn${showArchived ? ' is-on' : ''}`}
+            onClick={() => setShowArchived((on) => !on)}
+            aria-label="显示已归档"
+            aria-pressed={showArchived}
+            title={showArchived ? '隐藏已归档' : '显示已归档'}
+          >
+            <SlidersIcon />
+          </button>
           {!workspacesOff && (
             <button
-              className="session-add"
+              className="session-icon-btn"
               onClick={openCreate}
               disabled={!canCreate}
               aria-label="新建工作区"
               title="新建工作区（本地目录或 Git 地址）"
             >
-              <PlusIcon />
+              <FolderPlusIcon />
             </button>
           )}
         </div>
+      </div>
 
-        {groups.length === 0 && !workspacesOff && !board.isLoading && (
-          <p className="session-empty">还没有工作区，点上面的 + 添加一个。</p>
+      {searchOpen && (
+        <input
+          className="session-search"
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              setQuery('');
+              setSearchOpen(false);
+            }
+          }}
+          placeholder="搜索工作区与会话"
+          aria-label="搜索会话"
+          autoFocus
+        />
+      )}
+
+      <nav className="session-nav" aria-label="工作区与会话">
+        {groups.length === 0 && !board.isLoading && !workspacesOff && (
+          <div className="session-blank">
+            <p className="session-blank-title">
+              {query ? `没有匹配「${query}」的结果` : '还没有工作区'}
+            </p>
+            {!query && (
+              <button className="session-blank-action" onClick={openCreate} disabled={!canCreate}>
+                新建第一个工作区
+              </button>
+            )}
+          </div>
         )}
 
         <ul className="session-ws-list">
-          {visibleGroups.map((group) => (
-            <li
+          {groups.map((group) => (
+            <WorkspaceBlock
               key={group.id}
-              className={`session-ws ${group.status !== 'active' ? 'is-archived' : ''}`}
-            >
-              <button
-                className={`session-ws-head ${workspace === group.id ? 'active' : ''}`}
-                onClick={() => onNewInWorkspace(group.id)}
-                aria-label={`在「${group.name}」中新开会话`}
-                title={`${group.rootPath}${group.status !== 'active' ? '（已归档）' : ''} · 点此新开会话`}
-              >
-                <span className="session-ws-icon">
-                  <FolderIcon />
-                </span>
-                <span className="session-name">{group.name}</span>
-                {group.status !== 'active' && <span className="session-ws-tag">归档</span>}
-                <span className="session-count">{group.count}</span>
-              </button>
-              {group.shown.length > 0 && (
-                <ul className="session-ws-sessions">
-                  {group.shown.map((item) => (
-                    <li key={item.id}>
-                      <SessionRow
-                        item={item}
-                        active={selected === item.id}
-                        onSelect={() => onSelect(item.id)}
-                      />
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {group.sessions.length === 0 && <p className="session-empty">还没有会话</p>}
-              {!searching && group.count > group.sessions.length && (
-                <p className="session-empty">
-                  还有 {group.count - group.sessions.length} 条，用上方搜索查找
-                </p>
-              )}
-            </li>
+              group={group}
+              active={activeWorkspace === group.id}
+              collapsed={collapsed.has(group.id)}
+              selected={selected}
+              menu={menu}
+              editing={editing}
+              menuKey={menuKey}
+              onToggle={() => toggleCollapsed(group.id)}
+              onNew={() => onNewInWorkspace(group.id)}
+              onMenu={setMenu}
+              onEdit={setEditing}
+              onSelect={onSelect}
+              onRenameWorkspace={(next) => {
+                setEditing(null);
+                void mutate(() => updateWorkspace(group.id, { name: next }));
+              }}
+              onToggleWorkspaceArchive={() => {
+                setMenu(null);
+                void mutate(() =>
+                  group.archived ? restoreWorkspace(group.id) : archiveWorkspace(group.id),
+                );
+              }}
+              onRenameSession={(id, title) => {
+                setEditing(null);
+                void mutate(() => updateSession(id, { title }), id);
+              }}
+              onToggleSessionArchive={(item) => {
+                setMenu(null);
+                void mutate(() => updateSession(item.id, { archived: !item.archived }), item.id);
+              }}
+            />
           ))}
         </ul>
 
-        {shownUnbound.length > 0 && (
+        {unbound.length > 0 && (
           <>
-            {groups.length > 0 && <h2 className="session-group-label">未归属工作区</h2>}
-            <ul className="session-plain-list">
-              {timeGroups.map(([label, items]) => (
-                <li key={label}>
-                  {groups.length > 0 && <div className="session-time-label">{label}</div>}
-                  <ul className="session-plain-sublist">
-                    {items.map((item) => (
-                      <li key={item.id}>
-                        <SessionRow
-                          item={item}
-                          active={selected === item.id}
-                          onSelect={() => onSelect(item.id)}
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                </li>
-              ))}
-            </ul>
-            {hiddenUnbound > 0 && (
-              <p className="session-empty">还有 {hiddenUnbound} 条，用上方搜索查找</p>
+            {/* 工作区接口不可用时这就是唯一的列表：不需要再套一层开关 */}
+            {!workspacesOff && (
+              <button
+                className="session-unbound-toggle"
+                onClick={() => setShowUnbound((open) => !open)}
+                aria-expanded={showUnbound}
+              >
+                <ChevronIcon open={showUnbound} />
+                未归属会话
+                <span className="session-unbound-count">· {unbound.length}</span>
+              </button>
+            )}
+            {(workspacesOff || showUnbound) && (
+              <ul className="session-ws-sessions">
+                {unbound.map((item) => (
+                  <SessionRow
+                    key={item.id}
+                    item={item}
+                    active={selected === item.id}
+                    renaming={false}
+                    menu={false}
+                    onSelect={() => onSelect(item.id)}
+                    onMenu={() => undefined}
+                    onRename={() => undefined}
+                    onRenameDone={() => undefined}
+                    onToggleArchive={() => undefined}
+                  />
+                ))}
+              </ul>
             )}
           </>
         )}
 
-        {shownCount === 0 && !runs.isLoading && query && (
-          <p className="session-empty">没有匹配「{query}」的会话。</p>
+        {!draft && selected === null && groups.length > 0 && !query && (
+          <p className="session-hint">点工作区右侧的 + 开始新会话。</p>
         )}
-        {sessions.length === 0 && !runs.isLoading && !query && (
-          <p className="session-empty">暂无会话，去「对话」tab 跑一次。</p>
+        {runs.isError && <p className="session-hint">会话加载失败。</p>}
+        {workspacesOff && <p className="session-hint">工作区接口不可用，当前为只读会话列表。</p>}
+        {notice && (
+          <p className="session-hint is-error" role="status">
+            {notice}
+          </p>
         )}
-        {runs.isError && <p className="session-empty">会话加载失败。</p>}
       </nav>
 
       {creating ? (

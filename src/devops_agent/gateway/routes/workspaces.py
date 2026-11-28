@@ -60,6 +60,13 @@ class BindWorkspaceRequest(BaseModel):
     workspace_id: str
 
 
+class UpdateSessionRequest(BaseModel):
+    """会话改名 / 归档；两者都可省略，只改传了的那个。"""
+
+    title: str | None = None
+    archived: bool | None = None
+
+
 def _service(request: Request) -> WorkspaceService:
     service = workspace_service_of(request)
     if not service.policy.enabled:
@@ -134,7 +141,11 @@ def workspace_control(request: Request) -> dict[str, Any]:
 
 
 @router.get(_BASE + "/sessions")
-def session_board(request: Request, limit: int = Query(default=5, ge=1, le=50)) -> dict[str, Any]:
+def session_board(
+    request: Request,
+    limit: int = Query(default=5, ge=1, le=50),
+    include_archived: bool = False,
+) -> dict[str, Any]:
     """左栏分组视图：每个工作区挂最近 `limit` 条会话，另附「未归属」一栏。
 
     一次请求给全量分组，是为了让左栏不必按工作区数量发 N 个请求——
@@ -143,7 +154,36 @@ def session_board(request: Request, limit: int = Query(default=5, ge=1, le=50)) 
     """
     service = _service(request)
     try:
-        return service.session_board(limit_per_workspace=limit)
+        return service.session_board(limit_per_workspace=limit, include_archived=include_archived)
+    except WorkspaceError as exc:
+        raise _fail(exc) from None
+
+
+@router.get(_BASE + "/sessions/{session_id}")
+def session_detail(session_id: str, request: Request) -> dict[str, Any]:
+    """单条会话的聚合视图（标题 / 最近时间 / 次数 / 归档状态）。"""
+    service = _service(request)
+    try:
+        return service.session_detail(session_id)
+    except WorkspaceError as exc:
+        raise _fail(exc) from None
+
+
+@router.patch(_BASE + "/sessions/{session_id}")
+def update_session(session_id: str, req: UpdateSessionRequest, request: Request) -> dict[str, Any]:
+    """给会话改名或归档；两者都不动 runs，也不动工作区归属。
+
+    路径是三段，不会和 `/{workspace_id}` 抢匹配，但仍放在分组路由附近，
+    让「会话相关」的端点集中在一处。
+    """
+    service = _service(request)
+    try:
+        result: dict[str, Any] = {"session_id": session_id}
+        if req.title is not None:
+            result.update(service.rename_session(session_id, req.title))
+        if req.archived is not None:
+            result.update(service.archive_session(session_id, archived=req.archived))
+        return result
     except WorkspaceError as exc:
         raise _fail(exc) from None
 
@@ -226,11 +266,14 @@ def workspace_sessions(
     request: Request,
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    include_archived: bool = False,
 ) -> dict[str, Any]:
-    """按工作区列会话：最近运行优先，标题取该会话最早一条输入。"""
+    """按工作区列会话：最近运行优先，标题取改名后的标题或最早一条输入。"""
     service = _service(request)
     try:
-        return service.sessions_for(workspace_id, limit=limit, offset=offset)
+        return service.sessions_for(
+            workspace_id, limit=limit, offset=offset, include_archived=include_archived
+        )
     except WorkspaceError as exc:
         raise _fail(exc) from None
 

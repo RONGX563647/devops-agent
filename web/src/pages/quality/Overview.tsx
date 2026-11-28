@@ -9,7 +9,7 @@
  * 首屏加载中要显式占位：先渲染「还没有批次」再被数据替换，是两次不同的结论。
  */
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   fetchOpenJudgeBatches,
   fetchOpenJudgeSeries,
@@ -20,6 +20,7 @@ import { TrendChart, type TrendPoint } from './charts';
 import { formatPercent, formatTime, precisionLimit, signedDelta } from './format';
 import { GateMatrix } from './GateMatrix';
 import { CausesPanel } from './run/CausesPanel';
+import { viewHref } from './view';
 
 function toTrendPoints(points: OjSeriesPoint[]): TrendPoint[] {
   return points.map((point) => ({
@@ -51,6 +52,8 @@ function rulesOf(suites: OjSuites | undefined): Record<string, Record<string, nu
 }
 
 export function Overview() {
+  // 链接要带上外层 tab（工作台里质量页挂在 `?tab=quality` 下）。
+  const [params] = useSearchParams();
   // 批次列表已带完整 summary：一条请求就够首屏，不用再单独拉批次详情。
   const latest = useQuery({
     queryKey: ['oj-latest-batch'],
@@ -79,7 +82,7 @@ export function Overview() {
         <p className="muted">
           还没有批次。到「批次」视图发起一次评测，这里会出现结论、门禁与趋势。
         </p>
-        <Link className="primary-btn" to="?view=batches" replace>
+        <Link className="primary-btn" to={viewHref(params, 'batches')} replace>
           去发起评测
         </Link>
       </section>
@@ -109,10 +112,10 @@ export function Overview() {
       </section>
 
       <div className="tag-row">
-        <Link className="primary-btn" to="?view=batches" replace>
+        <Link className="primary-btn" to={viewHref(params, 'batches')} replace>
           看批次明细
         </Link>
-        <Link className="oj-link-btn" to="?view=scoreflow" replace>
+        <Link className="oj-link-btn" to={viewHref(params, 'scoreflow')} replace>
           看评分流程
         </Link>
       </div>

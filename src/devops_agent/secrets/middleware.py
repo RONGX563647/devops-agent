@@ -16,12 +16,14 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncGenerator, Callable, Mapping
 from typing import Any
 
 from agentscope.message import TextBlock
 from agentscope.tool import ToolChunk, ToolMiddlewareBase
 
+from devops_agent.redaction import rules
 from devops_agent.secrets.capture import Captured, capture_output
 from devops_agent.secrets.vault import inject, mask, resolver
 
@@ -29,6 +31,40 @@ from devops_agent.secrets.vault import inject, mask, resolver
 Resolver = Callable[[str], str | None]
 # 输出捕获的登记函数：接收一条捕获项，返回最终入库名；保箱不可用时可降级
 Capture = Callable[[Captured], str]
+
+# 读源码的工具：输出走 `profile="code"`，关掉熵兜底 —— 否则函数名、模块路径
+# 会被当成高熵凭据，模型读到的源码不可编译（SPEC-0015 §3）。
+# 这里用工具名做映射而不是让工具自报：MCP 工具接入时再改为声明式（见规格 §11）。
+CODE_PROFILE_TOOLS = frozenset({"Read", "Grep", "Glob"})
+
+# 只查看文本的命令：读到的就是文件内容，与上面的工具同一个风险面
+_READONLY_PROGRAMS = frozenset(
+    {
+        "cat",
+        "head",
+        "tail",
+        "sed",
+        "nl",
+        "less",
+        "more",
+        "grep",
+        "rg",
+        "awk",
+        "wc",
+        "ls",
+        "tree",
+        "file",
+        "stat",
+        "diff",
+        "find",
+        "cut",
+        "sort",
+        "uniq",
+    }
+)
+# 会写盘或就地改写的用法：命中即不降档（降错的代价是漏捕凭据）
+_WRITE_MARKS = ("sed -i", "sed --in-place", "tee ")
+_SHELL_SPLIT = re.compile(r"[;&|\n]")
 
 # 只在 debug 级别记一行「哪个工具用掉了几个占位符」，便于排查注入没生效的场景
 logger = logging.getLogger(__name__)
@@ -82,7 +118,44 @@ def _make_capture(capture: Capture | None) -> Capture:
     return _register
 
 
-def _mask_chunk(chunk: ToolChunk, resolved: Mapping[str, str], capture: Capture) -> ToolChunk:
+def _base_program(token: str) -> str:
+    """`/usr/bin/cat` → `cat`：路径前缀不改变命令是不是只读。"""
+    return token.rsplit("/", 1)[-1]
+
+
+def _is_source_read(command: str) -> bool:
+    """这条 shell 命令是否「只查看文本」。
+
+    `cat` / `sed -n` / `grep` 读到的是源码，跟 `Read` 工具同一个风险面，却因为
+    工具名是 Bash 走了 output 档案、开着熵兜底（SPEC-0019 §7.2）。判定宁可保守：
+    出现重定向、就地改写、`tee` 一律不降档——降错是漏捕凭据，不降只是多一次误伤。
+    """
+    if not command.strip() or ">" in command:
+        return False
+    lowered = command.lower()
+    if any(mark in lowered for mark in _WRITE_MARKS):
+        return False
+    segments = [part.strip().split() for part in _SHELL_SPLIT.split(command) if part.strip()]
+    if not segments:
+        return False
+    return all(seg and _base_program(seg[0]) in _READONLY_PROGRAMS for seg in segments)
+
+
+def _profile_for(tool: Any, input_kwargs: Mapping[str, Any] | None = None) -> str:
+    """按工具与入参选脱敏档案：读源码的工具与只读 shell 命令都不做熵兜底。"""
+    name = str(getattr(tool, "name", ""))
+    if name in CODE_PROFILE_TOOLS:
+        return rules.PROFILE_CODE
+    if name == "Bash" and input_kwargs is not None:
+        command = input_kwargs.get("command")
+        if isinstance(command, str) and _is_source_read(command):
+            return rules.PROFILE_CODE
+    return rules.PROFILE_OUTPUT
+
+
+def _mask_chunk(
+    chunk: ToolChunk, resolved: Mapping[str, str], capture: Capture, profile: str
+) -> ToolChunk:
     """回抹本次注入的真值 + 捕获输出里新出现的明文；非文本块递归处理 text 字段。
 
     非文本块（结构化/附件）也常带 `text` 字段，不能默默透传——递归处理
@@ -93,7 +166,7 @@ def _mask_chunk(chunk: ToolChunk, resolved: Mapping[str, str], capture: Capture)
     for block in chunk.content:
         if isinstance(block, TextBlock):
             text = mask(block.text, dict(resolved))
-            text, captured = capture_output(text, register=capture)
+            text, captured = capture_output(text, register=capture, profile=profile)
             if text != block.text:
                 changed = True
             content.append(block.model_copy(update={"text": text}))
@@ -104,7 +177,7 @@ def _mask_chunk(chunk: ToolChunk, resolved: Mapping[str, str], capture: Capture)
             raw = getattr(block, "text", None)
             if isinstance(raw, str):
                 text = mask(raw, dict(resolved))
-                text, _ = capture_output(text, register=capture)
+                text, _ = capture_output(text, register=capture, profile=profile)
                 if text != raw:
                     changed = True
                     block = block.model_copy(update={"text": text})
@@ -141,9 +214,10 @@ class SecretInjectionMiddleware(ToolMiddlewareBase):
             replaced = input_kwargs
         if resolved:
             logger.debug("向工具 %s 注入 %d 个密钥", getattr(tool, "name", "?"), len(resolved))
+        profile = _profile_for(tool, replaced)
         async for chunk in next_handler(**replaced):
             # 无条件过一遍：即便本次没注入任何密钥，工具也可能自己读到明文。
-            yield _mask_chunk(chunk, resolved, self._capture)
+            yield _mask_chunk(chunk, resolved, self._capture, profile)
 
 
 def build_secret_middleware(

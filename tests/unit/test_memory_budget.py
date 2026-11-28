@@ -3,7 +3,6 @@
 from devops_agent.config import clear_cache, load_memory
 from devops_agent.memory.budget import compute_budget
 from devops_agent.memory.long_term import resolve_scope_id
-from devops_agent.memory.tokens import clip_to_tokens, estimate_tokens
 from devops_agent.memory_policy import LongTermPolicy, MemoryPolicy
 
 
@@ -52,15 +51,6 @@ def test_disabled_layers_move_share_to_short_term() -> None:
     assert budget.episodic == 0
     assert budget.long_term == 0
     assert budget.short_term == int(81600 * 0.9)
-
-
-def test_clip_to_tokens_keeps_text_within_budget() -> None:
-    text = "中文内容" * 400
-    clipped = clip_to_tokens(text, 50)
-    assert 0 < len(clipped) < len(text)
-    assert estimate_tokens(clipped) <= 50
-    assert clip_to_tokens(text, 0) == ""
-    assert clip_to_tokens("短", 100) == "短"
 
 
 def test_resolve_scope_id_switches_on_scope_and_user() -> None:

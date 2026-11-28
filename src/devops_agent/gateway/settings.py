@@ -1,8 +1,8 @@
 """网关部署设置：环境变量名与策略对象的唯一入口。
 
 两类值刻意分开处置 ——
-- **策略**（限额 / TTL / 心跳）来自 `config/gateway.yaml`，装配期读成不可变的
-  `GatewayPolicy`：可整体注入，单测不必 monkeypatch 模块常量；
+- **策略**（限额 / TTL / 心跳）来自部署配置（代码默认 + config.db 覆盖），装配期读成
+  不可变的 `GatewayPolicy`：可整体注入，单测不必 monkeypatch 模块常量；
 - **环境变量**（domain / model / 凭据）按请求读取：`/health` 要反映当前进程环境，
   测试也逐个用例 patch 它，import 期冻结会同时破坏这两点。
 
@@ -34,7 +34,7 @@ class Settings:
 
     @classmethod
     def load(cls) -> Settings:
-        """从 config/gateway.yaml 读策略；缺文件时全回落内置默认。"""
+        """读部署配置里的网关策略；没有覆盖时全回落代码默认。"""
         return cls(policy=load_gateway())
 
     @property
@@ -51,5 +51,17 @@ class Settings:
         return os.environ.get(ENV_MODEL, "")
 
     def has_credentials(self) -> bool:
-        """是否配了模型凭据；决定装配真实运行时还是 Echo。"""
-        return bool(os.environ.get(ENV_API_KEY))
+        """是否配了模型凭据；决定装配真实运行时还是 Echo。
+
+        两层：匿名 provider 仍看 `DEVOPS_AGENT_API_KEY`（老部署），
+        写了 `providers.yaml` 时任一 provider 有 key 即可 —— 否则「配了三个网关
+        却全部回退 Echo」会变成一次没人能解释的升级事故。
+        """
+        if os.environ.get(ENV_API_KEY):
+            return True
+        try:
+            from devops_agent.model_catalog.registry import load_registry
+
+            return any(spec.has_key for spec in load_registry().providers)
+        except Exception:  # noqa: BLE001 - 注册表坏了不该让进程起不来
+            return False

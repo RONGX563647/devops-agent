@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,11 @@ def hot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[HotRuntime]
     runtime = HotRuntime()
     app.state.runtime = runtime
     monkeypatch.setenv(repo.DB_PATH_ENV, str(tmp_path / "model.db"))
+    # 全局默认会写 config/model.local.yaml：整目录拷到 tmp，别污染仓库的 config/
+    config_copy = tmp_path / "config"
+    shutil.copytree(cfg.config_dir(), config_copy)
+    (config_copy / "model.local.yaml").unlink(missing_ok=True)
+    monkeypatch.setenv(cfg.CONFIG_DIR_ENV, str(config_copy))
     monkeypatch.delenv(ms.MODEL_ENV, raising=False)
     cfg.clear_cache()
     ms.invalidate()

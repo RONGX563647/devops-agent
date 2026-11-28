@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from devops_agent.config import ModelSettings
+from devops_agent.model_settings.ports import CapabilityLookup, get_lookup
 from devops_agent.model_settings.resolve import resolve, stored_defaults, values_of
 
 
@@ -34,6 +35,10 @@ class ModelParams:
     trigger_ratio: float
     reserve_ratio: float
     context_buffer_ratio: float
+    #: 选中的网关实例 id（空串 = 注册表默认项）。带默认值，所以排在无默认字段之后。
+    provider: str = ""
+    #: 窗口是否跟随模型能力；解析后必是布尔
+    context_auto: bool = False
 
     @classmethod
     def from_values(cls, values: dict[str, Any]) -> ModelParams:
@@ -58,6 +63,8 @@ class ModelParams:
             context_buffer_ratio=float(
                 _get(values, "context_buffer_ratio", defaults.context_buffer_ratio)
             ),
+            provider=str(_get(values, "provider", "") or ""),
+            context_auto=bool(_get(values, "context_auto", False)),
         )
 
     def sampling(self) -> dict[str, Any]:
@@ -81,6 +88,11 @@ class ModelParams:
         out: dict[str, Any] = {}
         if self.name:
             out["model"] = self.name
+        # 只有非空/非默认才记录：无网关部署的 run 记录不该多出两个恒为空的字段
+        if self.provider:
+            out["provider"] = self.provider
+        if self.context_auto:
+            out["context_auto"] = True
         pairs = (
             ("context_size", self.context_size, defaults.context_size),
             ("model_max_retries", self.model_max_retries, defaults.model_max_retries),
@@ -117,11 +129,17 @@ def effective_params(
     stored: dict[str, Any] | None = None,
     *,
     domain: str = "devops",
+    capability: CapabilityLookup | None = None,
 ) -> ModelParams:
     """一步拿到「该用哪组参数」，供装配与热替换共用。
 
     `stored` 省略时读部署默认（带 5 秒 TTL）；显式传 `{}` 表示忽略 DB，
     单测与纯函数场景用后者。
+
+    `capability` 省略时取装配期注入的查询器（`ports.get_lookup()`）：
+    没注入 = 不查能力，窗口走静态值，行为与改动前相同（A35）。
     """
     layer = stored_defaults() if stored is None else stored
-    return ModelParams.from_values(values_of(resolve(session, layer, domain=domain)))
+    lookup = capability if capability is not None else get_lookup()
+    resolved = resolve(session, layer, domain=domain, capability=lookup)
+    return ModelParams.from_values(values_of(resolved))

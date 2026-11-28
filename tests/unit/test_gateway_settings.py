@@ -1,7 +1,8 @@
-"""网关设置的测试：配置默认值与 yaml 的对账、环境变量读取时机、策略注入。
+"""网关设置的测试：基线缺失时的回落、环境变量读取时机、策略注入。
 
-前两个用例是**防漂移**：`config/gateway.yaml` 与 `config.py` 里的默认值各写一份，
-唯一的保护就是这条对账 —— 改了 yaml 没改默认值（或反之）会立刻红。
+部署 yaml 已收敛成「代码默认 + config.db 覆盖」，仓库里不再存一份同值副本；
+`policy.yaml` 仍是文件（安全域知识只能走 git 评审）。下面两条对账分别钉住
+「缺 gateway 基线不影响装配」与「policy 改了要同步 ConfirmPolicy」。
 """
 
 from __future__ import annotations
@@ -21,8 +22,8 @@ from devops_agent.gateway.turn.ending import RunLimits
 from devops_agent.runtime.runtime import EchoRuntime
 
 
-def test_checked_in_gateway_yaml_matches_code_defaults() -> None:
-    """gateway.yaml 与 GatewayPolicy 的默认值必须逐项相等。"""
+def test_gateway_loads_after_deployment_yaml_removed() -> None:
+    """gateway 基线已删：缺文件即全回落代码默认，装配行为不变。"""
     assert load_gateway() == GatewayPolicy()
 
 

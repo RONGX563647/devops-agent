@@ -1,0 +1,7 @@
+# Gateway venv 的最小依赖（与 agentscope.workspace._utils._GATEWAY_BASE_REQUIREMENTS 对齐）。
+# agentscope 本身用 `uv pip install --no-deps` 单独安装：它 import 的东西必须在这里
+# 显式列出，不能依赖别的包顺带装上（mcp 2.0 换掉 httpx 时就是靠这条约束兜住的）。
+mcp<2.0.0
+uvicorn
+fastapi
+httpx

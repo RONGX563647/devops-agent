@@ -203,3 +203,57 @@ def test_capture_does_not_rebuild_chunk_when_clean() -> None:
         ]
 
     assert asyncio.run(collect())[0] is chunk
+
+
+def test_read_tool_source_code_is_byte_identical() -> None:
+    """读源码走代码档案：`def estimate_prefix_tokens` 不许被打成占位符。
+
+    旧实现把它当高熵凭据，模型拿到的 `runtime.py` 不可编译——这不是可读性问题，
+    而是「改代码的模型拿到了坏输入」（SPEC-0015 §3）。
+    """
+    from devops_agent.secrets.capture import Captured
+
+    source = (
+        "def estimate_prefix_tokens(system_text: str) -> int:\n"
+        "    from devops_agent.memory.tokens import estimate_tokens\n"
+        "    return estimate_tokens(system_text)\n"
+    )
+
+    def capture(item: Captured) -> str:
+        return item.name
+
+    middleware = build_secret_middleware(_resolver({}), capture=capture)
+
+    class ReadTool:
+        name = "Read"
+
+    async def handler(**_: Any) -> Any:
+        yield _chunk(source)
+
+    async def collect() -> list[ToolChunk]:
+        return [
+            chunk
+            async for chunk in middleware.on_tool_call(
+                tool=ReadTool(), input_kwargs={"file_path": "runtime.py"}, next_handler=handler
+            )
+        ]
+
+    assert asyncio.run(collect())[0].content[0].text == source
+
+
+def test_readonly_shell_command_uses_code_profile() -> None:
+    """`cat` / `sed -n` 读源码与 Read 同一风险面；写盘与 printenv 不降档。
+
+    这条钉的是档案选择，不是脱敏结果：两个档案的差异只在熵兜底，
+    构造一个「只在 output 命中」的样本等于造一个真实中不存在的形状。
+    """
+    from devops_agent.secrets.middleware import _profile_for
+
+    bash = type("Bash", (), {"name": "Bash"})()
+    read = type("Read", (), {"name": "Read"})()
+    assert _profile_for(bash, {"command": "sed -n '1,80p' src/a.py"}) == "code"
+    assert _profile_for(bash, {"command": "cat src/a.py | grep token"}) == "code"
+    assert _profile_for(bash, {"command": "printenv"}) == "output"
+    assert _profile_for(bash, {"command": "cat a.py > out.txt"}) == "output"
+    assert _profile_for(bash, {"command": "sed -i 's/a/b/' a.py"}) == "output"
+    assert _profile_for(read, {}) == "code"

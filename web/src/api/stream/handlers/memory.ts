@@ -83,13 +83,18 @@ function labelOf(event: StreamEvent): string {
   }
 }
 
-/** 每帧一条步骤；id 带上当前步骤数，同一类事件多次出现不会互相覆盖。 */
+/** 每帧一条步骤。
+ *
+ * id 只用本帧事件序号保证**单轮内**唯一：`steps` 是每条助手消息各自的数组，
+ * 长度会随新消息归零，跨轮聚合必须由轨迹层加轮次前缀（见 traceData/build.ts 的 traceId）。
+ * 这里不要再引入任何「全局唯一」的假设。
+ */
 function memoryHandler(): EventHandler {
   return (state, event) => {
     const at = eventAt(event);
     const detail = summaryOf(event);
     const step: ProcessEntry = {
-      id: `memory:${event.type}:${state.steps.length}`,
+      id: `memory:${event.type}:${state.eventCount}`,
       kind: 'memory',
       label: labelOf(event),
       detail,

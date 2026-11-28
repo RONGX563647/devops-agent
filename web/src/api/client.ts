@@ -8,13 +8,19 @@
 import type {
   Attachment,
   Breakdown,
+  ConfigDomain,
+  ConfigIndex,
   Health,
   HealthMetrics,
   InputStage,
+  ModelCapability,
   ModelConfig,
+  ModelLayers,
   ModelPatch,
   PendingState,
   PermissionCatalog,
+  ProviderModels,
+  ProvidersPayload,
   Run,
   RunHealth,
   RunList,
@@ -30,6 +36,7 @@ import { getJson, sendJson } from './http';
 
 export { ApiError } from './http';
 export * from './openjudge';
+export * from './memory';
 
 export interface RunQuery {
   domain?: string;
@@ -246,6 +253,15 @@ export function patchModelConfig(
   return sendJson<ModelConfig>('/api/model-config', 'PATCH', { patch, version });
 }
 
+/** 四层原始值：界面用它画「这个值到底从哪来」的完整链路。 */
+export function fetchModelLayers(session?: string, domain?: string): Promise<ModelLayers> {
+  const params = new URLSearchParams();
+  if (session) params.set('session', session);
+  if (domain) params.set('domain', domain);
+  const suffix = params.toString();
+  return getJson<ModelLayers>(`/api/model-config/layers${suffix ? `?${suffix}` : ''}`);
+}
+
 /** 清除部署默认里的覆盖项，回落到 yaml / env / 框架默认。 */
 export function resetModelConfig(
   body: { keys?: string[]; all?: boolean },
@@ -273,3 +289,78 @@ export function clearSessionModelConfig(sessionId: string): Promise<SessionModel
   );
 }
 
+
+// --- 网关与模型目录（SPEC-0018）------------------------------------------
+
+/** 已配置网关清单。响应里只有 host 与 key 指纹，没有 key —— 这一屏常被截屏。 */
+export function fetchProviders(): Promise<ProvidersPayload> {
+  return getJson<ProvidersPayload>('/api/providers');
+}
+
+/** 某网关的模型列表。缓存优先；发现失败也是 200，由 `code` 说明原因。 */
+export function fetchProviderModels(providerId: string): Promise<ProviderModels> {
+  return getJson<ProviderModels>(`/api/providers/${encodeURIComponent(providerId)}/models`);
+}
+
+/** 强制绕过缓存重取（用户点了刷新）。 */
+export function refreshProviderModels(providerId: string): Promise<ProviderModels> {
+  return sendJson<ProviderModels>(
+    `/api/providers/${encodeURIComponent(providerId)}/models/refresh`,
+    'POST',
+  );
+}
+
+/** 单模型能力卡：窗口、输出上限、参数 schema 与逐字段来源。
+ *
+ * 逐段编码而不是整体 `encodeURIComponent`：模型 id 可能是 `models/gemini-2.5-pro`
+ * 或 `anthropic/claude-sonnet-4`，把 `/` 编成 `%2F` 会让后端把它当成一个整体名字。
+ */
+export function fetchModelCapability(
+  providerId: string,
+  model: string,
+): Promise<ModelCapability> {
+  const segments = model.split('/').map(encodeURIComponent).join('/');
+  return getJson<ModelCapability>(
+    `/api/providers/${encodeURIComponent(providerId)}/models/${segments}`,
+  );
+}
+
+
+// --- 配置中心（ADR-0005）-------------------------------------------------
+
+/** 域清单 + 存储位置：面板首页用它决定显示「写到哪里」。 */
+export function fetchConfigIndex(): Promise<ConfigIndex> {
+  return getJson<ConfigIndex>('/api/config');
+}
+
+/** 单个域的生效值 / 默认值 / 来源 / 边界。 */
+export function fetchConfigDomain(domain: string): Promise<ConfigDomain> {
+  return getJson<ConfigDomain>(`/api/config/${encodeURIComponent(domain)}`);
+}
+
+/** 增量写入：`null` 表示删掉覆盖、回落到下层；`version` 用于乐观锁。 */
+export function patchConfigDomain(
+  domain: string,
+  patch: Record<string, unknown>,
+  version: number,
+): Promise<ConfigDomain> {
+  return sendJson<ConfigDomain>(`/api/config/${encodeURIComponent(domain)}`, 'PATCH', {
+    patch,
+    version,
+  });
+}
+
+/** 恢复默认：给 keys 只清这几项，all=true 清全部。 */
+export function resetConfigDomain(
+  domain: string,
+  body: { keys?: string[]; all?: boolean },
+): Promise<ConfigDomain> {
+  return sendJson<ConfigDomain>(`/api/config/${encodeURIComponent(domain)}/reset`, 'POST', body);
+}
+
+/** 导出该域的覆盖项 yaml：可直接进 PR 评审。 */
+export async function exportConfigYaml(domain: string): Promise<string> {
+  const resp = await fetch(`/api/config/${encodeURIComponent(domain)}/export`);
+  if (!resp.ok) throw new Error(`导出失败 ${resp.status}`);
+  return resp.text();
+}

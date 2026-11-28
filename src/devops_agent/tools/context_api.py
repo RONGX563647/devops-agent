@@ -172,6 +172,7 @@ async def get_context(
         headroom_ratio=policy.budget.headroom_ratio,
         episodic_enabled=policy.episodic.enabled,
         long_term_enabled=policy.long_term.enabled,
+        estimate_margin_ratio=policy.budget.estimate_margin_ratio,
     )
     facts = _session_facts(session)
     return {

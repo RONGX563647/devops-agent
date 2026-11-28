@@ -47,8 +47,9 @@ def test_episodic_isolation_and_delete(tmp_path) -> None:  # type: ignore[no-unt
 def test_long_term_write_search_dedupe_and_isolation(tmp_path) -> None:  # type: ignore[no-untyped-def]
     db = tmp_path / "obs.db"
     policy = LongTermPolicy(backend="local")
-    store, backend = build_long_term(policy, "session:s1", db)
-    assert backend == "local"
+    choice = build_long_term(policy, "session:s1", db)
+    store = choice.backend
+    assert choice.effective == "local" and choice.reason == ""
     first = asyncio.run(store.write("用户更喜欢用 pytest 而不是 unittest"))
     assert first["stored"] is True
     second = asyncio.run(store.write("用户更喜欢用 pytest 而不是 unittest"))
@@ -57,7 +58,7 @@ def test_long_term_write_search_dedupe_and_isolation(tmp_path) -> None:  # type:
     hits = asyncio.run(store.search("pytest", top_k=5, min_score=0.1))
     assert hits and "pytest" in hits[0].text
 
-    other, _ = build_long_term(policy, "session:s2", db)
+    other = build_long_term(policy, "session:s2", db).backend
     assert asyncio.run(other.search("pytest", top_k=5, min_score=0.1)) == []
 
 
@@ -78,17 +79,29 @@ def test_long_term_recall_scans_all_retained_entries(tmp_path) -> None:  # type:
                 ttl_days=90,
                 max_entries=300,
             )
-    store, _ = build_long_term(policy, "session:s1", db)
+    store = build_long_term(policy, "session:s1", db).backend
     hits = asyncio.run(store.search("alpha", top_k=5, min_score=0.1))
     assert hits and "pytest" in hits[0].text
 
 
-def test_external_backends_degrade_to_off(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_external_backends_degrade_to_local_with_reason(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A16：请求未接入的后端 → effective=local，requested 保留，reason 非空。"""
     db = tmp_path / "obs.db"
-    store, backend = build_long_term(LongTermPolicy(backend="mem0"), "session:s1", db)
-    assert backend == "off"
-    assert asyncio.run(store.search("anything", 5, 0.1)) == []
-    assert asyncio.run(store.write("x"))["stored"] is False
+    choice = build_long_term(LongTermPolicy(backend="mem0"), "session:s1", db)
+    assert choice.requested == "mem0"
+    assert choice.effective == "local"
+    assert "未接入" in choice.reason
+    # 降级到 local 而不是 off：兜底检索仍然可用，只是换个实现
+    assert asyncio.run(choice.backend.search("anything", 5, 0.1)) == []
+    assert asyncio.run(choice.backend.write("x"))["stored"] is True
+
+
+def test_disabled_long_term_stays_off(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """`off` 是显式关闭，不该被降级逻辑改成 local。"""
+    db = tmp_path / "obs.db"
+    choice = build_long_term(LongTermPolicy(backend="off"), "session:s1", db)
+    assert choice.effective == "off" and choice.reason
+    assert asyncio.run(choice.backend.write("x"))["stored"] is False
 
 
 def test_old_span_check_is_migrated_and_rows_preserved(tmp_path) -> None:  # type: ignore[no-untyped-def]

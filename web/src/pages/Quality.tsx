@@ -5,30 +5,19 @@
  * 查询与地址栏状态），不是同一份数据的分页签。ARIA tabs 模式明确不适用于
  * 页面导航；用 `<a>` + `aria-current` 才能让「复制链接 / 前进后退 / 新标签」都正常。
  *
- * 旧地址 `?focus=scoreflow` 仍然有效，被重定向到 `?view=scoreflow`，
- * 已分享出去的链接不会失效。
+ * 旧地址 `?focus=scoreflow` 仍然有效：按评分流程渲染，切换视图时由 `view`
+ * 取代（见 `quality/view.ts` 的 `viewHref`），已分享出去的链接不会失效。
  */
 
 import { useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { OpenJudge } from './quality/OpenJudge';
 import { Overview } from './quality/Overview';
+import { Memory } from './quality/Memory';
 import { Studio } from './quality/studio/Studio';
+import { VIEWS, parseView, viewHref } from './quality/view';
 
-export type QualityView = 'overview' | 'batches' | 'scoreflow' | 'studio';
-
-const VIEWS: { key: QualityView; label: string; hint: string }[] = [
-  { key: 'overview', label: '概览', hint: '这批能不能用' },
-  { key: 'batches', label: '批次', hint: '逐批看明细' },
-  { key: 'scoreflow', label: '评分流程', hint: '分数从哪来' },
-  { key: 'studio', label: '用例与模型', hint: '改题、切模型' },
-];
-
-function parseView(raw: string | null, legacyFocus: string | null): QualityView {
-  if (legacyFocus === 'scoreflow') return 'scoreflow';
-  const found = VIEWS.find((item) => item.key === raw);
-  return found?.key ?? 'overview';
-}
+export type { QualityView } from './quality/view';
 
 export function Quality() {
   const [params] = useSearchParams();
@@ -48,7 +37,7 @@ export function Quality() {
         {VIEWS.map((item) => (
           <Link
             key={item.key}
-            to={`?view=${item.key}`}
+            to={viewHref(params, item.key)}
             replace
             className={`quality-view-link${view === item.key ? ' active' : ''}`}
             aria-current={view === item.key ? 'page' : undefined}
@@ -63,6 +52,7 @@ export function Quality() {
       {view === 'batches' && <OpenJudge />}
       {view === 'scoreflow' && <OpenJudge focusScoreFlow />}
       {view === 'studio' && <Studio />}
+      {view === 'memory' && <Memory />}
     </div>
   );
 }

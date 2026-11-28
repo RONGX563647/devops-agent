@@ -15,16 +15,20 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from devops_agent import model_settings
+from devops_agent.model_catalog import ProviderError, get_catalog
 from devops_agent.model_settings import InvalidConfig
 from devops_agent.observability import repository as repo
 from devops_agent.observability.recorder import utc_now
 from devops_agent.runtime.sessions import registry_for
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -56,12 +60,38 @@ class SessionModelRequest(BaseModel):
 # --- 内部：读写与校验 ---------------------------------------------------
 
 
-def _stored_now() -> tuple[dict[str, Any], int]:
-    """直接从库里读一份新的部署默认（不吃 TTL 缓存）：写入前必须看到别人改过的值。"""
+def _db_now() -> tuple[dict[str, Any], int]:
+    """直接从库里读一份新的 DB 值（不吃 TTL 缓存）：写入前必须看到别人改过的值。"""
     with repo.connect() as conn:
         repo.init_db(conn)
         saved = repo.load_setting(conn, model_settings.SETTING_KEY)
     return saved if saved is not None else ({}, 0)
+
+
+def _migrate_to_file(db: dict[str, Any]) -> None:
+    """老部署只有 DB 值：第一次读配置时把它落盘，界面上的「已保存」才成立。
+
+    失败只记日志：迁移是尽力而为，读路径仍能从 DB 拿到值。
+    """
+    if not db or model_settings.local_path().exists():
+        return
+    try:
+        with model_settings.file_guard():
+            if not model_settings.local_path().exists():
+                model_settings.save_local(db)
+    except OSError:
+        logger.warning("历史部署默认无法写入配置文件，继续以 DB 值为准", exc_info=True)
+
+
+def _stored_now() -> tuple[dict[str, Any], int]:
+    """全局默认的合并视图（文件优先于 DB）+ 版本号。
+
+    版本号仍记在 DB：文件提供不了「读过之后没人改过」的原子凭证，而
+    `settings.version` 已经是现成的乐观锁。
+    """
+    db, version = _db_now()
+    _migrate_to_file(db)
+    return {**db, **model_settings.load_local()}, version
 
 
 def _invalid(exc: InvalidConfig, *, remedy: str | None = None) -> HTTPException:
@@ -86,6 +116,28 @@ def _conflict(version: int, resolved: dict[str, Any]) -> HTTPException:
     )
 
 
+def _capability(values: dict[str, Any]) -> Any:
+    """当前模型的能力卡（四源合并）。查不到返回 None，不抛 —— 面板要能显示。"""
+    try:
+        return get_catalog().capability(
+            str(values.get("provider") or ""), str(values.get("model") or "")
+        )
+    except Exception:  # noqa: BLE001 - 能力查询失败不该让配置读取 500
+        logger.warning("能力卡查询失败", exc_info=True)
+        return None
+
+
+def _check_provider(values: dict[str, Any]) -> None:
+    """`provider` 的合法性在运行期用注册表判（BOUNDS 里写死 id 会随 yaml 失效）。"""
+    provider = values.get("provider")
+    if not provider:
+        return
+    try:
+        get_catalog().registry.get(str(provider))
+    except ProviderError as exc:
+        raise _invalid(InvalidConfig("provider", exc.reason)) from None
+
+
 def _checked_values(
     stored_layer: dict[str, Any],
     session_layer: dict[str, Any] | None = None,
@@ -93,14 +145,77 @@ def _checked_values(
     domain: str = DEFAULT_DOMAIN,
     remedy: str | None = None,
 ) -> dict[str, Any]:
-    """解析 + 校验，返回完整参数值；非法时抛 400。"""
-    resolved = model_settings.resolve(session_layer, stored_layer, domain=domain)
+    """解析 + 校验，返回完整参数值；非法时抛 400。
+
+    校验顺序：`BOUNDS` → 联动约束 → 能力卡 schema。schema 只能收紧，
+    不会放宽 BOUNDS（`validate` 里两段是串联，不是替代）。
+    """
+    resolved = model_settings.resolve(
+        session_layer, stored_layer, domain=domain, capability=get_catalog()
+    )
     values = model_settings.values_of(resolved)
+    _check_provider(values)
+    cap = _capability(values)
     try:
-        model_settings.validate(values)
+        model_settings.validate(values, schema=cap.parameter_schema if cap else None)
     except InvalidConfig as exc:
         raise _invalid(exc, remedy=remedy) from None
     return values
+
+
+def _registry_view(values: dict[str, Any]) -> tuple[int, str]:
+    """注册表里有几个网关、当前生效的是哪一个。
+
+    面板的下拉框要一个具体值：空 provider 表示「跟随注册表默认」，这里替它算出
+    到底是哪一个 —— 否则界面显示空选项，实际却已经连上了某个网关。
+    """
+    provider = str(values.get("provider") or "")
+    try:
+        registry = get_catalog().registry
+    except ProviderError:
+        return 0, provider
+    return len(registry.providers), provider or registry.default_id
+
+
+def _current_view(cap: Any, model: str) -> dict[str, Any]:
+    """当前模型的匹配与来源。查不到能力卡时给一张「什么都没查到」的形状。"""
+    if cap is None:
+        return {
+            "matched_by": "none",
+            "context_source": "",
+            "card_may_be_stale": False,
+            "status": "",
+            "deprecated_at": None,
+            "label": model,
+        }
+    context_source = cap.source_of("context_size")
+    return {
+        "matched_by": cap.matched_by,
+        "context_source": context_source,
+        "card_may_be_stale": context_source == "card",
+        "status": cap.status,
+        "deprecated_at": cap.deprecated_at or None,
+        "label": cap.label,
+    }
+
+
+def _catalog_block(values: dict[str, Any]) -> dict[str, Any]:
+    """`/api/model-config` 的 `catalog` 段：这个模型的能力从哪来。"""
+    configured, provider = _registry_view(values)
+    model = str(values.get("model") or "")
+    return {
+        "providers_configured": configured,
+        "provider": provider,
+        "current": _current_view(_capability(values), model),
+    }
+
+
+def _soft_warnings(values: dict[str, Any]) -> list[str]:
+    """模型名匹配不上只警告不报错：网关的 `/models` 常不全，手填是合法用法。"""
+    cap = _capability(values)
+    if cap is not None and cap.matched_by == "none" and values.get("model"):
+        return ["未在内置卡中找到该模型，窗口按未校准处理"]
+    return []
 
 
 def _body_payload(
@@ -111,21 +226,55 @@ def _body_payload(
     domain: str = DEFAULT_DOMAIN,
 ) -> dict[str, Any]:
     """GET / PATCH / reset 共用的响应体。"""
-    resolved = model_settings.resolve(session_layer, stored_layer, domain=domain)
-    return model_settings.payload(resolved, version)
+    resolved = model_settings.resolve(
+        session_layer, stored_layer, domain=domain, capability=get_catalog()
+    )
+    values = model_settings.values_of(resolved)
+    body = model_settings.payload(resolved, version)
+    body["catalog"] = _catalog_block(values)
+    body["warnings"] = [*body["warnings"], *_soft_warnings(values)]
+    return body
 
 
-def _save_stored(merged: dict[str, Any], *, expected: int) -> int:
-    """写回部署默认；版本不匹配时抛 409。"""
+def _db_save(values: dict[str, Any], *, expected: int) -> int | None:
+    """写 DB 账本；版本不匹配返回 None（由调用方回滚文件并报 409）。"""
     with repo.connect() as conn:
         repo.init_db(conn)
-        saved = repo.save_setting(
+        return repo.save_setting(
             conn,
             model_settings.SETTING_KEY,
-            merged,
+            values,
             expected_version=expected,
             updated_at=utc_now(),
         )
+
+
+def _not_persisted(exc: OSError) -> HTTPException:
+    """落盘失败要显式报错：静默降级正是「以为保存了其实没有」的来源。"""
+    return HTTPException(
+        status_code=500,
+        detail={
+            "code": "model_config_not_persisted",
+            "reason": f"无法写入 {model_settings.local_path()}：{exc}",
+        },
+    )
+
+
+def _save_stored(merged: dict[str, Any], *, expected: int, previous: dict[str, Any]) -> int:
+    """写文件 + 写 DB 账本，返回新版本号。
+
+    顺序是「先文件后 DB」：文件优先于 DB，所以 DB 冲突时必须把文件回滚，
+    否则一次 409 会伴随一份已经生效的新配置。整个读改写持有文件锁，
+    两个并发的 PATCH 不会互相覆盖。
+    """
+    try:
+        with model_settings.file_guard():
+            model_settings.save_local(merged)
+            saved = _db_save(merged, expected=expected)
+            if saved is None:
+                model_settings.save_local(previous)
+    except OSError as exc:
+        raise _not_persisted(exc) from exc
     if saved is None:
         current, version = _stored_now()
         # 冲突说明本进程缓存里的版本已过时（别的进程写过）。必须先失效再返回 409，
@@ -167,9 +316,28 @@ def patch_model_config(req: PatchRequest, request: Request) -> dict[str, Any]:
     except InvalidConfig as exc:
         raise _invalid(exc) from None
     _checked_values(merged)
-    new_version = _save_stored(merged, expected=version)
+    new_version = _save_stored(merged, expected=version, previous=stored)
     affected = registry_for(request).broadcast_model_defaults()
     return {**_body_payload(merged, new_version), "affected": affected}
+
+
+@router.get("/api/model-config/layers")
+def read_model_layers(session: str | None = None, domain: str = DEFAULT_DOMAIN) -> dict[str, Any]:
+    """四层原始值：前端用它画「这个值到底从哪来」，并给出文件路径。
+
+    与 GET /api/model-config 的区别：那个给「生效值 + 单一来源」，这个给
+    「每一层各自写了什么」，界面才能显示完整链路而不是一个孤零零的徽标。
+    """
+    stored, version = _stored_now()
+    overrides = _session_overrides(session) if session else {}
+    resolved = model_settings.resolve(overrides, stored, domain=domain, capability=get_catalog())
+    return {
+        "version": version,
+        "file_path": str(model_settings.local_path()),
+        "layers": model_settings.layers(overrides, domain=domain),
+        "effective": model_settings.values_of(resolved),
+        "sources": model_settings.sources_of(resolved),
+    }
 
 
 @router.post("/api/model-config/reset")
@@ -180,7 +348,7 @@ def reset_model_config(req: ResetRequest, request: Request) -> dict[str, Any]:
     # reset 也是写路径：库里若被手工写入非法值（运维改库 / 旧版本遗留），
     # 删掉别的键后原样返回给前端就等于绕过校验。服务端是唯一裁判，非法照样 400。
     _checked_values(merged, remedy='可用 {"all": true} 清空全部覆盖项以恢复默认')
-    new_version = _save_stored(merged, expected=version)
+    new_version = _save_stored(merged, expected=version, previous=stored)
     affected = registry_for(request).broadcast_model_defaults()
     return {**_body_payload(merged, new_version), "affected": affected}
 

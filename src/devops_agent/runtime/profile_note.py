@@ -16,10 +16,11 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from agentscope.agent import Agent
-from agentscope.message import Msg, UserMsg
+from agentscope.message import Msg
 from agentscope.middleware import MiddlewareBase
 
 from devops_agent.governance.model import PermissionProfile
+from devops_agent.memory.turns import injected_note
 from devops_agent.search_mode import search_mode
 
 # 按档位改写的约束句：只读档说「没有写权限」，其余档说边界在哪。
@@ -115,8 +116,8 @@ class ProfileNoteMiddleware(MiddlewareBase):
         next_handler: Callable[..., Awaitable[Any]],
     ) -> Any:
         messages: list[Msg] = list(input_kwargs.get("messages") or [])
-        messages.append(UserMsg(name="system", content=policy_note(self._profile)))
+        messages.append(injected_note(policy_note(self._profile), kind="profile"))
         note = search_note(self._web_search)
         if note:
-            messages.append(UserMsg(name="system", content=note))
+            messages.append(injected_note(note, kind="web_search"))
         return await next_handler(messages=messages)

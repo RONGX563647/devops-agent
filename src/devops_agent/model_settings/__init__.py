@@ -3,7 +3,8 @@
 优先级（高 → 低）：
 
     会话覆盖（session_states.model_config）
-      > 部署默认（settings['model_config']，前端改、持久化）
+      > 部署默认（config/model.local.yaml，界面写入、手改也生效）
+      > 数据库旧值（settings['model_config']，只作迁移残留与版本账本）
       > config/model.yaml
       > 环境变量（仅 model 名）
       > 框架默认（context_size / 重试 / ContextConfig 比例）
@@ -38,12 +39,30 @@ from devops_agent.model_settings.bounds import (
     bounds_payload,
     validate,
 )
+from devops_agent.model_settings.file_store import (
+    guard as file_guard,
+)
+from devops_agent.model_settings.file_store import (
+    load as load_local,
+)
+from devops_agent.model_settings.file_store import (
+    local_path,
+)
+from devops_agent.model_settings.file_store import (
+    save as save_local,
+)
 from devops_agent.model_settings.params import (
     ModelParams,
     effective_params,
     params_sha,
 )
 from devops_agent.model_settings.payload import derived, payload
+from devops_agent.model_settings.ports import (
+    CapabilityLookup,
+    CapabilityView,
+    get_lookup,
+    set_lookup,
+)
 from devops_agent.model_settings.resolve import (
     MODEL_ENV,
     SETTING_KEY,
@@ -51,8 +70,10 @@ from devops_agent.model_settings.resolve import (
     Resolved,
     Source,
     invalidate,
+    layers,
     resolve,
     sources_of,
+    stored_db,
     stored_defaults,
     stored_version,
     values_of,
@@ -67,6 +88,8 @@ __all__ = [
     "SETTING_KEY",
     "STORED_TTL_S",
     "Bound",
+    "CapabilityLookup",
+    "CapabilityView",
     "InvalidConfig",
     "ModelParams",
     "Resolved",
@@ -76,11 +99,19 @@ __all__ = [
     "bounds_payload",
     "derived",
     "effective_params",
+    "file_guard",
+    "get_lookup",
     "invalidate",
+    "layers",
+    "load_local",
+    "local_path",
     "params_sha",
     "payload",
     "resolve",
+    "save_local",
+    "set_lookup",
     "sources_of",
+    "stored_db",
     "stored_defaults",
     "stored_version",
     "validate",

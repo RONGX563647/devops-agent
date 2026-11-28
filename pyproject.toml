@@ -29,8 +29,14 @@ parse = ["pypdf>=4.0"]
 # 外部内容的安全裁剪（SPEC-0012）：净化用 nh3、正文抽取用 trafilatura；
 # 没装时退化为标签剥离，并由 /health 与阶段详情如实上报
 sanitize = ["nh3>=0.2", "trafilatura>=1.8"]
+# token 估算升级到 L1 真编码器（SPEC-0016 §4.1）：不装时按分族系数估算，
+# 默认行为与是否安装无关（`precision: estimate`），所以只作为可选加速/校准手段
+tokenize = ["tiktoken>=0.7"]
 # OpenJudge 评测基准：第三方包只在 devops_agent/openjudge/ 内 import，保持可选依赖隔离
 openjudge = ["py-openjudge==0.2.5"]
+# OpenSandbox 执行面（SPEC-0019）：未装时 mode=local/docker 完全不受影响，
+# mode=opensandbox 由 SandboxManager 按 required/auto 语义降级并给出原因码。
+opensandbox = ["agentscope[workspace-opensandbox]>=2.0"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -67,6 +73,12 @@ strict = true
 # py-openjudge 未提供 py.typed，裁判模块只能当无类型依赖用；其余仍然严格检查。
 [[tool.mypy.overrides]]
 module = ["openjudge.*"]
+ignore_missing_imports = true
+
+# opensandbox 是可选 extra：未安装时 mypy 仍要能检查 executor 层，
+# 运行时路径按 SPEC-0019 的 required/auto 语义降级。
+[[tool.mypy.overrides]]
+module = ["opensandbox.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

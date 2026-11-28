@@ -16,7 +16,25 @@ MEMORY_COMPRESS_END = "MEMORY_COMPRESS_END"
 MEMORY_WRITE_START = "MEMORY_WRITE_START"
 MEMORY_WRITE_END = "MEMORY_WRITE_END"
 CONTEXT_ASSEMBLED = "CONTEXT_ASSEMBLED"
-CONTEXT_RESTORE = "CONTEXT_RESTORE"
+# 没有 CONTEXT_RESTORE：恢复发生在装配期，那时还没有 SSE 流可以承载事件；
+# 恢复失败改为结构化日志 + `/health` 计数（SPEC-0013 §18.2 M5）。
+# 估算与实测的对账帧：每个 run 最多一次，只报数不改行为
+CONTEXT_ESTIMATE_DELTA = "CONTEXT_ESTIMATE_DELTA"
+
+# `reason` 是枚举而不是自由文本：前端按它做过滤与提示，异常细节另有字段。
+# 降级（error）与「确实没有」（miss）必须可区分，否则故障永远看起来像正常空结果。
+REASON_NO_MEMORY = "no_memory"
+#: 有记忆但注入额度被预算压到 0：与「确实没有记忆」必须分开，否则评测会把
+#: 「预算不够」统计成「召回失败」。
+REASON_BUDGET_EXHAUSTED = "budget_exhausted"
+REASON_EPISODIC_UNAVAILABLE = "episodic_unavailable"
+REASON_LONG_TERM_UNAVAILABLE = "long_term_unavailable"
+REASON_WRITE_FAILED = "write_failed"
+REASON_TURN_WRITE_FAILED = "turn_write_failed"
+REASON_REQUEST_TRIM = "request_trim"
+#: 摘要降级：抽取式没抽出可用句子（退回原文前缀）、或 `model` 模式尚未接入
+REASON_SUMMARY_DEGRADED = "summary_degraded"
+REASON_SUMMARIZE_MODEL_UNAVAILABLE = "summarize_model_unavailable"
 
 # 需要落成 span 的事件：START 只用于配对，不单独落库
 SPAN_MEMORY_EVENTS = frozenset(
@@ -33,7 +51,7 @@ MEMORY_EVENT_TYPES = frozenset(
         MEMORY_WRITE_START,
         MEMORY_WRITE_END,
         CONTEXT_ASSEMBLED,
-        CONTEXT_RESTORE,
+        CONTEXT_ESTIMATE_DELTA,
     }
 )
 

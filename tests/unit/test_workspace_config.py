@@ -8,16 +8,20 @@ from pydantic import ValidationError
 from devops_agent import config
 from devops_agent.config_schema import WorkspacePolicy
 from devops_agent.config_store import registry
+from devops_agent.config_store.layers import yaml_layer
 
 
-def test_domain_registered_and_disabled_by_default() -> None:
-    """workspace 域可读；默认关闭；yaml 段名是 workspaces。"""
+def test_domain_registered_and_takes_yaml_baseline() -> None:
+    """workspace 域可读；yaml 段名是 workspaces；开与关由基线决定，模型默认仍为关。"""
     spec = registry.spec_of("workspace")
     assert spec.section == "workspaces"
     assert spec.model == "WorkspacePolicy"
     assert spec.hot == "restart"
+    # 代码默认必须是关：灰度靠 baseline 打开，而不是把默认改成开
+    assert WorkspacePolicy().enabled is False
     config.clear_cache()
-    assert config.load_workspace().enabled is False
+    baseline = yaml_layer(spec)
+    assert config.load_workspace().enabled is bool(baseline.get("enabled", False))
 
 
 def test_out_of_range_values_rejected() -> None:

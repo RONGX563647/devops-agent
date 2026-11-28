@@ -434,11 +434,13 @@ class WorkspacePolicy(BaseModel):
 
 生效时机 `restart`（根目录与白名单在启动期固定），与 `gateway` 域一致（`registry.py:80-87`）。`enabled=false` 时新路由返回 404，运行路径完全走旧逻辑。
 
+**本仓库当前基线（`config/workspaces.yaml`）**：`enabled: true` + `allow_local_import: true`，`allowed_local_roots` 留空。白名单是本机绝对路径，不进仓库 —— 写进 `config.db`（界面「工作区」域，或 `PATCH /api/config/workspace`）或 `DEVOPS_AGENT_WORKSPACE_LOCAL_ROOTS`。留空时 `source.kind=local` 一律 403（`workspace/paths.py:56-59`），Git 导入不受影响；全新克隆要么填白名单，要么先走 Git 导入。代码里的 pydantic 默认仍是 `False`，回滚只需把这两项改回 `false` 并重启。
+
 ## 12. 安全
 
 | 风险 | 控制 |
 |---|---|
-| 本地路径任意读写（无容器时最危险） | `allow_local_import` 默认关；`allowed_local_roots` 必填；realpath 后必须在白名单内 |
+| 本地路径任意读写（无容器时最危险） | `allow_local_import` 只由基线或白名单显式打开；`allowed_local_roots` 必填；realpath 后必须在白名单内 |
 | 路径穿越 / 符号链接逃逸 | id 正则 + realpath + 前缀校验；拒绝 `/`、home 根、`..` |
 | 同一目录被多工作区并发改写 | `root_path` 在 active 内唯一；冲突 409 |
 | Git 凭据泄漏 | 只存 `credential_ref`；clone 用临时 `GIT_ASKPASS`；不写 `credential.helper`；日志脱敏 |
@@ -505,7 +507,7 @@ class WorkspacePolicy(BaseModel):
 
 ### 16.1 兼容
 
-- 默认 `workspace.enabled=false`：不建表数据、不解析 `workspace_id`、不新增必填参数。
+- 回滚开关 `workspace.enabled=false`（代码默认即此值；本仓库基线在 §11 已显式打开）：不建表数据、不解析 `workspace_id`、不新增必填参数。
 - 所有新增表/列均为追加式，`init_db` 幂等升级，无需停机脚本。
 - `RunRequest.workspace_id` 可选；旧前端不传不产生 422。
 - 记忆默认 scope 不变；只有绑定工作区的会话才切到 `workspace`。

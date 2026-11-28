@@ -1,11 +1,13 @@
 # 工作区（SPEC-0021）—— 一工作区一代码库。
-# 默认全关：enabled=false 时 /api/workspaces 返回 404，运行链路完全走旧路径。
+# enabled=false 时 /api/workspaces 返回 404，运行链路完全走旧路径；本仓库默认开启。
 workspaces:
-  enabled: false
+  enabled: true
   # 受管克隆根；留空表示仓库根下的 workspace/workspaces（已 gitignore）
   root: ""
-  # 本地目录导入是高风险入口：必须同时配置白名单，否则本地创建被拒
-  allow_local_import: false
+  # 本地目录导入是高风险入口：无容器隔离时它等于把宿主目录交给工具。
+  # 这里只负责开闸；白名单是本机绝对路径，不入库 —— 写进 config.db（界面「工作区」域）
+  # 或 DEVOPS_AGENT_WORKSPACE_LOCAL_ROOTS。白名单为空时本地导入一律拒绝（不是「全放开」）。
+  allow_local_import: true
   allowed_local_roots: []
   allow_git_import: true
   git_clone_timeout_sec: 120

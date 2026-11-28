@@ -1,9 +1,9 @@
 # SPEC-0018：沙箱与 Docker 执行面（复用 AgentScope Workspace）
 
-- 状态：草案（待评审）
+- 状态：已实施（PR-1…PR-4 均已落地；执行后端随后由 SPEC-0019 换成 OpenSandbox）
 - 日期：2026-11-27
 - 基线：`origin/main 27cc2be`
-- 关系：落实 AGENTS §3.2「编排与执行分离」与 §3.4「能力用内置、不手搓」；与 SPEC-0010（权限单源）、ADR-0002（权限模型）共用同一套 `PermissionContext`；不改记忆、评测与确认协议
+- 关系：落实 AGENTS §3.2「编排与执行分离」与 §3.4「能力用内置、不手搓」；与 SPEC-0010（权限单源）、ADR-0002（权限模型）共用同一套 `PermissionContext`；不改记忆、评测与确认协议。编号与 `0018-model-provider-registry.md` 重叠（该文属另一主题的后续工作），本文按「执行面」主题保留原编号，后继方案见 `0019-opensandbox-execution.md`
 - 范围：`executor/`（新增执行目标与生命周期管理）、`tools/catalog.py`、`runtime/{assembly,prompt,scope_runtime}.py`、`governance/compile.py`、`config_schema.py`、`config_store/registry.py`、`gateway/{app,bootstrap}.py`、`gateway/routes/health.py`、`web/src/types/health.ts`、新增测试与 ADR
 - 触发来源：对 AgentScope 2.x Workspace / DockerWorkspace 实现的一次走查；发现本仓库已有执行面构造函数但生产路径从未接线
 

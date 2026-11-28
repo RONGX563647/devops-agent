@@ -17,13 +17,13 @@ import { CallRows } from './CallRows';
 import { ContextRow } from './ContextRow';
 import { matchesStep } from './Highlight';
 import { MemoryRows } from './MemoryRows';
+import type { TraceMode } from './modes';
 import { StepRow } from './StepRow';
 import { TurnHeader } from './TurnHeader';
 
 export { Composition, fmtTok } from './Composition';
 export { matchesStep } from './Highlight';
-
-export type TraceMode = 'turn' | 'time' | 'call' | 'memory';
+export type { TraceMode } from './modes';
 
 interface Props {
   turns: TraceTurn[];

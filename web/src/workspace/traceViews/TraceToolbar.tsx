@@ -5,21 +5,7 @@
  */
 
 import type { RefObject } from 'react';
-import type { TraceMode } from './TraceList';
-
-export const MODE_HINTS: Record<TraceMode, string> = {
-  turn: '按轮次分组；再点一次本按钮 = 全部折叠/展开（只到步骤行，详情不展开）',
-  time: '按耗时降序，最慢的排最前；模型调用也在内',
-  call: '按模型与工具聚合，点一级节点看失败率与原因分类',
-  memory: '记忆动作单独成轨：检索 / 裁剪 / 压缩 / 写入',
-};
-
-const MODES: { key: TraceMode; label: string }[] = [
-  { key: 'turn', label: '轮次' },
-  { key: 'memory', label: '记忆' },
-  { key: 'time', label: '时长' },
-  { key: 'call', label: '调用' },
-];
+import { MODE_HINTS, MODES, type TraceMode } from './modes';
 
 export function TraceToolbar({
   layout,

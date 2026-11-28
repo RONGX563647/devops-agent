@@ -35,6 +35,7 @@ from devops_agent.config_schema import RulePolicy as RulePolicy
 from devops_agent.config_schema import RuntimePolicy as RuntimePolicy
 from devops_agent.config_schema import SandboxDockerPolicy as SandboxDockerPolicy
 from devops_agent.config_schema import SandboxPolicy as SandboxPolicy
+from devops_agent.config_schema import TokenizerSettings as TokenizerSettings
 from devops_agent.config_schema import WorkspacePolicy as WorkspacePolicy
 from devops_agent.config_store import store
 from devops_agent.memory_policy import MemoryPolicy as MemoryPolicy

@@ -32,6 +32,17 @@ _MIN_TOOL_CHARS = 200
 _DEFAULT_READ_LINES = 2000
 _READ_TARGET_KEYS = ("file_path", "path", "file")
 
+#: 阶段 → `history_changed_by`：让「缓存为什么失效」在轨迹里可归因。
+#: 阶段值由 `trim_messages` 结算（s0 早退、s2 去重、s3 砍旧结果、s4 淘汰轮次、
+#: s5 收紧当前轮）；归因字符串是给前端与评测看的稳定词表。
+STAGE_REASON = {
+    "s1": "trim_tail",
+    "s2": "dedup",
+    "s3": "trim_mid",
+    "s4": "drop_turns",
+    "s5": "trim_tail",
+}
+
 
 @dataclass
 class TrimReport:
@@ -45,10 +56,25 @@ class TrimReport:
     exempt_results: int = 0
     truncated_lines: int = 0
     stage: str = ""
+    #: 预算口径（SPEC-0016 §5.2 A34）：没有预算时三项保持 0
+    tokens_before: int = 0
+    tokens_after: int = 0
+    limit: int = 0
+    over_budget: bool = False
 
     @property
     def changed(self) -> bool:
         return bool(self.dropped_tool_results or self.deduped_reads or self.dropped_turns)
+
+    @property
+    def changes(self) -> int:
+        """改动计数，用来判断某一阶段是否真的动了东西。"""
+        return self.dropped_tool_results + self.deduped_reads + self.dropped_turns
+
+    @property
+    def changed_by(self) -> str:
+        """缓存失效归因；未改动（含 s0 早退）为 `none`。"""
+        return STAGE_REASON.get(self.stage, "none") if self.changed else "none"
 
     def as_dict(self) -> dict[str, int | str]:
         return {
@@ -59,6 +85,10 @@ class TrimReport:
             "exempt_results": self.exempt_results,
             "truncated_lines": self.truncated_lines,
             "stage": self.stage,
+            "tokens_before": self.tokens_before,
+            "tokens_after": self.tokens_after,
+            "limit": self.limit,
+            "over_budget": self.over_budget,
         }
 
 
@@ -345,6 +375,20 @@ def _settle_stage(report: TrimReport) -> None:
         report.stage = "s2"
 
 
+def _open_report(messages: list[Msg], history_limit: int | None) -> TrimReport:
+    """裁剪前的账面：预算上限与当前估算，供 s0 早退与最终对账共用。"""
+    report = TrimReport()
+    report.limit = int(history_limit or 0)
+    report.tokens_before = estimate_messages(messages)
+    return report
+
+
+def _close_report(report: TrimReport, trimmed: list[Msg], history_limit: int | None) -> None:
+    """裁剪后的账面：`over_budget` 只在真的给了预算时才判定（无预算＝不设限）。"""
+    report.tokens_after = estimate_messages(trimmed)
+    report.over_budget = history_limit is not None and report.tokens_after > history_limit
+
+
 def trim_messages(
     messages: list[Msg],
     policy: ShortTermPolicy,
@@ -356,10 +400,11 @@ def trim_messages(
     的对照路径会这么调；生产路径必须传，否则退化成每轮乱砍。
     顺序：预算早退 → 去重 → 旧轮次截断 → 淘汰最旧轮次 → 仍超预算则压最新结果。
     """
-    report = TrimReport()
+    report = _open_report(messages, history_limit)
     if policy.trim_on_budget and history_limit is not None:
-        if estimate_messages(messages) <= history_limit:
+        if report.tokens_before <= history_limit:
             report.stage = "s0"
+            report.tokens_after = report.tokens_before
             return list(messages), report
     trimmed = list(messages)
     exempt = _exempt_positions(trimmed, policy.recent_exempt_results)
@@ -398,6 +443,7 @@ def trim_messages(
             ]
             report.stage = "s5"
     _settle_stage(report)
+    _close_report(report, trimmed, history_limit)
     return trimmed, report
 
 

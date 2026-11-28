@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -175,9 +176,27 @@ def write_delete_patch(root: Path, workspace_id: str, *, timeout: int = 20) -> P
     return target
 
 
+def _relax_permissions(root: Path) -> None:
+    """清掉目录树的只读位：Windows 上 git 对象是只读的，`rmtree` 会被拒绝。
+
+    不用 `onerror` / `onexc` 回调：前者自 3.12 起已弃用、后者 3.12 才有，而仓库
+    要同时跑 3.11 与 3.13。先整体改权限，再交给标准库删。
+    """
+    if not root.exists():
+        return
+    mode = stat.S_IREAD | stat.S_IWRITE
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in filenames:
+            os.chmod(os.path.join(dirpath, name), mode)
+        for name in dirnames:
+            os.chmod(os.path.join(dirpath, name), mode)
+    os.chmod(root, mode)
+
+
 def remove_managed_dir(root: Path) -> None:
     """删除受管克隆目录；只用于 `managed=true`，本地引用目录永不经过这里。"""
-    shutil.rmtree(root, ignore_errors=False)
+    _relax_permissions(root)
+    shutil.rmtree(root)
 
 
 __all__ = [

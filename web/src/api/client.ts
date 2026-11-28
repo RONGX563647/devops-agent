@@ -13,11 +13,14 @@ import type {
   Health,
   HealthMetrics,
   InputStage,
+  ModelCapability,
   ModelConfig,
   ModelLayers,
   ModelPatch,
   PendingState,
   PermissionCatalog,
+  ProviderModels,
+  ProvidersPayload,
   Run,
   RunHealth,
   RunList,
@@ -284,6 +287,42 @@ export function clearSessionModelConfig(sessionId: string): Promise<SessionModel
   return sendJson<SessionModelConfig>(
     `/api/session/${encodeURIComponent(sessionId)}/model-config`,
     'DELETE',
+  );
+}
+
+
+// --- 网关与模型目录（SPEC-0018）------------------------------------------
+
+/** 已配置网关清单。响应里只有 host 与 key 指纹，没有 key —— 这一屏常被截屏。 */
+export function fetchProviders(): Promise<ProvidersPayload> {
+  return getJson<ProvidersPayload>('/api/providers');
+}
+
+/** 某网关的模型列表。缓存优先；发现失败也是 200，由 `code` 说明原因。 */
+export function fetchProviderModels(providerId: string): Promise<ProviderModels> {
+  return getJson<ProviderModels>(`/api/providers/${encodeURIComponent(providerId)}/models`);
+}
+
+/** 强制绕过缓存重取（用户点了刷新）。 */
+export function refreshProviderModels(providerId: string): Promise<ProviderModels> {
+  return sendJson<ProviderModels>(
+    `/api/providers/${encodeURIComponent(providerId)}/models/refresh`,
+    'POST',
+  );
+}
+
+/** 单模型能力卡：窗口、输出上限、参数 schema 与逐字段来源。
+ *
+ * 逐段编码而不是整体 `encodeURIComponent`：模型 id 可能是 `models/gemini-2.5-pro`
+ * 或 `anthropic/claude-sonnet-4`，把 `/` 编成 `%2F` 会让后端把它当成一个整体名字。
+ */
+export function fetchModelCapability(
+  providerId: string,
+  model: string,
+): Promise<ModelCapability> {
+  const segments = model.split('/').map(encodeURIComponent).join('/');
+  return getJson<ModelCapability>(
+    `/api/providers/${encodeURIComponent(providerId)}/models/${segments}`,
   );
 }
 

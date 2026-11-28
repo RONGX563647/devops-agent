@@ -209,8 +209,8 @@ WorkspaceSession:
 ```python
 def effective_scope(policy, workspace_id: str | None) -> str:
     if workspace_id:
-        return "workspace"          # 需求：同工作区共享长期记忆
-    return policy.long_term.scope   # 未绑定：保持旧行为
+        return "workspace"  # 需求：同工作区共享长期记忆
+    return policy.long_term.scope  # 未绑定：保持旧行为
 ```
 
 `MemoryRuntime` 增加可选 `workspace_id`，`scope_id` 解析改为：
@@ -413,8 +413,8 @@ CLI 与服务层共用同一组函数，不复制业务逻辑。
 ```python
 class WorkspacePolicy(BaseModel):
     enabled: bool = False
-    root: str = ""                          # 空 = workspace/workspaces（受管克隆根）
-    allow_local_import: bool = False        # 默认关：本地路径是高危入口
+    root: str = ""  # 空 = workspace/workspaces（受管克隆根）
+    allow_local_import: bool = False  # 默认关：本地路径是高危入口
     allowed_local_roots: list[str] = Field(default_factory=list)
     allow_git_import: bool = True
     git_clone_timeout_sec: int = Field(default=120, ge=10, le=900)

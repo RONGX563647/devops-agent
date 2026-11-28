@@ -46,8 +46,10 @@ from .memory import (
     latest_version,
     list_long_term,
     list_memory_versions,
+    merge_long_term,
     save_long_term,
     save_memory_version,
+    touch_long_term,
 )
 from .pending import active_run_for_session, bump_asks, get_pending, park_run, unpark_run
 from .runs import (
@@ -138,6 +140,7 @@ __all__ = [
     "latest_version",
     "list_input_stages",
     "list_long_term",
+    "merge_long_term",
     "list_memory_versions",
     "list_runs",
     "list_scores",
@@ -154,6 +157,8 @@ __all__ = [
     "query_runs",
     "set_run_web_access",
     "set_session_workspace",
+
+    "touch_long_term",
     "save_long_term",
     "save_memory_version",
     "save_session_model_config",

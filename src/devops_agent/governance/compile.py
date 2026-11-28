@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import posixpath
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
@@ -91,6 +92,37 @@ def _allow_rules(profile: PermissionProfile) -> tuple[Rule, ...]:
     )
 
 
+def _container_path(raw: str) -> str | None:
+    """是「当前平台当不了宿主绝对路径」的 POSIX 路径就原样返回，否则返回 None。
+
+    宿主路径与容器路径不能共用一套规范化：
+
+    - 宿主路径要 `expanduser()` + `resolve()`，否则 `~/x`、符号链接都跟工具给的
+      路径比不相等；
+    - 容器路径（docker 模式的 `/workspace`）在 Windows 上 `resolve()` 会绑到
+      「当前盘符的根」：同一份部署从 `C:` 启动登记 `C:\\workspace`、从 `E:` 启动
+      登记 `E:\\workspace`。容器里根本没有这个路径，判定结果随启动目录漂移。
+
+    判据刻意收得很窄 —— 只有「当前平台不认为它是绝对路径」时才按容器路径处理：
+    POSIX 上 `/workspace` 是合法的宿主绝对路径，照旧 `resolve()`，行为不变；
+    只有 Windows 上它没有盘符（`is_absolute()` 为 False），才必须原样保留。
+    """
+    if not raw.startswith("/") or raw.startswith("//"):
+        return None  # `//server/share` 在 Windows 上是 UNC 宿主路径
+    if Path(raw).is_absolute():
+        return None  # POSIX：宿主绝对路径，照常 expanduser + resolve
+    return posixpath.normpath(raw)
+
+
+def _registered(raw: str, source: str) -> tuple[str, AdditionalWorkingDirectory]:
+    """把一个路径声明转成 `(键, 条目)`，按它是容器路径还是宿主路径分别规范化。"""
+    text = raw.strip()
+    path = _container_path(text)
+    if path is None:
+        path = str(Path(text).expanduser().resolve())
+    return path, AdditionalWorkingDirectory(path=path, source=source)
+
+
 def _working_dirs(workdir: str | Path | None) -> dict[str, AdditionalWorkingDirectory]:
     """env 声明的附加工作目录 + 本次 workdir。
 
@@ -98,16 +130,19 @@ def _working_dirs(workdir: str | Path | None) -> dict[str, AdditionalWorkingDire
     `os.getcwd() + context.working_directories`，而部署时真正的工作区常常不是
     进程 cwd（`DEVOPS_AGENT_WORKDIR` 指到别处）。不登记的话，`accept_edits` 档
     写文件会被判成「工作区外」→ 每次都要确认。
+
+    docker 模式下这里收到的是容器路径 `/workspace`，登记也必须原样是它 ——
+    工具在容器里报的路径就是 `/workspace/...`。
     """
     dirs: dict[str, AdditionalWorkingDirectory] = {}
     for raw in os.environ.get(WORKDIRS_ENV, "").split(os.pathsep):
         if not raw.strip():
             continue
-        path = str(Path(raw.strip()).expanduser().resolve())
-        dirs[path] = AdditionalWorkingDirectory(path=path, source="env")
+        path, entry = _registered(raw, "env")
+        dirs[path] = entry
     if workdir is not None:
-        path = str(Path(workdir).expanduser().resolve())
-        dirs.setdefault(path, AdditionalWorkingDirectory(path=path, source="workdir"))
+        path, entry = _registered(str(workdir), "workdir")
+        dirs.setdefault(path, entry)
     return dirs
 
 

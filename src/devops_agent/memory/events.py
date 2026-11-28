@@ -30,6 +30,9 @@ REASON_LONG_TERM_UNAVAILABLE = "long_term_unavailable"
 REASON_WRITE_FAILED = "write_failed"
 REASON_TURN_WRITE_FAILED = "turn_write_failed"
 REASON_REQUEST_TRIM = "request_trim"
+#: 摘要降级：抽取式没抽出可用句子（退回原文前缀）、或 `model` 模式尚未接入
+REASON_SUMMARY_DEGRADED = "summary_degraded"
+REASON_SUMMARIZE_MODEL_UNAVAILABLE = "summarize_model_unavailable"
 
 # 需要落成 span 的事件：START 只用于配对，不单独落库
 SPAN_MEMORY_EVENTS = frozenset(

@@ -134,11 +134,17 @@ def test_available_respects_env_and_skips_unknown(monkeypatch: pytest.MonkeyPatc
     assert [item.key for item in available()] == ["readonly", "workspace"]
 
 
-def test_available_defaults_without_unrestricted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_available_defaults_include_unrestricted(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(AVAILABLE_ENV, raising=False)
     keys = [item.key for item in available()]
-    assert "unrestricted" not in keys
+    assert "unrestricted" in keys
     assert "workspace" in keys
+
+
+def test_available_env_can_still_narrow_unrestricted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """默认开放全放开档，但部署方可显式收窄，不改代码即可回到原来的安全边界。"""
+    monkeypatch.setenv(AVAILABLE_ENV, "readonly,workspace,execute,auto")
+    assert "unrestricted" not in [item.key for item in available()]
 
 
 def test_default_profile_falls_back_to_strictest_available(

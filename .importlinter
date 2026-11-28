@@ -111,3 +111,19 @@ name = observability 不得依赖 workspace
 type = forbidden
 source_modules = devops_agent.observability
 forbidden_modules = devops_agent.workspace
+
+# 参数解析层必须能脱离框架单测：它只认 `ports.CapabilityLookup` 这个 Protocol。
+# 一旦这里直接 import model_catalog，依赖方向就反了，`model_settings` 会被拖进
+# 框架的变更半径 —— 而那正是 SPEC-0018 明确要避免的。
+[importlinter:contract:model-settings-no-catalog]
+name = model_settings 不得反向依赖 model_catalog（只能通过 ports 的 Protocol）
+type = forbidden
+source_modules = devops_agent.model_settings
+forbidden_modules = devops_agent.model_catalog
+
+[importlinter:contract:model-settings-no-framework]
+name = model_settings 不得依赖 AgentScope
+type = forbidden
+source_modules = devops_agent.model_settings
+forbidden_modules = agentscope
+allow_indirect_imports = True

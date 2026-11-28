@@ -77,7 +77,7 @@ def build_agent(
 def _state_for(
     profile: PermissionProfile,
     state: AgentState | None,
-    workdir: Path | None = None,
+    workdir: str | Path | None = None,
 ) -> AgentState:
     """准备跨轮状态：没有就新建；有但档位变了就重建权限上下文。
 
@@ -90,6 +90,10 @@ def _state_for(
 
     老快照没有这个键：视为档位不同，重建一次。只换 `permission_context`，
     `context`（对话历史）不动，用户无感。
+
+    `workdir` 收字符串而不是 `Path`：docker 模式的工具路径是容器里的
+    `/workspace`，Windows 上 `str(Path("/workspace"))` 会变成 `\\workspace`
+    （丢掉前导斜杠、还带上「当前盘符」的语义），权限层就再也认不出它是容器路径。
     """
     if state is None:
         fresh = AgentState(permission_context=compile_context(profile=profile, workdir=workdir))
@@ -181,7 +185,7 @@ def _resolve_runtime_inputs(
             if system_prompt is not None
             else build_system_prompt(tool_workdir, shell=shell)
         ),
-        state=_state_for(resolved, state, Path(tool_workdir)),
+        state=_state_for(resolved, state, tool_workdir),
         tool_workdir=tool_workdir,
         shell=shell,
         backend_factory=backend_factory,

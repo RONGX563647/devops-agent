@@ -57,6 +57,12 @@ from devops_agent.model_settings.params import (
     params_sha,
 )
 from devops_agent.model_settings.payload import derived, payload
+from devops_agent.model_settings.ports import (
+    CapabilityLookup,
+    CapabilityView,
+    get_lookup,
+    set_lookup,
+)
 from devops_agent.model_settings.resolve import (
     MODEL_ENV,
     SETTING_KEY,
@@ -82,6 +88,8 @@ __all__ = [
     "SETTING_KEY",
     "STORED_TTL_S",
     "Bound",
+    "CapabilityLookup",
+    "CapabilityView",
     "InvalidConfig",
     "ModelParams",
     "Resolved",
@@ -92,6 +100,7 @@ __all__ = [
     "derived",
     "effective_params",
     "file_guard",
+    "get_lookup",
     "invalidate",
     "layers",
     "load_local",
@@ -100,6 +109,7 @@ __all__ = [
     "payload",
     "resolve",
     "save_local",
+    "set_lookup",
     "sources_of",
     "stored_db",
     "stored_defaults",

@@ -10,13 +10,16 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ModelConfig, ModelLayers, ModelValues } from '../types';
+import type { ModelConfig, ModelLayers, ModelValues, ProvidersPayload } from '../types';
 import { ModelConfigDrawer } from './model-config/Drawer';
 
 const saveSession = vi.fn();
 const saveDefaults = vi.fn();
 const clearSession = vi.fn();
 const loadLayers = vi.fn();
+const loadProviders = vi.fn();
+const loadModels = vi.fn();
+const refreshModels = vi.fn();
 
 vi.mock('../api/client', () => ({
   ApiError: class ApiError extends Error {},
@@ -24,11 +27,59 @@ vi.mock('../api/client', () => ({
   patchModelConfig: (...args: unknown[]) => saveDefaults(...args),
   clearSessionModelConfig: (...args: unknown[]) => clearSession(...args),
   fetchModelLayers: (...args: unknown[]) => loadLayers(...args),
+  fetchProviders: (...args: unknown[]) => loadProviders(...args),
+  fetchProviderModels: (...args: unknown[]) => loadModels(...args),
+  refreshProviderModels: (...args: unknown[]) => refreshModels(...args),
 }));
 
+/** 匿名网关：没有 providers.yaml 的部署就是这一个，下拉应当禁用。 */
+const PROVIDERS: ProvidersPayload = {
+  default: 'default',
+  anonymous: true,
+  enabled: true,
+  items: [
+    {
+      id: 'default',
+      kind: 'openai_chat',
+      label: '默认网关',
+      base_url_host: 'gw.example.com',
+      discover: 'off',
+      has_key: true,
+      key_fingerprint: 'abcd1234',
+      models: 0,
+      last_check: null,
+    },
+  ],
+  kinds: [{ kind: 'openai_chat', family: 'openai' }],
+};
+
+const MODELS = {
+  provider: 'default',
+  fetched_at: '2026-01-01T00:00:00Z',
+  stale: false,
+  code: 'ok',
+  http_status: 200,
+  total: 1,
+  items: [
+    {
+      id: 'qwen3.8-flash',
+      label: 'Qwen3.8-Flash',
+      created_at: null,
+      context_size: 1_000_000,
+      output_size: 32_768,
+      input_types: ['text/plain'],
+      status: 'active',
+      origin: 'upstream',
+      matched_by: 'exact',
+    },
+  ],
+};
+
 const VALUES: ModelValues = {
+  provider: '',
   model: 'qwen3.8-flash',
   context_size: 128_000,
+  context_auto: false,
   temperature: null,
   max_tokens: null,
   top_p: null,
@@ -124,6 +175,9 @@ beforeEach(() => {
   saveDefaults.mockReset();
   clearSession.mockReset();
   loadLayers.mockReset();
+  loadProviders.mockReset();
+  loadModels.mockReset();
+  refreshModels.mockReset();
   saveSession.mockResolvedValue({ effective_from: '下一次模型调用' });
   saveDefaults.mockResolvedValue({
     affected: { applied: 2, deferred: 1 },
@@ -131,6 +185,9 @@ beforeEach(() => {
   });
   clearSession.mockResolvedValue({});
   loadLayers.mockResolvedValue(layers);
+  loadProviders.mockResolvedValue(PROVIDERS);
+  loadModels.mockResolvedValue(MODELS);
+  refreshModels.mockResolvedValue(MODELS);
 });
 
 afterEach(cleanup);
@@ -297,5 +354,73 @@ describe('ModelConfigDrawer', () => {
     fireEvent.click(screen.getByRole('button', { name: '仅本次会话' }));
     await waitFor(() => expect(saveSession).toHaveBeenCalledTimes(1));
     expect(saveSession.mock.calls[0][1]).toEqual({ model: null });
+  });
+
+  it('只有一个匿名网关时下拉禁用，并说明换网关要写 providers.yaml', async () => {
+    mount(config());
+    const select = (await screen.findByLabelText('网关')) as HTMLSelectElement;
+    // 没有 providers.yaml 时不存在「换网关」这件事：给个只有一项的下拉会误导
+    expect(select.disabled).toBe(true);
+    expect(select.value).toBe('default');
+    expect(screen.getByText(/config\/providers\.yaml/)).toBeTruthy();
+  });
+
+  it('打开抽屉不打上游：聚焦模型名才取列表，点刷新才强制绕过缓存', async () => {
+    mount(config());
+    // 等网关清单落地（providerId 需要有值才谈得上取模型列表）
+    await screen.findByLabelText('网关');
+    expect(loadProviders).toHaveBeenCalledTimes(1);
+    expect(loadModels).not.toHaveBeenCalled();
+
+    fireEvent.focus(screen.getByLabelText('模型名'));
+    await waitFor(() => expect(loadModels).toHaveBeenCalledWith('default'));
+    expect(screen.getByText('1 个模型')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    await waitFor(() => expect(refreshModels).toHaveBeenCalledWith('default'));
+  });
+
+  it('能力的来源与匹配方式来自后端，前端只翻译', async () => {
+    mount(
+      config({
+        catalog: {
+          providers_configured: 2,
+          provider: 'dashscope',
+          current: {
+            matched_by: 'exact',
+            context_source: 'card',
+            card_may_be_stale: true,
+            status: 'active',
+            deprecated_at: null,
+            label: 'Qwen-Flash',
+          },
+        },
+      }),
+    );
+    expect(screen.getByText(/窗口 128,000 ← 内置卡/)).toBeTruthy();
+    expect(screen.getByText(/精确匹配/)).toBeTruthy();
+    // 来自内置卡的数字可能滞后，必须说出来
+    expect(screen.getByText(/可能滞后于网关的新版本/)).toBeTruthy();
+  });
+
+  it('认不出的来源渲染成「未知来源」而不是空白（A44）', () => {
+    mount(
+      config({
+        catalog: {
+          providers_configured: 1,
+          provider: 'default',
+          current: {
+            matched_by: 'exact',
+            context_source: 'future',
+            card_may_be_stale: false,
+            status: 'active',
+            deprecated_at: null,
+            label: 'x',
+          },
+        },
+      }),
+    );
+    // 徽标文案在整行文本里，所以按子串匹配而不是精确匹配
+    expect(screen.getAllByText(/未知来源/).length).toBeGreaterThan(0);
   });
 });

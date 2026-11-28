@@ -9,6 +9,7 @@ import logging
 from typing import Any
 
 from devops_agent.gateway.settings import Settings
+from devops_agent.model_catalog import DEFAULT_ID, get_catalog
 from devops_agent.runtime.assembly import build_agentscope_runtime
 from devops_agent.runtime.runtime import AgentRuntime, EchoRuntime
 from devops_agent.tools.preflight import missing_tools
@@ -23,11 +24,26 @@ CODE_NO_CREDENTIALS = "no_model_credentials"
 NOTICE_NO_CREDENTIALS = "未配置模型凭据（DEVOPS_AGENT_API_KEY），当前回复只是回显输入，不会调用模型"
 
 
+def _configure_catalog() -> None:
+    """装配期把模型目录注入参数解析层。
+
+    失败只警告不拦启动：没有能力合并时窗口回落到静态 yaml 值，那是可用状态。
+    但必须留痕 —— 「配了网关却仍按 128k 压缩」的唯一线索就是这条日志。
+    """
+    try:
+        from devops_agent.model_catalog import configure
+
+        configure()
+    except Exception:  # noqa: BLE001 - 模型目录坏了不该拦住进程
+        logger.exception("模型目录初始化失败，窗口回落到静态配置")
+
+
 def select_runtime(execution: Any | None = None) -> AgentRuntime:
     """按环境变量选择运行时：配齐凭据用真实模型，否则回退 Echo（便于自检/测试）。
 
     `execution` 是启动期固定的执行面（`ExecutionTarget`）；省略时走本机路径。
     """
+    _configure_catalog()
     if Settings().has_credentials():
         return build_agentscope_runtime(execution=execution)
     return EchoRuntime()
@@ -60,21 +76,75 @@ def load_settings() -> Settings:
         return Settings()
 
 
+def _resolved_values() -> dict[str, object]:
+    """当前生效的模型参数值（不抛：自述失败不该让 /health 500）。"""
+    from devops_agent.model_settings import resolve, stored_defaults, values_of
+
+    values = values_of(resolve(stored=stored_defaults(), domain=Settings().domain()))
+    return dict(values)
+
+
 def _effective_model() -> str:
-    """模型名以真正生效的解析结果为准。
+    """模型标识以真正生效的解析结果为准，多网关时写成 `<provider>/<model>`。
 
     旧实现读 `Settings().model()`（只读 `DEVOPS_AGENT_MODEL`），而实际跑的是
     `model_settings.resolve()` 的结果 —— 界面在「模型抽屉里选了 A、环境变量写着 B」
     时会显示 B。自述字段说错比不说更糟，所以走同一个解析器。
+
+    匿名 provider 仍只回裸模型名：`/health.runtime.model` 的形状不能因为
+    新增一个键而变（A35 的等价性包含自述字段）。
     """
     try:
-        from devops_agent.model_settings import resolve, stored_defaults, values_of
-
-        values = values_of(resolve(stored=stored_defaults(), domain=Settings().domain()))
-        return str(values.get("model") or "")
+        values = _resolved_values()
+        name = str(values.get("model") or "")
+        provider = str(values.get("provider") or "")
+        if provider and provider != DEFAULT_ID:
+            return f"{provider}/{name}"
+        return name
     except Exception:  # noqa: BLE001 - 自述失败不该让 /health 500
         logger.warning("读取生效模型名失败，回落环境变量", exc_info=True)
         return Settings().model()
+
+
+def _as_int(value: object) -> int:
+    """解析结果里的数字来自 yaml/env（int）或校验过的值，统一成 int 再自述。"""
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def model_status() -> dict[str, object]:
+    """`/health.model`：当前网关、协议、窗口，以及目录整体的健康。
+
+    为什么要单列一段而不是塞进 `runtime`：`runtime.kind` 说的是「真模型还是回显」，
+    这里说的是「用的是哪个网关的哪个模型、它的窗口从哪来」—— 两件事混在一起
+    会让「模型答非所问」和「窗口配错了」看起来是同一个症状。
+    """
+    try:
+        values = _resolved_values()
+        catalog = get_catalog()
+        registry = catalog.registry
+        # 未显式选网关时，生效值是注册表的默认项 —— 不能写成常量 "default"：
+        # 写了 providers.yaml 却没有 default 叫 default 时，这里会自述一个不存在的
+        # id，而 `registry.get()` 会抛，/health 的 model 段就整块空了。
+        provider = str(values.get("provider") or "") or registry.default_id
+        spec = registry.get(provider)
+        return {
+            "provider": spec.id,
+            "name": str(values.get("model") or ""),
+            "kind": spec.kind,
+            "context_size": _as_int(values.get("context_size")),
+            "context_auto": bool(values.get("context_auto")),
+            "catalog": catalog.status(),
+        }
+    except Exception:  # noqa: BLE001 - 目录读不到时仍要能说明「没读到」
+        logger.warning("模型目录自述失败", exc_info=True)
+        return {
+            "provider": "",
+            "name": "",
+            "kind": "",
+            "context_size": 0,
+            "context_auto": False,
+            "catalog": {},
+        }
 
 
 def describe_runtime(runtime: AgentRuntime) -> dict[str, str]:

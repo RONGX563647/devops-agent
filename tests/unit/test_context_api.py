@@ -90,4 +90,5 @@ def test_estimate_tokens_calibrated_on_real_context() -> None:
     """估算要和实测同量级：提示 + 六个工具的 schema 实测约 3700 token。"""
     body = client.get("/api/context").json()
     assert 3000 < body["prefix_tokens"] < 4500
-    assert estimate_tokens("中文四个字") == 3  # 5 个汉字 ÷ 1.4
+    # qwen 族的中文系数是 0.72 字/token（线上真值反推）：5 个汉字向上取整为 7
+    assert estimate_tokens("中文四个字") == 7

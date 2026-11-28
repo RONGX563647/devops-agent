@@ -58,12 +58,19 @@ class LongTermPolicy(BaseModel):
     backend: Literal["auto", "mem0", "agentic", "local", "off"] = "auto"
     scope: Literal["session", "user"] = "session"
     top_k: int = Field(default=5, ge=1, le=50)
-    min_score: float = Field(default=0.35, ge=0, le=1)
+    #: 归一化后 0~1；0.30 是 fixture 上 precision ≥0.8 的最小阈值（SPEC-0016 §7.2）
+    min_score: float = Field(default=0.30, ge=0, le=1)
     max_entries: int = Field(default=200, ge=1, le=10_000)
     ttl_days: int = Field(default=90, ge=1, le=3650)
     # 只有「回合结束写入」一种实现；`session_end` 曾在枚举里但从未被实现，
     # 收窄后写错值会在加载配置时就报错，而不是静默不写（SPEC-0013 §18.2 M4）。
     write_on: Literal["turn"] = "turn"
+    #: 检索算法：bm25（默认）| overlap（旧实现，保留一个版本用于 A/B 与回滚）
+    retrieval: Literal["bm25", "overlap"] = "bm25"
+    #: 写入摘要：off = 原文截断；extractive = 规则抽句；model = 小模型（未接入时降级）
+    summarize: Literal["off", "extractive", "model"] = "extractive"
+    #: 抽取式摘要的字数上限（也是条目上限，比原文 1000 字更短）
+    summary_max_chars: int = Field(default=240, ge=40, le=2000)
 
 
 class MemoryBudgetPolicy(BaseModel):

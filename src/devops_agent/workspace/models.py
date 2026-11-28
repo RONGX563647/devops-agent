@@ -65,10 +65,19 @@ class WorkspaceSession:
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceRef:
-    """运行期最小投影：只要 id 与代码库根，避免把整行数据带进会话注册表。"""
+    """运行期最小投影：执行目录 + 让模型知道自己「在哪个工作区」的身份字段。
+
+    身份字段（name/source/remote_url/branch）不是给执行面用的，而是写进每次请求
+    末尾的工作区说明 —— 否则模型只能从一句路径猜自己在哪，回答「我没有 clone 过
+    仓库」时用户会以为是功能没生效。
+    """
 
     id: str
     root_path: str
+    name: str = ""
+    source: str = ""
+    remote_url: str = ""
+    branch: str = ""
 
 
 @dataclass(frozen=True, slots=True)

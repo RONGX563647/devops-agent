@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from devops_agent.gateway.contract import PENDING_STATUS, SSE_HEADERS, SSE_MEDIA_TYPE
 from devops_agent.gateway.errors import ErrorCode, http_error
 from devops_agent.gateway.routes.deps import (
+    execution_for,
     profile_or_403,
     registry_of,
     resolve_workspace,
@@ -101,7 +102,8 @@ async def confirm_run(run_id: int, req: ConfirmRequest, request: Request) -> Str
     # 4) 会话实例 + 并发判定（工作区按绑定恢复，挂起的会话被回收后也不丢执行目录）
     registry = registry_of(request)
     workspace = resolve_workspace(request, req.session_id, None)
-    entry = _entry_for(req, registry, profile, workspace)
+    execution = await execution_for(request, workspace)
+    entry = _entry_for(req, registry, profile, workspace, execution)
     # 5) 运行时能力：没有 resume 就不能续跑，早失败好过在流里空转
     if not RuntimePort(entry.runtime).resumable:
         raise http_error(ErrorCode.RUNTIME_NOT_RESUMABLE)
@@ -142,6 +144,7 @@ def _entry_for(
     registry: SessionRegistry,
     profile: PermissionProfile,
     workspace: object | None = None,
+    execution: object | None = None,
 ) -> SessionEntry:
     """取会话实例：切档必须原地热替换，不能走 acquire 重建。
 
@@ -149,8 +152,10 @@ def _entry_for(
     挂起中的 tool_call 换成新实例上的空状态，确认时找不到它。
     """
     if req.permission:
-        entry, _applied = registry.switch(req.session_id, profile, workspace=workspace)
+        entry, _applied = registry.switch(
+            req.session_id, profile, workspace=workspace, execution=execution
+        )
         if entry.lock.locked():
             raise http_error(ErrorCode.SESSION_BUSY)
         return entry
-    return claim_entry(registry, profile, req.session_id, workspace=workspace)
+    return claim_entry(registry, profile, req.session_id, workspace=workspace, execution=execution)

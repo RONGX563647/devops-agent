@@ -183,7 +183,28 @@ describe('工作区页', () => {
     await waitFor(() =>
       expect(createWorkspace).toHaveBeenCalledWith({
         name: 'repo-a',
-        source: { kind: 'local', path: '/srv/code/repo-a' },
+        // 默认「工作树」：不在用户检出上乱改，见 workspace/creation.py
+        source: { kind: 'local', path: '/srv/code/repo-a', mode: 'worktree', branch: undefined },
+      }),
+    );
+  });
+
+  it('本地新建：改选「原地引用」时按 in_place 提交', async () => {
+    renderPage();
+    await screen.findByText('原地引用 · 4 个会话');
+    fireEvent.click(screen.getByTitle('新建工作区'));
+    const path = await waitFor(() => {
+      const found = document.querySelector<HTMLInputElement>('#wsp-path');
+      if (!found?.value) throw new Error('路径还没带出');
+      return found;
+    });
+    expect(path.value).toBe('/srv/code');
+    fireEvent.click(screen.getByText('原地引用', { selector: '.wsp-landing-title' }));
+    fireEvent.click(screen.getByText('添加工作区'));
+    await waitFor(() =>
+      expect(createWorkspace).toHaveBeenCalledWith({
+        name: 'code',
+        source: { kind: 'local', path: '/srv/code', mode: 'in_place', branch: undefined },
       }),
     );
   });

@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from devops_agent.executor.subprocess_compat import report as subprocess_report
 from devops_agent.gateway.settings import Settings
 from devops_agent.model_catalog import DEFAULT_ID, get_catalog
 from devops_agent.runtime.assembly import build_agentscope_runtime
@@ -234,6 +235,9 @@ def describe_sandbox(state: Any) -> dict[str, Any]:
         code = getattr(error, "code", "sandbox_unavailable")
         payload["degraded"] = True
         payload["reason"] = f"{code}: {message}".strip(": ")
+    # 子进程能力：Windows 上被换成 SelectorEventLoop 时 shell/glob/grep 会全废，
+    # 这条是「工具为什么一个都跑不起来」唯一能自查的地方
+    payload["subprocess"] = subprocess_report()
     return payload
 
 

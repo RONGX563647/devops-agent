@@ -52,6 +52,8 @@ class ErrorCode(StrEnum):
     WORKSPACE_IN_USE = "workspace_in_use"
     WORKSPACE_GIT_FAILED = "workspace_git_failed"
     WORKSPACE_SOURCE_INVALID = "workspace_source_invalid"
+    # 登记还在、目录没了：409 而不是 400——请求没错，是工作区的状态坏了
+    WORKSPACE_ROOT_MISSING = "workspace_root_missing"
 
     # --- 执行面 ---------------------------------------------------------
     # required=true 时 Docker 执行面不可用：拒绝服务，不悄悄在宿主执行
@@ -84,6 +86,7 @@ STATUS_OF: Final[dict[ErrorCode, int]] = {
     ErrorCode.WORKSPACE_IN_USE: 409,
     ErrorCode.WORKSPACE_GIT_FAILED: 400,
     ErrorCode.WORKSPACE_SOURCE_INVALID: 400,
+    ErrorCode.WORKSPACE_ROOT_MISSING: 409,
 }
 
 

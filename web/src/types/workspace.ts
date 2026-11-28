@@ -1,7 +1,8 @@
 /** 工作区（SPEC-0020）与后端 Pydantic 响应对齐的前端类型。 */
 
 export type WorkspaceStatus = 'active' | 'archived';
-export type WorkspaceSource = 'local' | 'git';
+// worktree = 本地仓库上开的工作树（主检出不动），见 workspace/creation.py
+export type WorkspaceSource = 'local' | 'git' | 'worktree';
 
 export interface WorkspaceSummary {
   id: string;
@@ -51,9 +52,16 @@ export interface BrowseResult {
   roots?: string[];
 }
 
+/** 落盘方式：`auto` = git 仓库开工作树、其余原地引用。 */
+export type LocalLanding = 'auto' | 'worktree' | 'in_place';
+
 export interface LocalWorkspaceSource {
   kind: 'local';
   path: string;
+  /** 默认 `auto`：仓库开工作树，主检出不动。 */
+  mode?: LocalLanding;
+  /** 只对工作树生效：留空自动生成 `agent/<名字>-<后缀>`。 */
+  branch?: string;
 }
 
 export interface GitWorkspaceSource {
@@ -101,6 +109,13 @@ export interface WorkspaceSessionItem {
   bound_by: string;
   /** 非空表示已归档：前端据此置灰并在「显示已归档」时渲染。 */
   archived_at?: string;
+  /** 归属工作区；空串表示未归属（老会话），此时它在部署默认目录里跑。 */
+  workspace_id?: string;
+  workspace_name?: string;
+  /** 该会话的执行目录（工作区根）。 */
+  root_path?: string;
+  source?: string;
+  branch?: string;
 }
 
 export interface WorkspaceSessionPage {

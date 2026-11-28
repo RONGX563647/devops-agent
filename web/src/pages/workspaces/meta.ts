@@ -21,13 +21,17 @@ export function isGit(item: Pick<WorkspaceSummary, 'source'> | undefined): boole
 /** 来源的短标签，用在列表徽标与详情小标题。 */
 export function sourceLabel(item: Pick<WorkspaceSummary, 'source'> | undefined): string {
   if (isGit(item)) return 'Git 仓库';
+  if (item?.source === 'worktree') return '本地工作树';
   if (item?.source === 'local') return '本地目录';
   return '来源未知';
 }
 
-/** 列表第二行：本地是「原地引用」，Git 带分支名。 */
+/** 列表第二行：工作树/克隆带分支名，原地引用说明「不复制」。 */
 export function sourceDetail(item: Pick<WorkspaceSummary, 'source' | 'branch'>): string {
   if (isGit(item)) return item.branch ? `受管克隆 · ${item.branch}` : '受管克隆';
+  if (item.source === 'worktree') {
+    return item.branch ? `工作树 · ${item.branch}` : '工作树';
+  }
   return '原地引用';
 }
 
@@ -70,7 +74,8 @@ const ERROR_TEXT: Record<string, string> = {
   workspace_dirty: '受管克隆还有未提交改动：先提交或丢弃，或确认强制删除',
   workspace_in_use: '还有会话绑定这个工作区：先解绑，或确认强制删除',
   workspace_git_failed: '克隆失败：检查 URL、分支名与凭据',
-  workspace_source_invalid: '来源参数不合法：只支持 https / ssh / git@host:path',
+  workspace_source_invalid: '来源参数不合法：Git 只支持 https / ssh / git@host:path；工作树需要 git 仓库',
+  workspace_root_missing: '工作区的目录不在了（被删或盘符没挂上）：恢复目录，或删除这个工作区重新创建',
 };
 
 /** 结构化 detail 里的补充信息（脏文件、占用会话）也要露出来。 */

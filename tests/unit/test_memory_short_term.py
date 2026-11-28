@@ -15,7 +15,7 @@ from devops_agent.memory.short_term import (
     truncate_output,
 )
 from devops_agent.memory.tokens import estimate_messages
-from devops_agent.memory_policy import MemoryPolicy, ShortTermPolicy
+from devops_agent.memory_policy import MemoryContextPolicy, MemoryPolicy, ShortTermPolicy
 
 # 用例里显式给豁免数：默认值将来调整不该让断言静默变成「另一个场景」
 POLICY = ShortTermPolicy(
@@ -182,3 +182,40 @@ def test_zero_exempt_and_off_budget_matches_old_behaviour() -> None:
     )
     assert report.dropped_tool_results == 1
     assert "已截断" in trimmed[-1].content[0].output  # type: ignore[union-attr,index]
+
+
+def test_cap_snapshot_stamps_version_and_reserves_summary_room(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """版本号要写进 middle_context，且历史额度扣掉摘要占用的字符。
+
+    `stamp_snapshot` 此前没有调用方，`/api/context` 永远显示 1；摘要与历史
+    各按 `snapshot_max_chars` 上限算，合计必然超限。
+    """
+    policy = MemoryPolicy(context=MemoryContextPolicy(snapshot_max_chars=10_000))
+    runtime = MemoryRuntime(session_id="s1", policy=policy, db_path=tmp_path / "obs.db")
+    # 三个轮次：裁「整轮」需要一个以上的轮次边界，单轮历史再怎么超都只能就地截断
+    history = _history(
+        UserMsg(name="u1", content="a"),
+        _tool("Read", "x" * 800),
+        UserMsg(name="u2", content="b"),
+        _tool("Read", "y" * 800),
+        UserMsg(name="u3", content="c"),
+        _tool("Read", "z" * 800),
+    )
+
+    # 对照：没有摘要时历史不超上限，快照不该动它
+    control = SimpleNamespace(state=SimpleNamespace(context=list(history), middle_context={}))
+    runtime.cap_snapshot(control)  # type: ignore[arg-type]
+    assert control.state.middle_context["snapshot_version"] == policy.context.snapshot_version
+    assert len(control.state.context) == len(history)
+
+    # 摘要吃掉 9600 字后只剩 400 字额度，必须继续丢最旧轮次
+    loaded = SimpleNamespace(
+        state=SimpleNamespace(
+            context=list(history),
+            middle_context={},
+            summary=[SimpleNamespace(text="摘" * 9600)],
+        )
+    )
+    report = runtime.cap_snapshot(loaded)  # type: ignore[arg-type]
+    assert report.dropped_turns > 0
+    assert len(loaded.state.context) < len(history)

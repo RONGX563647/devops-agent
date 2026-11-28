@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from devops_agent.config import load_memory
 from devops_agent.memory.context import clip
 from devops_agent.memory.runtime import memory_status
+from devops_agent.memory.scope import resolve_scope_id
 from devops_agent.observability import repository as repo
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
@@ -22,18 +23,13 @@ def _db() -> Any:
 
 
 def _scope_id(scope: str, session_id: str, workspace_id: str = "") -> str:
-    """按 scope 真正分派（修复旧实现两个分支完全相同的问题）。
+    """按 scope 真正分派，规则与运行时同源（`memory.scope.resolve_scope_id`）。
 
     - session：永远 `session:<id>`；
     - user：配置了 user_id 才共享，否则退回会话；
     - workspace：固定 `workspace:<id>`，跨工作区不可见。
     """
-    policy = load_memory()
-    if scope == "workspace":
-        return f"workspace:{workspace_id}"
-    if scope == "user":
-        return policy.user_id or f"session:{session_id}"
-    return f"session:{session_id}"
+    return resolve_scope_id(load_memory(), session_id, workspace_id, scope=scope)
 
 
 @router.get("/status")

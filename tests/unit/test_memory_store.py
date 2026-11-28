@@ -62,6 +62,28 @@ def test_long_term_write_search_dedupe_and_isolation(tmp_path) -> None:  # type:
     assert asyncio.run(other.search("pytest", top_k=5, min_score=0.1)) == []
 
 
+def test_long_term_recall_scans_all_retained_entries(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """候选池要覆盖全部保留条目：只取最近 N 条会让久远的高价值结论永远召不回。"""
+    db = tmp_path / "obs.db"
+    policy = LongTermPolicy(backend="local", scope="session", max_entries=300, top_k=5)
+    with repo.connect(db) as conn:
+        repo.init_db(conn)
+        for index in range(105):
+            text = "alpha 偏好：用 pytest" if index == 0 else f"filler-{index}"
+            repo.save_long_term(
+                conn,
+                scope="session",
+                scope_id="session:s1",
+                kind="fact",
+                text=text,
+                ttl_days=90,
+                max_entries=300,
+            )
+    store = build_long_term(policy, "session:s1", db).backend
+    hits = asyncio.run(store.search("alpha", top_k=5, min_score=0.1))
+    assert hits and "pytest" in hits[0].text
+
+
 def test_external_backends_degrade_to_local_with_reason(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """A16：请求未接入的后端 → effective=local，requested 保留，reason 非空。"""
     db = tmp_path / "obs.db"

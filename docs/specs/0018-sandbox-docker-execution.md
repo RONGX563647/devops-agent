@@ -81,13 +81,13 @@
 ```python
 @dataclass(frozen=True, slots=True)
 class ExecutionTarget:
-    mode: Literal["local", "docker"]   # 实际生效模式，不是请求模式
-    host_workdir: Path                 # 挂载/审计/文件归属
-    tool_workdir: str                  # 模型与工具看到的路径
-    backend: BackendBase               # 工具执行原语
-    shell: str                         # 系统提示里的 shell 语法
+    mode: Literal["local", "docker"]  # 实际生效模式，不是请求模式
+    host_workdir: Path  # 挂载/审计/文件归属
+    tool_workdir: str  # 模型与工具看到的路径
+    backend: BackendBase  # 工具执行原语
+    shell: str  # 系统提示里的 shell 语法
     workspace: WorkspaceBase | None = None
-    degraded_reason: str = ""          # auto 回落时非空
+    degraded_reason: str = ""  # auto 回落时非空
 ```
 
 约束：
@@ -139,7 +139,7 @@ async def lifespan(app: FastAPI):
     manager = SandboxManager(load_sandbox())
     target = await manager.ensure(resolve_workdir())
     app.state.execution = target
-    app.state.runtime = pick_runtime(execution=target)   # 初始化后再同步装配
+    app.state.runtime = pick_runtime(execution=target)  # 初始化后再同步装配
     try:
         yield
     finally:
